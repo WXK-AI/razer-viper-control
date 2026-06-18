@@ -15,6 +15,13 @@ fi
 
 xcodegen generate
 
+# Homebrew XcodeGen may emit objectVersion 77; downgrade for broader Xcode 15 compatibility.
+PBXPROJ="$ROOT/RazerViperControl.xcodeproj/project.pbxproj"
+if [ -f "$PBXPROJ" ] && grep -q 'objectVersion = 77' "$PBXPROJ"; then
+  sed -i '' 's/objectVersion = 77/objectVersion = 56/' "$PBXPROJ"
+  sed -i '' 's/compatibilityVersion = "Xcode 16.0"/compatibilityVersion = "Xcode 15.0"/' "$PBXPROJ" || true
+fi
+
 rm -rf "$DERIVED" "$ROOT/.swiftpm/xcode"
 
 echo "Building RazerMenuBarApp (Release)…"
