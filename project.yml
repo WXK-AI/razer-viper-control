@@ -1,0 +1,45 @@
+name: RazerViperControl
+options:
+  bundleIdPrefix: com.razermenubar
+  deploymentTarget:
+    macOS: "13.0"
+packages:
+  RazerCore:
+    path: .
+targets:
+  RazerMenuBarApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: RazerMenuBarApp
+        excludes:
+          - Info.plist
+    dependencies:
+      - package: RazerCore
+        product: RazerCore
+    settings:
+      PRODUCT_NAME: RazerMenuBarApp
+      PRODUCT_BUNDLE_IDENTIFIER: com.razermenubar.RazerMenuBarApp
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_CFBundleDisplayName: Razer Viper Control
+      INFOPLIST_KEY_LSUIElement: YES
+      INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026"
+      CODE_SIGN_ENTITLEMENTS: RazerMenuBarApp/RazerMenuBarApp.entitlements
+      SWIFT_VERSION: "5.9"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+      ENABLE_DEBUG_DYLIB: NO
+      MARKETING_VERSION: "1.0.0"
+      CURRENT_PROJECT_VERSION: "1"
+    postbuildScripts:
+      - name: Strip extended attributes before code sign
+        script: |
+          xattr -cr "${TARGET_BUILD_DIR}/${WRAPPER_NAME}" 2>/dev/null || true
+        basedOnDependencyAnalysis: false
+schemes:
+  RazerMenuBarApp:
+    build:
+      targets:
+        RazerMenuBarApp: all
+    run:
+      config: Debug
