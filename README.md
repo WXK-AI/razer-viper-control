@@ -16,7 +16,18 @@ Native Swift menu-bar app for the **Razer Viper V3 HyperSpeed** (`1532:00B8`). P
 - **Full Xcode** (from the App Store) for `RazerMenuBarApp` and `swift test`
 - Swift Command Line Tools are enough for `RazerCore` + `RazerProbeCLI`
 
-## Build
+## Install (pre-built)
+
+Download the latest release from [GitHub Releases](https://github.com/WXK-AI/razer-viper-control/releases):
+
+1. Download `RazerMenuBarApp-macOS.zip` and unzip.
+2. Move **RazerMenuBarApp.app** to **Applications**.
+3. First launch: right-click → **Open** (ad-hoc signed build).
+4. Allow **Input Monitoring** and **Accessibility** (Settings → Diagnostics has shortcuts).
+
+Optional CLI: `RazerProbeCLI-macOS.zip` — `chmod +x RazerProbeCLI && ./RazerProbeCLI list`
+
+## Build from source
 
 ### Core + CLI (Command Line Tools only)
 
@@ -80,8 +91,10 @@ Fields: name, DPI stages, active stage, polling rate, auto-reapply flag. Local p
 ## v1 scope
 
 - Battery, DPI, DPI stages, polling (125/500/1000 Hz)
+- Software button remapping, scroll tuning, profiles (local JSON)
+- Hardware wheel modes when supported by device (not on Viper V3 HyperSpeed)
 - Transaction ID `0x1F`, ~60 ms response wait
-- No RGB, macros, button remap, DriverKit, or background daemon
+- No RGB, onboard-memory save, DriverKit, or Mac App Store distribution
 
 ## References
 
