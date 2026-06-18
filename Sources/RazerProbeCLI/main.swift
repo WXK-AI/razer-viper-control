@@ -8,6 +8,9 @@ enum ProbeCommand: String {
     case dpi
     case stages
     case polling
+    case wheel
+    case wheelProbe = "wheel-probe"
+    case inputCapture = "input-capture"
     case integration
     case help
 }
@@ -16,6 +19,7 @@ struct ProbeOptions {
     var command: ProbeCommand = .help
     var temporaryDPI: Int = 1600
     var temporaryPollingHz: Int = 500
+    var captureSeconds: Int = 15
 }
 
 @main
@@ -46,6 +50,10 @@ struct RazerProbeCLI {
             }
         }
 
+        if command == .inputCapture, arguments.count > 2, let seconds = Int(arguments[2]) {
+            options.captureSeconds = seconds
+        }
+
         return options
     }
 
@@ -65,6 +73,12 @@ struct RazerProbeCLI {
             try printStages()
         case .polling:
             try printPolling()
+        case .wheel:
+            try printWheel()
+        case .wheelProbe:
+            try runWheelProbe()
+        case .inputCapture:
+            try runInputCapture(seconds: options.captureSeconds)
         case .integration:
             try runIntegration(dpi: options.temporaryDPI, pollingHz: options.temporaryPollingHz)
         }
@@ -81,6 +95,9 @@ struct RazerProbeCLI {
           RazerProbeCLI dpi
           RazerProbeCLI stages
           RazerProbeCLI polling
+          RazerProbeCLI wheel
+          RazerProbeCLI wheel-probe
+          RazerProbeCLI input-capture [seconds]
           RazerProbeCLI integration [temporaryDPI] [temporaryPollingHz]
         """)
     }
@@ -148,6 +165,116 @@ struct RazerProbeCLI {
             try client.send(.getPollingRate()).decodePollingRateHz()
         }
         print("Polling rate: \(hz.map(String.init) ?? "unknown") Hz")
+    }
+
+    private static func printWheel() throws {
+        try withClient { client in
+            let capability = WheelCapabilityProbe.probe(client: client)
+            print("Wheel hardware capability:")
+            print(" scroll mode: \(capability.scrollMode.displayName)")
+            print(" acceleration: \(capability.acceleration.displayName)")
+            print(" smart reel: \(capability.smartReel.displayName)")
+
+            if capability.scrollMode == .supported {
+                let state = try client.readWheelHardwareState()
+                if let mode = state.scrollMode {
+                    print("Current scroll mode: \(mode.displayName)")
+                }
+                if let enabled = state.accelerationEnabled {
+                    print("Scroll acceleration: \(enabled ? "on" : "off")")
+                }
+                if let enabled = state.smartReelEnabled {
+                    print("Smart reel: \(enabled ? "on" : "off")")
+                }
+            }
+        }
+    }
+
+    private static func runWheelProbe() throws {
+        try withClient { client in
+            let capability = WheelCapabilityProbe.probe(client: client)
+            print("Wheel probe results:")
+            print(" scroll mode: \(capability.scrollMode.displayName)")
+            print(" acceleration: \(capability.acceleration.displayName)")
+            print(" smart reel: \(capability.smartReel.displayName)")
+
+            guard capability.scrollMode == .supported ||
+                    capability.acceleration == .supported ||
+                    capability.smartReel == .supported else {
+                print("No supported hardware wheel commands on this device.")
+                return
+            }
+
+            let original = try client.readWheelHardwareState()
+            print("Original wheel state: mode=\(original.scrollMode?.displayName ?? "n/a"), acceleration=\(original.accelerationEnabled.map { $0 ? "on" : "off" } ?? "n/a"), smartReel=\(original.smartReelEnabled.map { $0 ? "on" : "off" } ?? "n/a")")
+
+            if capability.scrollMode == .supported, let mode = original.scrollMode {
+                let alternate: ScrollWheelMode = mode == .tactile ? .freeSpin : .tactile
+                print("Trying alternate scroll mode: \(alternate.displayName)")
+                switch client.setScrollMode(alternate) {
+                case .success:
+                    let readback = try client.readWheelHardwareState()
+                    print("Readback scroll mode: \(readback.scrollMode?.displayName ?? "unknown")")
+                case .notSupported:
+                    print("Set scroll mode: not supported")
+                }
+            }
+
+            if capability.acceleration == .supported {
+                let target = !(original.accelerationEnabled ?? false)
+                print("Trying scroll acceleration: \(target ? "on" : "off")")
+                switch client.setScrollAcceleration(target) {
+                case .success:
+                    let readback = try client.readWheelHardwareState()
+                    print("Readback acceleration: \(readback.accelerationEnabled.map { $0 ? "on" : "off" } ?? "unknown")")
+                case .notSupported:
+                    print("Set acceleration: not supported")
+                }
+            }
+
+            print("Restoring original wheel state...")
+            if let mode = original.scrollMode {
+                _ = client.setScrollMode(mode)
+            }
+            if let enabled = original.accelerationEnabled {
+                _ = client.setScrollAcceleration(enabled)
+            }
+            if let enabled = original.smartReelEnabled {
+                _ = client.setScrollSmartReel(enabled)
+            }
+            let restored = try client.readWheelHardwareState()
+            print("Restored wheel state: mode=\(restored.scrollMode?.displayName ?? "n/a"), acceleration=\(restored.accelerationEnabled.map { $0 ? "on" : "off" } ?? "n/a")")
+        }
+    }
+
+    private static func runInputCapture(seconds: Int) throws {
+        let permissions = PermissionStatus.current()
+        print("Permissions: \(permissions.summary)")
+        guard permissions.inputMonitoringGranted else {
+            throw InputCaptureError.missingInputMonitoring
+        }
+
+        let session = InputCaptureSession()
+        try session.start()
+        defer { session.stop() }
+
+        print("Capturing mouse events for \(seconds)s. Press buttons and scroll on the mouse...")
+        let deadline = Date().addingTimeInterval(TimeInterval(seconds))
+        while Date() < deadline {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            CFRunLoopRunInMode(.defaultMode, min(remaining, 0.05), false)
+        }
+
+        if session.entries.isEmpty {
+            print("No events captured.")
+            return
+        }
+
+        print("Captured \(session.entries.count) events:")
+        for entry in session.entries {
+            print(" - \(entry.summary)")
+        }
     }
 
     private static func runIntegration(dpi: Int, pollingHz: Int) throws {

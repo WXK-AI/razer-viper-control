@@ -1,12 +1,20 @@
 import Foundation
 
 public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, dpiStages, activeStage, pollingRateHz, autoReapplyEnabled
+        case buttonMappings, wheelSettings, remapperEnabled
+    }
+
     public var id: UUID
     public var name: String
     public var dpiStages: [Int]
     public var activeStage: Int
     public var pollingRateHz: Int
     public var autoReapplyEnabled: Bool
+    public var buttonMappings: [PhysicalControl: ButtonAction]
+    public var wheelSettings: WheelSettings
+    public var remapperEnabled: Bool
 
     public init(
         id: UUID = UUID(),
@@ -14,7 +22,10 @@ public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
         dpiStages: [Int],
         activeStage: Int,
         pollingRateHz: Int,
-        autoReapplyEnabled: Bool = true
+        autoReapplyEnabled: Bool = true,
+        buttonMappings: [PhysicalControl: ButtonAction] = PhysicalControl.defaultButtonMappings(),
+        wheelSettings: WheelSettings = .default,
+        remapperEnabled: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -22,12 +33,48 @@ public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
         self.activeStage = activeStage
         self.pollingRateHz = pollingRateHz
         self.autoReapplyEnabled = autoReapplyEnabled
+        self.buttonMappings = buttonMappings
+        self.wheelSettings = wheelSettings
+        self.remapperEnabled = remapperEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        dpiStages = try container.decode([Int].self, forKey: .dpiStages)
+        activeStage = try container.decode(Int.self, forKey: .activeStage)
+        pollingRateHz = try container.decode(Int.self, forKey: .pollingRateHz)
+        autoReapplyEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoReapplyEnabled) ?? true
+        buttonMappings = try container.decodeIfPresent([PhysicalControl: ButtonAction].self, forKey: .buttonMappings)
+            ?? PhysicalControl.defaultButtonMappings()
+        wheelSettings = try container.decodeIfPresent(WheelSettings.self, forKey: .wheelSettings) ?? .default
+        remapperEnabled = try container.decodeIfPresent(Bool.self, forKey: .remapperEnabled) ?? true
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(dpiStages, forKey: .dpiStages)
+        try container.encode(activeStage, forKey: .activeStage)
+        try container.encode(pollingRateHz, forKey: .pollingRateHz)
+        try container.encode(autoReapplyEnabled, forKey: .autoReapplyEnabled)
+        try container.encode(buttonMappings, forKey: .buttonMappings)
+        try container.encode(wheelSettings, forKey: .wheelSettings)
+        try container.encode(remapperEnabled, forKey: .remapperEnabled)
     }
 
     public var activeDPI: Int {
         guard !dpiStages.isEmpty else { return DeviceDescriptor.minDPI }
         let index = min(max(activeStage - 1, 0), dpiStages.count - 1)
         return dpiStages[index]
+    }
+
+    public mutating func resetControlsToDefaults() {
+        buttonMappings = PhysicalControl.defaultButtonMappings()
+        wheelSettings = .default
+        remapperEnabled = true
     }
 }
 
@@ -149,9 +196,44 @@ public final class DeviceSession {
         return try connect()
     }
 
-    public func apply(profile: MouseProfile, to client: RazerCommandClient) throws {
+    public func apply(profile: MouseProfile, to client: RazerCommandClient, wheelCapability: WheelHardwareCapability? = nil) throws {
         try client.setDPIStages(activeStage: profile.activeStage, stages: profile.dpiStages)
         try client.setDPI(profile.activeDPI)
         try client.setPollingRate(hz: profile.pollingRateHz)
+        try applyWheelSettings(profile.wheelSettings.hardware, to: client, capability: wheelCapability)
+    }
+
+    public func applyWheelSettings(
+        _ settings: HardwareWheelSettings,
+        to client: RazerCommandClient,
+        capability: WheelHardwareCapability? = nil
+    ) throws {
+        if let mode = settings.scrollMode {
+            if capability?.scrollMode != .notSupported {
+                switch client.setScrollMode(mode) {
+                case .notSupported: break
+                case let .success(report):
+                    _ = report
+                }
+            }
+        }
+        if let enabled = settings.accelerationEnabled {
+            if capability?.acceleration != .notSupported {
+                switch client.setScrollAcceleration(enabled) {
+                case .notSupported: break
+                case let .success(report):
+                    _ = report
+                }
+            }
+        }
+        if let enabled = settings.smartReelEnabled {
+            if capability?.smartReel != .notSupported {
+                switch client.setScrollSmartReel(enabled) {
+                case .notSupported: break
+                case let .success(report):
+                    _ = report
+                }
+            }
+        }
     }
 }

@@ -43,6 +43,11 @@ public enum RazerCommandError: Error, LocalizedError {
     }
 }
 
+public enum CommandSendResult: Equatable, Sendable {
+    case success(RazerReport)
+    case notSupported
+}
+
 public struct DeviceState: Equatable, Sendable {
     public var batteryPercent: Int
     public var isCharging: Bool
@@ -145,7 +150,72 @@ public final class RazerCommandClient {
         _ = try send(try .setPollingRate(hz: hz))
     }
 
-    private func performRoundTrip(_ request: RazerReport) throws -> RazerReport {
+    public func sendAllowingUnsupported(_ request: RazerReport) throws -> CommandSendResult {
+        var lastError: Error?
+
+        for attempt in 1...DeviceDescriptor.maxCommandRetries {
+            do {
+                let report = try performRoundTripAllowingUnsupported(request)
+                return report
+            } catch RazerCommandError.deviceBusy {
+                lastError = RazerCommandError.deviceBusy
+                Thread.sleep(forTimeInterval: 0.05 * Double(attempt))
+            } catch {
+                throw error
+            }
+        }
+
+        throw lastError ?? RazerCommandError.deviceBusy
+    }
+
+    public func probeScrollMode() throws -> CommandSendResult {
+        try sendAllowingUnsupported(.getScrollMode())
+    }
+
+    public func probeScrollAcceleration() throws -> CommandSendResult {
+        try sendAllowingUnsupported(.getScrollAcceleration())
+    }
+
+    public func probeScrollSmartReel() throws -> CommandSendResult {
+        try sendAllowingUnsupported(.getScrollSmartReel())
+    }
+
+    public func setScrollMode(_ mode: ScrollWheelMode) -> CommandSendResult {
+        (try? sendAllowingUnsupported(.setScrollMode(mode))) ?? .notSupported
+    }
+
+    public func setScrollAcceleration(_ enabled: Bool) -> CommandSendResult {
+        (try? sendAllowingUnsupported(.setScrollAcceleration(enabled))) ?? .notSupported
+    }
+
+    public func setScrollSmartReel(_ enabled: Bool) -> CommandSendResult {
+        (try? sendAllowingUnsupported(.setScrollSmartReel(enabled))) ?? .notSupported
+    }
+
+    public func readWheelHardwareState() throws -> HardwareWheelSettings {
+        var settings = HardwareWheelSettings()
+        switch try probeScrollMode() {
+        case let .success(report):
+            settings.scrollMode = report.decodeScrollMode()
+        case .notSupported:
+            break
+        }
+        switch try probeScrollAcceleration() {
+        case let .success(report):
+            settings.accelerationEnabled = report.decodeBoolArgument()
+        case .notSupported:
+            break
+        }
+        switch try probeScrollSmartReel() {
+        case let .success(report):
+            settings.smartReelEnabled = report.decodeBoolArgument()
+        case .notSupported:
+            break
+        }
+        return settings
+    }
+
+    private func performRoundTripAllowingUnsupported(_ request: RazerReport) throws -> CommandSendResult {
         let payload = request.bytes
 
         let setResult = IOHIDDeviceSetReport(
@@ -182,10 +252,19 @@ public final class RazerCommandClient {
         }
 
         let report = try RazerReport(bytes: response)
-        return try validateResponse(report, for: request)
+        return try validateResponseAllowingUnsupported(report, for: request)
     }
 
-    private func validateResponse(_ response: RazerReport, for request: RazerReport) throws -> RazerReport {
+    private func performRoundTrip(_ request: RazerReport) throws -> RazerReport {
+        switch try performRoundTripAllowingUnsupported(request) {
+        case let .success(report):
+            return report
+        case .notSupported:
+            throw RazerCommandError.unsupportedCommand
+        }
+    }
+
+    private func validateResponseAllowingUnsupported(_ response: RazerReport, for request: RazerReport) throws -> CommandSendResult {
         let expectedCRC = RazerReport.calculateCRC(for: response.bytes)
         guard response.crc == expectedCRC else {
             throw RazerCommandError.invalidResponse("CRC mismatch.")
@@ -193,11 +272,11 @@ public final class RazerCommandClient {
 
         switch response.responseStatus {
         case .successful:
-            return response
+            return .success(response)
         case .busy:
             throw RazerCommandError.deviceBusy
         case .notSupported:
-            throw RazerCommandError.unsupportedCommand
+            return .notSupported
         case .timeout:
             throw RazerCommandError.timeout
         case .failure:
@@ -207,6 +286,15 @@ public final class RazerCommandClient {
                 throw RazerCommandError.blockedDeviceAccess("status 0x00 — no acknowledgement")
             }
             throw RazerCommandError.invalidResponse("status 0x\(String(response.status, radix: 16))")
+        }
+    }
+
+    private func validateResponse(_ response: RazerReport, for request: RazerReport) throws -> RazerReport {
+        switch try validateResponseAllowingUnsupported(response, for: request) {
+        case let .success(report):
+            return report
+        case .notSupported:
+            throw RazerCommandError.unsupportedCommand
         }
     }
 

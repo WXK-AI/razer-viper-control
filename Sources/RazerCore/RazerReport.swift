@@ -175,6 +175,62 @@ public struct RazerReport: Equatable, Sendable {
         )
     }
 
+    // MARK: - Scroll wheel commands (OpenRazer 0x02 class)
+
+    public static func getScrollMode() -> RazerReport {
+        makeCommand(
+            commandClass: 0x02,
+            commandID: 0x94,
+            dataSize: 0x02,
+            arguments: [RazerVariableStorage.varStore.rawValue]
+        )
+    }
+
+    public static func setScrollMode(_ mode: ScrollWheelMode) -> RazerReport {
+        makeCommand(
+            commandClass: 0x02,
+            commandID: 0x14,
+            dataSize: 0x02,
+            arguments: [RazerVariableStorage.varStore.rawValue, mode.rawValue]
+        )
+    }
+
+    public static func getScrollAcceleration() -> RazerReport {
+        makeCommand(
+            commandClass: 0x02,
+            commandID: 0x96,
+            dataSize: 0x02,
+            arguments: [RazerVariableStorage.varStore.rawValue]
+        )
+    }
+
+    public static func setScrollAcceleration(_ enabled: Bool) -> RazerReport {
+        makeCommand(
+            commandClass: 0x02,
+            commandID: 0x16,
+            dataSize: 0x02,
+            arguments: [RazerVariableStorage.varStore.rawValue, enabled ? 0x01 : 0x00]
+        )
+    }
+
+    public static func getScrollSmartReel() -> RazerReport {
+        makeCommand(
+            commandClass: 0x02,
+            commandID: 0x97,
+            dataSize: 0x02,
+            arguments: [RazerVariableStorage.varStore.rawValue]
+        )
+    }
+
+    public static func setScrollSmartReel(_ enabled: Bool) -> RazerReport {
+        makeCommand(
+            commandClass: 0x02,
+            commandID: 0x17,
+            dataSize: 0x02,
+            arguments: [RazerVariableStorage.varStore.rawValue, enabled ? 0x01 : 0x00]
+        )
+    }
+
     public static func setDPIStages(activeStage: Int, stages: [Int]) throws -> RazerReport {
         let validated = try ProfileValidator.validateStages(stages, activeStage: activeStage)
         var args = [UInt8](repeating: 0, count: 80)
@@ -233,6 +289,14 @@ public struct RazerReport: Equatable, Sendable {
         let x = (Int(arguments[1]) << 8) | Int(arguments[2])
         let y = (Int(arguments[3]) << 8) | Int(arguments[4])
         return (x, y)
+    }
+
+    public func decodeScrollMode() -> ScrollWheelMode? {
+        ScrollWheelMode(rawValue: arguments[1])
+    }
+
+    public func decodeBoolArgument() -> Bool {
+        arguments[1] != 0
     }
 
     public func decodeDPIStages() -> (activeStage: Int, stages: [(x: Int, y: Int)]) {

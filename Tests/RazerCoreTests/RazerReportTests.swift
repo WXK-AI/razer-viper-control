@@ -88,6 +88,39 @@ final class RazerReportTests: XCTestCase {
         XCTAssertEqual(try RazerReport.setPollingRate(hz: 500).arguments[0], 0x02)
         XCTAssertEqual(try RazerReport.setPollingRate(hz: 125).arguments[0], 0x08)
     }
+
+    func testWheelCommandEncoding() {
+        let getMode = RazerReport.getScrollMode()
+        XCTAssertEqual(getMode.commandClass, 0x02)
+        XCTAssertEqual(getMode.commandID, 0x94)
+        XCTAssertEqual(getMode.dataSize, 0x02)
+        XCTAssertEqual(getMode.arguments[0], 0x01)
+
+        let setMode = RazerReport.setScrollMode(.freeSpin)
+        XCTAssertEqual(setMode.commandClass, 0x02)
+        XCTAssertEqual(setMode.commandID, 0x14)
+        XCTAssertEqual(setMode.arguments[0], 0x01)
+        XCTAssertEqual(setMode.arguments[1], 0x01)
+
+        let setAccel = RazerReport.setScrollAcceleration(true)
+        XCTAssertEqual(setAccel.commandID, 0x16)
+        XCTAssertEqual(setAccel.arguments[1], 0x01)
+
+        let setReel = RazerReport.setScrollSmartReel(false)
+        XCTAssertEqual(setReel.commandID, 0x17)
+        XCTAssertEqual(setReel.arguments[1], 0x00)
+    }
+
+    func testWheelDecoding() {
+        var report = RazerReport.makeCommand(commandClass: 0x02, commandID: 0x94, dataSize: 0x02)
+        report.arguments[1] = ScrollWheelMode.tactile.rawValue
+        XCTAssertEqual(report.decodeScrollMode(), .tactile)
+
+        report.arguments[1] = 1
+        XCTAssertTrue(report.decodeBoolArgument())
+        report.arguments[1] = 0
+        XCTAssertFalse(report.decodeBoolArgument())
+    }
 }
 
 final class ProfileValidatorTests: XCTestCase {

@@ -21,7 +21,7 @@ struct RazerMenuBarApp: App {
         Window("Razer Viper V3 HyperSpeed", id: "settings") {
             SettingsView(model: model)
         }
-        .defaultSize(width: 460, height: 620)
+        .defaultSize(width: 560, height: 680)
         .windowResizability(.contentSize)
     }
 }
@@ -42,7 +42,20 @@ private struct MenuBarContent: View {
             Text(model.statusMessage)
         }
 
+        if model.remapperRunning {
+            Text(model.remapperPaused ? "Remapper: Paused" : "Remapper: Active")
+        }
+
         Divider()
+
+        Button(model.remapperPaused ? "Resume Remapper" : "Pause Remapper") {
+            model.toggleRemapperPause()
+        }
+        .disabled(!model.remapperRunning && !(model.selectedProfile?.remapperEnabled ?? false))
+
+        Button("Reset Controls to Default") {
+            model.resetSelectedProfileControls()
+        }
 
         Button("Settings…") {
             openSettings()
