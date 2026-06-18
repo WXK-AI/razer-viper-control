@@ -1,6 +1,7 @@
 name: RazerViperControl
 options:
   bundleIdPrefix: com.razermenubar
+  projectFormat: xcode15
   deploymentTarget:
     macOS: "13.0"
 packages:
