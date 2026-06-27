@@ -1,0 +1,17 @@
+---
+description: Implement Codex planning handoff files from docs/plans
+alwaysApply: false
+---
+
+When the user asks you to implement a Codex plan, read the referenced file in `docs/plans/` first.
+
+Follow the plan checklist in order. Update the plan file as items are completed. Preserve unrelated user changes. If the plan has an open question or a step conflicts with the current codebase, stop and ask before changing scope.
+
+Use the repository's existing Swift structure:
+
+- `Sources/RazerCore/` for reusable core logic.
+- `RazerMenuBarApp/` for menu-bar UI and app model code.
+- `Sources/RazerProbeCLI/` for diagnostics CLI behavior.
+- `Tests/RazerCoreTests/` for unit tests.
+
+Before finishing, run the verification commands listed in the plan. At minimum, run `swift test` for core logic changes. For app or project changes, also run the `RazerMenuBarApp` Xcode build.
