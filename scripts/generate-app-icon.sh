@@ -30,18 +30,21 @@ mkdir -p "$OUT_DIR" "$ROOT/design"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-BODY='#EAE9EE'     # near-white mouse body
-GREEN='#34C759'    # Apple system green – scroll wheel accent
-SIDE='#D0CED6'     # slightly muted – side buttons
-
-# 1) Artwork on a full 1024 canvas. Gradient fills the whole canvas; the
-#    squircle mask (step 3) clips it to the 824 body. Mouse fills ~71% of body.
-magick -size ${SIZE}x${SIZE} gradient:"#1A3028-#0D1A14" \
-  \( -size ${SIZE}x${SIZE} xc:none -fill "$BODY"  -draw "roundrectangle 342,219 682,804 150,150" \) -composite \
-  \( -size ${SIZE}x${SIZE} xc:none -fill "$GREEN" -draw "roundrectangle 447,350 577,408 22,22"    \) -composite \
-  \( -size ${SIZE}x${SIZE} xc:none -fill "$SIDE"  -draw "roundrectangle 352,420 392,500 9,9"      \) -composite \
-  \( -size ${SIZE}x${SIZE} xc:none -fill "$SIDE"  -draw "roundrectangle 352,530 392,610 9,9"      \) -composite \
-  "$TMP/art.png"
+# Base artwork (full 1024 canvas). The squircle mask (step 3) clips it to the
+# 824 body. Prefer the curated art at design/app-icon-art.png; otherwise fall
+# back to a programmatic flat mouse so the script still works standalone.
+ART_BASE="$ROOT/design/app-icon-art.png"
+if [ -f "$ART_BASE" ]; then
+  magick "$ART_BASE" -resize ${SIZE}x${SIZE}^ -gravity center -extent ${SIZE}x${SIZE} "$TMP/art.png"
+else
+  BODY='#EAE9EE'; GREEN='#34C759'; SIDE='#D0CED6'
+  magick -size ${SIZE}x${SIZE} gradient:"#1A3028-#0D1A14" \
+    \( -size ${SIZE}x${SIZE} xc:none -fill "$BODY"  -draw "roundrectangle 342,219 682,804 150,150" \) -composite \
+    \( -size ${SIZE}x${SIZE} xc:none -fill "$GREEN" -draw "roundrectangle 447,350 577,408 22,22"    \) -composite \
+    \( -size ${SIZE}x${SIZE} xc:none -fill "$SIDE"  -draw "roundrectangle 352,420 392,500 9,9"      \) -composite \
+    \( -size ${SIZE}x${SIZE} xc:none -fill "$SIDE"  -draw "roundrectangle 352,530 392,610 9,9"      \) -composite \
+    "$TMP/art.png"
+fi
 
 # 2) Generate a continuous-curvature squircle mask (superellipse, n=5).
 #    824 body centered in 1024 -> half-size a=412, center 512.
