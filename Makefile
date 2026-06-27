@@ -51,3 +51,6 @@ release-dmg: check-xcode
 	bash scripts/ci-release-build.sh
 	bash scripts/package-dmg.sh
 	@echo "Release artifacts in build/Release/"
+
+sign-release: check-xcode
+	bash scripts/sign-release.sh

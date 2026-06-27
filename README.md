@@ -1,10 +1,22 @@
-# Razer Viper Control
+<p align="center">
+  <img src="docs/icon.png" alt="Razer Viper Control icon" width="128" height="128">
+</p>
 
-Native macOS menu bar app for the **Razer Viper V3 HyperSpeed** (`1532:00B8`). Configure DPI, polling rate, profiles, and software input remapping without Razer Synapse.
+<h1 align="center">Razer Viper Control</h1>
 
-**macOS 13+** · **Apple Silicon (arm64)** · **Swift 5.9**
+<p align="center">
+  Native macOS menu bar app for the <strong>Razer Viper V3 HyperSpeed</strong> (<code>1532:00B8</code>)
+</p>
 
-> Community project — not affiliated with or endorsed by Razer Inc. Protocol behavior is based on [OpenRazer](https://github.com/openrazer/openrazer) documentation, implemented as fresh Swift over user-space `IOHID` feature reports.
+<p align="center">
+  <strong>macOS 13+</strong> · <strong>Apple Silicon (arm64)</strong> · <strong>Swift 5.9</strong> · <strong>MIT License</strong>
+</p>
+
+<p align="center">
+  Configure DPI, polling rate, profiles, and software input remapping — without Razer Synapse.
+</p>
+
+> **Disclaimer:** Community project — not affiliated with or endorsed by Razer Inc. Protocol behavior is based on [OpenRazer](https://github.com/openrazer/openrazer) documentation, implemented as fresh Swift over user-space `IOHID` feature reports.
 
 ---
 
@@ -38,15 +50,54 @@ Get the latest release from **[GitHub Releases](https://github.com/WXK-AI/razer-
 ## Install (DMG)
 
 1. Download `RazerMenuBarApp-macOS.dmg` from [Releases](https://github.com/WXK-AI/razer-viper-control/releases) and open it.
-2. Drag **RazerMenuBarApp** into **Applications**.
-3. **First launch:** right-click the app → **Open** (bypasses Gatekeeper for ad-hoc signed builds).
-4. Click the menu bar icon → **Settings…** and grant permissions when prompted (see below).
-5. Connect your mouse, then click **Apply Profile** or enable **Auto-reapply profile on launch/reconnect**.
+2. Drag **RazerMenuBarApp** to the **Applications** folder (shortcut on the right).
+3. Eject the disk image.
+4. Open **Applications** and launch **RazerMenuBarApp**.
+5. Grant **Input Monitoring** and **Accessibility** when prompted (Settings → Diagnostics has shortcuts).
+
+### First launch and Gatekeeper
+
+GitHub CI builds are **ad-hoc signed** (not notarized). macOS may block the first launch:
+
+- **Right-click** the app → **Open** → **Open** again, or
+- **System Settings → Privacy & Security** → **Open Anyway**
+
+After the first successful launch, double-click works normally.
 
 ### Install (zip)
 
 1. Download `RazerMenuBarApp-macOS.zip`, unzip, move **RazerMenuBarApp.app** to **Applications**.
-2. Follow steps 3–5 above.
+2. Follow the Gatekeeper and permission steps above.
+
+---
+
+## Sign and notarize yourself (no Gatekeeper warning)
+
+You **can** sign the app and DMG locally with an [Apple Developer Program](https://developer.apple.com/programs/) membership ($99/year). This removes the “unidentified developer” warning for you and anyone you distribute the signed build to (after notarization).
+
+```bash
+# One-time: install your Developer ID Application certificate in Keychain Access.
+
+export DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)"
+export APPLE_ID="you@example.com"
+export APPLE_TEAM_ID="XXXXXXXXXX"
+export APPLE_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
+
+bash scripts/sign-release.sh
+# Produces a signed + notarized build/Release/RazerMenuBarApp-macOS.dmg
+```
+
+The script:
+
+1. Builds a Release `.app`
+2. Signs the app with **Developer ID Application** + hardened runtime
+3. Packages the DMG with drag-to-Applications layout
+4. Signs the DMG
+5. Submits to Apple **notarization** and staples the ticket
+
+Upload that DMG to your own release or share directly — users can drag to Applications and open without right-click workarounds.
+
+See [`scripts/sign-release.sh`](scripts/sign-release.sh) for the full flow.
 
 ---
 
@@ -56,7 +107,7 @@ Get the latest release from **[GitHub Releases](https://github.com/WXK-AI/razer-
 2. Open **Settings…** from the menu bar (⌘,).
 3. On the **Profile** tab, set DPI stages and polling rate, then click **Apply Profile**.
 4. On **Buttons** / **Wheel**, configure remaps as needed; enable **Enable software remapper**.
-5. If remapping is active, grant **Input Monitoring** and **Accessibility** (Diagnostics tab has shortcuts).
+5. If remapping is active, grant **Input Monitoring** and **Accessibility**.
 
 ---
 
@@ -67,7 +118,7 @@ Get the latest release from **[GitHub Releases](https://github.com/WXK-AI/razer-
 | **Input Monitoring** | Read HID feature reports to apply DPI/polling and run diagnostics |
 | **Accessibility** | Software button/scroll remapping via event tap |
 
-Open **System Settings → Privacy & Security** and allow **RazerMenuBarApp** for both. The app surfaces shortcuts when permission errors are detected.
+Open **System Settings → Privacy & Security** and allow **RazerMenuBarApp** for both.
 
 ---
 
@@ -77,7 +128,7 @@ Stored locally at:
 
 `~/Library/Application Support/RazerMenuBarApp/profiles-1532:00B8.json`
 
-Each profile includes: name, DPI stages, active stage, polling rate, button mappings, wheel settings, remapper toggle, and auto-reapply flag. Profiles are authoritative on disk in v1; there is no onboard-memory save UI.
+Each profile includes: name, DPI stages, active stage, polling rate, button mappings, wheel settings, remapper toggle, and auto-reapply flag.
 
 ---
 
@@ -87,33 +138,19 @@ Each profile includes: name, DPI stages, active stage, polling rate, button mapp
 chmod +x RazerProbeCLI
 ./RazerProbeCLI list
 ./RazerProbeCLI battery
-./RazerProbeCLI charging
-./RazerProbeCLI dpi
-./RazerProbeCLI stages
-./RazerProbeCLI polling
-./RazerProbeCLI wheel
+./RazerProbeCLI integration 1600 500
 ./RazerProbeCLI wheel-probe
 ./RazerProbeCLI input-capture 15
-./RazerProbeCLI integration 1600 500
 ```
-
-`input-capture` requires **Input Monitoring**. `integration` temporarily sets DPI and polling, then restores prior values.
 
 ---
 
 ## Build from source
 
-### Requirements
-
-- macOS 13+
-- **Full Xcode** (App Store) for `RazerMenuBarApp` and unit tests
-- Swift Command Line Tools suffice for `RazerCore` + `RazerProbeCLI` only
-
 ### Core + CLI
 
 ```bash
 swift build
-swift run RazerProbeCLI list
 swift test --disable-sandbox
 ```
 
@@ -121,18 +158,9 @@ swift test --disable-sandbox
 
 ```bash
 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-make xcode        # build Debug app
-make xcode-run    # launch built app
-make test         # unit tests (requires Xcode)
-```
-
-Or open `RazerViperControl.xcodeproj` in Xcode and run the **RazerMenuBarApp** scheme.
-
-### Local release + DMG
-
-```bash
-make release-dmg
-# artifacts in build/Release/
+make xcode
+make test
+make release-dmg    # unsigned release + DMG in build/Release/
 ```
 
 ---
@@ -141,34 +169,33 @@ make release-dmg
 
 | Path | Purpose |
 |------|---------|
-| `Sources/RazerCore/` | HID discovery, 90-byte report codec, command client, remapper, profiles |
-| `RazerMenuBarApp/` | SwiftUI menu bar app and settings UI |
-| `Sources/RazerProbeCLI/` | Command-line probe and integration tool |
-| `scripts/` | CI release build and DMG packaging |
-| `Tests/RazerCoreTests/` | Unit tests |
-| `design/` | App icon source artwork |
+| `Sources/RazerCore/` | HID, remapper, profiles |
+| `RazerMenuBarApp/` | Menu bar app + settings UI |
+| `Sources/RazerProbeCLI/` | CLI probe tool |
+| `scripts/` | Release build, DMG packaging, optional signing |
+| `design/` | Icon and DMG artwork sources |
+| `docs/` | README assets |
 
 ---
 
 ## Scope and limitations
 
-- **Supported device:** Razer Viper V3 HyperSpeed (`1532:00B8`) only in v1
-- **Hardware wheel modes** (scroll mode, acceleration, smart reel) are probed but not supported on this mouse
-- **No** RGB, onboard profile save, DriverKit, or Mac App Store distribution
-- **Signing:** releases are ad-hoc signed; first launch requires right-click → Open
-- **Platform:** CI builds **arm64** only; Intel Macs are not built in CI yet
-- Transaction ID `0x1F`, ~60 ms response wait for feature reports
+- **Device:** Razer Viper V3 HyperSpeed (`1532:00B8`) only in v1
+- **No** RGB, onboard profile save, or Mac App Store distribution
+- **CI builds:** ad-hoc signed, arm64 only
+- **Unofficial:** not affiliated with Razer Inc.
 
 ---
 
 ## Credits
 
-- [OpenRazer](https://github.com/openrazer/openrazer) — device protocol and report layout
-- [Viper V3 HyperSpeed support PR](https://github.com/openrazer/openrazer/pull/2149)
-- Packet layout: `driver/razercommon.h` · Command builders: `driver/razerchromacommon.c`
+- [OpenRazer](https://github.com/openrazer/openrazer) — device protocol
+- [Viper V3 HyperSpeed PR](https://github.com/openrazer/openrazer/pull/2149)
 
 ---
 
 ## License
 
-No license file is bundled yet. Treat as source-available community software until a license is added.
+[MIT License](LICENSE) — Copyright (c) 2026 WXK-AI.
+
+See [LICENSE](LICENSE) for full terms.
