@@ -3,12 +3,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/build/Release"
-APP="$OUT/RazerMenuBarApp.app"
+
+# Optional args: $1 = path to .app to package, $2 = output DMG path.
+APP="${1:-$OUT/RazerMenuBarApp.app}"
+DMG="${2:-$OUT/RazerMenuBarApp-macOS.dmg}"
 STAGING="$OUT/dmg-staging"
 DMG_RW="$OUT/RazerMenuBarApp-rw.dmg"
-DMG="$OUT/RazerMenuBarApp-macOS.dmg"
 VOLUME_NAME="Razer Viper Control"
 BACKGROUND="$ROOT/design/dmg-background.png"
+
+mkdir -p "$OUT"
 
 if [ ! -d "$APP" ]; then
   echo "error: app bundle not found at $APP (run scripts/ci-release-build.sh first)" >&2
