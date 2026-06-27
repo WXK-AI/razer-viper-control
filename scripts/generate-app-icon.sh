@@ -1,5 +1,14 @@
 #!/bin/bash
-# Generate a full-bleed flat macOS app icon (no letterboxing, no black bars).
+# Generate a macOS app icon that matches the system squircle shape.
+#
+# macOS (unlike iOS) does NOT mask app icons — the shape must be baked into
+# the asset. Apple's icon grid (Big Sur and later):
+#   - 1024x1024 canvas
+#   - 824x824 rounded body centered, leaving 100px gutter on all sides
+#   - The corner is a CONTINUOUS-CURVATURE squircle (superellipse), not a
+#     plain rounded rectangle. A simple rounded rect looks visibly wrong next
+#     to real apps, so we generate a true superellipse mask here.
+#   - Official drop shadow: 28px blur, +12px Y offset, black @ 50% opacity.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,35 +20,68 @@ if ! command -v magick >/dev/null 2>&1; then
   echo "error: ImageMagick (magick) is required" >&2
   exit 1
 fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: python3 is required" >&2
+  exit 1
+fi
 
 mkdir -p "$OUT_DIR" "$ROOT/design"
 
-# macOS icon spec:
-#   - 1024x1024 square, NO pre-rounded corners (macOS applies squircle ~200px radius)
-#   - NO transparency; every pixel opaque
-#   - Safe zone: keep content within ~80–944px (avoid outer 8%)
-#   - Main element should fill 65–75% canvas height for visual weight
-#   - Rich gradient background; flat single color looks unfinished
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
 BODY='#EAE9EE'     # near-white mouse body
 GREEN='#34C759'    # Apple system green – scroll wheel accent
 SIDE='#D0CED6'     # slightly muted – side buttons
 
-# Gradient background: dark forest green (top) to near-black (bottom)
-magick -size ${SIZE}x${SIZE} gradient:"#1A3028-#0D1A14" /tmp/_icon_bg.png
+# 1) Artwork on a full 1024 canvas. Gradient fills the whole canvas; the
+#    squircle mask (step 3) clips it to the 824 body. Mouse fills ~71% of body.
+magick -size ${SIZE}x${SIZE} gradient:"#1A3028-#0D1A14" \
+  \( -size ${SIZE}x${SIZE} xc:none -fill "$BODY"  -draw "roundrectangle 342,219 682,804 150,150" \) -composite \
+  \( -size ${SIZE}x${SIZE} xc:none -fill "$GREEN" -draw "roundrectangle 447,350 577,408 22,22"    \) -composite \
+  \( -size ${SIZE}x${SIZE} xc:none -fill "$SIDE"  -draw "roundrectangle 352,420 392,500 9,9"      \) -composite \
+  \( -size ${SIZE}x${SIZE} xc:none -fill "$SIDE"  -draw "roundrectangle 352,530 392,610 9,9"      \) -composite \
+  "$TMP/art.png"
 
-# Mouse body: 432px wide × 730px tall, centered – fills ~71% of canvas height
-# roundrectangle x1,y1 x2,y2 rx,ry
-magick /tmp/_icon_bg.png \
-  \( -size ${SIZE}x${SIZE} xc:none -fill "$BODY"  -draw "roundrectangle 296,147 728,877 190,190" \) -composite \
-  \( -size ${SIZE}x${SIZE} xc:none -fill "$GREEN"  -draw "roundrectangle 432,310 592,380 24,24"  \) -composite \
-  \( -size ${SIZE}x${SIZE} xc:none -fill "$SIDE"   -draw "roundrectangle 296,380 340,480 10,10"  \) -composite \
-  \( -size ${SIZE}x${SIZE} xc:none -fill "$SIDE"   -draw "roundrectangle 296,510 340,610 10,10"  \) -composite \
-  "$SRC"
+# 2) Generate a continuous-curvature squircle mask (superellipse, n=5).
+#    824 body centered in 1024 -> half-size a=412, center 512.
+python3 - "$TMP/mask.svg" <<'PY'
+import sys, math
+out = sys.argv[1]
+SIZE, BODY, N, STEPS = 1024, 824, 5.0, 1440
+cx = cy = SIZE / 2.0
+a = BODY / 2.0
+exp = 2.0 / N
+pts = []
+for i in range(STEPS):
+    t = 2.0 * math.pi * i / STEPS
+    ct, st = math.cos(t), math.sin(t)
+    x = cx + math.copysign(a * (abs(ct) ** exp), ct)
+    y = cy + math.copysign(a * (abs(st) ** exp), st)
+    pts.append(f"{x:.3f},{y:.3f}")
+path = "M " + " L ".join(pts) + " Z"
+with open(out, "w") as f:
+    f.write(
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{SIZE}" height="{SIZE}">'
+        f'<path d="{path}" fill="#ffffff"/></svg>'
+    )
+PY
+magick -background none "$TMP/mask.svg" -resize ${SIZE}x${SIZE} "$TMP/mask.png"
 
-rm -f /tmp/_icon_bg.png
+# 3) Clip artwork to the squircle (transparent outside the body).
+magick "$TMP/art.png" "$TMP/mask.png" \
+  -alpha off -compose CopyOpacity -composite "$TMP/shaped.png"
 
+# 4) Apply Apple's drop shadow: black, 50% opacity, 28px blur, +12px Y.
+magick "$TMP/shaped.png" \
+  \( +clone -background black -shadow 50x28+0+12 \) \
+  +swap -background none -layers merge +repage \
+  -gravity center -extent ${SIZE}x${SIZE} "$SRC"
+
+# 5) Export all required sizes (default filter — Lanczos is slow on some hosts).
 for px in 16 32 64 128 256 512 1024; do
-  magick "$SRC" -filter Lanczos -resize ${px}x${px} "$OUT_DIR/icon_${px}x${px}.png"
+  magick "$SRC" -resize ${px}x${px} "$OUT_DIR/icon_${px}x${px}.png"
 done
+magick "$SRC" -resize 128x128 "$ROOT/docs/icon.png"
 
-echo "Generated icon set in $OUT_DIR"
+echo "Generated squircle icon set in $OUT_DIR"
