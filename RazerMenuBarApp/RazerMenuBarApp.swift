@@ -8,7 +8,18 @@ struct RazerMenuBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContent(model: model, openSettings: { openWindow(id: "settings") })
+            MenuBarContent(model: model, openSettings: {
+                openWindow(id: "settings")
+                // LSUIElement apps don't auto-activate, so the Settings window
+                // would otherwise open behind other apps. Bring it to front.
+                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.async {
+                    if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "settings" }) {
+                        window.makeKeyAndOrderFront(nil)
+                        window.orderFrontRegardless()
+                    }
+                }
+            })
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: model.isConnected ? "computermouse.fill" : "computermouse")
