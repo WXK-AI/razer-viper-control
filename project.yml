@@ -32,11 +32,6 @@ targets:
       ENABLE_DEBUG_DYLIB: NO
       MARKETING_VERSION: "1.0.0"
       CURRENT_PROJECT_VERSION: "1"
-    postbuildScripts:
-      - name: Strip extended attributes before code sign
-        script: |
-          xattr -cr "${TARGET_BUILD_DIR}/${WRAPPER_NAME}" 2>/dev/null || true
-        basedOnDependencyAnalysis: false
 schemes:
   RazerMenuBarApp:
     build:

@@ -30,7 +30,13 @@ public enum PhysicalControl: String, Codable, CaseIterable, Sendable, Hashable, 
     }
 
     public static func defaultButtonMappings() -> [PhysicalControl: ButtonAction] {
-        Dictionary(uniqueKeysWithValues: allCases.map { ($0, .passthrough) })
+        Dictionary(uniqueKeysWithValues: assignableControls.map { ($0, .passthrough) })
+    }
+
+    /// Controls shown in the Buttons UI. `.middleClick` is omitted because it shares
+    /// physical button 2 with `.wheelClick`; legacy `.middleClick` mappings still resolve.
+    public static var assignableControls: [PhysicalControl] {
+        allCases.filter { $0 != .middleClick }
     }
 }
 
@@ -98,29 +104,10 @@ public struct KeyboardShortcut: Codable, Equatable, Sendable, Hashable {
 
     public var displayName: String {
         var parts: [String] = []
-        let flags = modifierFlags
-        if flags & 0x0004_0000 != 0 { parts.append("⌃") }
-        if flags & 0x0008_0000 != 0 { parts.append("⌥") }
-        if flags & 0x0010_0000 != 0 { parts.append("⇧") }
-        if flags & 0x0010_0000 != 0 && flags & 0x0004_0000 != 0 { /* shift already */ }
-        if flags & 0x0001_0000 != 0 || flags & 0x001C_0000 != 0 && flags & 0x0004_0000 != 0 {
-            if flags & 0x0010_0000 == 0 && flags & 0x0008_0000 == 0 && flags & 0x0004_0000 != 0 {
-                // control only handled above
-            }
-        }
-        if flags & 0x0010_0000 != 0 { /* shift */ }
-        if flags & 0x0001_0000 != 0 { parts.append("⌘") }
-        if flags & 0x0004_0000 != 0 && !parts.contains("⌃") { parts.append("⌃") }
-        if flags & 0x0008_0000 != 0 && !parts.contains("⌥") { parts.append("⌥") }
-        if flags & 0x0010_0000 != 0 && !parts.contains("⇧") { parts.append("⇧") }
-        if flags & 0x0001_0000 != 0 && !parts.contains("⌘") { parts.append("⌘") }
-
-        // Simpler rebuild
-        parts = []
         if modifierFlags & 0x0004_0000 != 0 { parts.append("⌃") }
         if modifierFlags & 0x0008_0000 != 0 { parts.append("⌥") }
-        if modifierFlags & 0x0010_0000 != 0 { parts.append("⇧") }
-        if modifierFlags & 0x0001_0000 != 0 { parts.append("⌘") }
+        if modifierFlags & 0x0002_0000 != 0 { parts.append("⇧") }
+        if modifierFlags & 0x0010_0000 != 0 { parts.append("⌘") }
         parts.append(KeyCodeNames.name(for: keyCode))
         return parts.joined()
     }
@@ -265,7 +252,7 @@ public enum CapabilityResult: Equatable, Sendable {
         switch self {
         case .supported: return "Supported"
         case .notSupported: return "Not supported on this device"
-        case .unknown: return "Unknown"
+        case .unknown: return "Unknown (probe error)"
         }
     }
 }
@@ -289,12 +276,12 @@ public struct WheelHardwareCapability: Equatable, Sendable {
 // MARK: - Validation
 
 public enum ButtonMappingWarning: Equatable, Sendable {
-    case bothPrimaryClicksDisabledOrRemapped
+    case primaryClickUnavailable
 
     public var message: String {
         switch self {
-        case .bothPrimaryClicksDisabledOrRemapped:
-            return "Both primary clicks are disabled or remapped. You may lose normal clicking until you pause the remapper or use the emergency shortcut (⌃⌥⌘R)."
+        case .primaryClickUnavailable:
+            return "A primary click is unavailable. Keep at least one left-click and one right-click action, or use the emergency shortcut (⌃⌥⌘R) to pause the remapper."
         }
     }
 }
@@ -302,18 +289,25 @@ public enum ButtonMappingWarning: Equatable, Sendable {
 public enum ProfileMappingValidator {
     public static func warnings(for profile: MouseProfile) -> [ButtonMappingWarning] {
         var warnings: [ButtonMappingWarning] = []
-        let left = profile.buttonMappings[.leftClick] ?? .passthrough
-        let right = profile.buttonMappings[.rightClick] ?? .passthrough
-        if !isPrimaryClickSafe(left), !isPrimaryClickSafe(right) {
-            warnings.append(.bothPrimaryClicksDisabledOrRemapped)
+        let mappings = profile.buttonMappings
+        let hasLeftClick = PhysicalControl.allCases.contains { control in
+            emits(.left, from: control, action: mappings[control] ?? .passthrough)
+        }
+        let hasRightClick = PhysicalControl.allCases.contains { control in
+            emits(.right, from: control, action: mappings[control] ?? .passthrough)
+        }
+        if !hasLeftClick || !hasRightClick {
+            warnings.append(.primaryClickUnavailable)
         }
         return warnings
     }
 
-    private static func isPrimaryClickSafe(_ action: ButtonAction) -> Bool {
+    private static func emits(_ target: MouseButtonTarget, from control: PhysicalControl, action: ButtonAction) -> Bool {
         switch action {
-        case .passthrough, .mouseButton(.left), .mouseButton(.right):
-            return true
+        case .passthrough:
+            return (control == .leftClick && target == .left) || (control == .rightClick && target == .right)
+        case let .mouseButton(mappedTarget):
+            return mappedTarget == target
         default:
             return false
         }

@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     @Published var wheelCapability = WheelHardwareCapability()
     @Published var permissions = PermissionStatus.current()
     @Published var captureSession = InputCaptureSession()
+    @Published var captureEntries: [InputCaptureSession.Entry] = []
     @Published var diagnosticsCaptureEnabled = false
     @Published var wheelProbeSummary = "Not probed yet"
     @Published var shortcutCaptureControl: PhysicalControl?
@@ -28,8 +29,23 @@ final class AppModel: ObservableObject {
     private let session = DeviceSession()
     private let profileStore = ProfileStore()
     private let remapper = InputRemapper()
+    private let hidQueue = DispatchQueue(label: "com.razermenubar.hid", qos: .utility)
     private var monitorTimer: Timer?
     private var wasConnected = false
+    private var isRefreshInFlight = false
+    private var autoApplyState = AutoApplyCoordinator.State()
+    private var saveWorkItem: DispatchWorkItem?
+    private let saveDebounceInterval: TimeInterval = 0.4
+
+    private struct DeviceRefreshSnapshot {
+        let state: DeviceState?
+        let probeReport: WheelCapabilityProbe.ProbeReport?
+        let becameConnected: Bool
+        let commandError: RazerCommandError?
+        let disconnected: Bool
+        let applyWarning: String?
+        let profileAppliedSuccessfully: Bool
+    }
 
     init() {
         bundle = profileStore.load()
@@ -41,6 +57,7 @@ final class AppModel: ObservableObject {
             launchAtLogin = LaunchAtLoginManager.isEnabled
         }
         configureRemapperCallbacks()
+        configureCaptureSession()
         refreshProfileSummary()
         refreshMappingWarning()
         startMonitoring()
@@ -49,6 +66,7 @@ final class AppModel: ObservableObject {
 
     deinit {
         monitorTimer?.invalidate()
+        saveWorkItem?.cancel()
         remapper.stop()
     }
 
@@ -73,10 +91,110 @@ final class AppModel: ObservableObject {
 
     func refreshDeviceState() {
         refreshPermissions()
-        do {
-            let client = try session.connect()
-            let state = try client.readState()
-            let becameConnected = !wasConnected
+        guard !isRefreshInFlight else { return }
+        isRefreshInFlight = true
+
+        let wasConnectedBefore = wasConnected
+        let selectedProfile = selectedProfile
+        let shouldAutoApply = selectedProfile?.autoReapplyEnabled ?? false
+        let autoApplySnapshot = autoApplyState
+
+        hidQueue.async { [weak self] in
+            guard let self else { return }
+
+            var snapshot: DeviceRefreshSnapshot
+            do {
+                let client = try self.session.connect()
+                let state = try client.readState()
+                let becameConnected = !wasConnectedBefore
+                let probeReport = becameConnected ? WheelCapabilityProbe.probe(client: client) : nil
+
+                var applyState = autoApplySnapshot
+                if becameConnected && shouldAutoApply {
+                    AutoApplyCoordinator.onConnect(autoReapplyEnabled: true, state: &applyState)
+                }
+
+                var applyWarning: String?
+                var profileAppliedSuccessfully = false
+                if AutoApplyCoordinator.shouldAttemptApply(
+                    state: applyState,
+                    autoReapplyEnabled: shouldAutoApply,
+                    hasProfile: selectedProfile != nil
+                ),
+                   let profile = selectedProfile {
+                    do {
+                        try self.session.apply(
+                            profile: profile,
+                            to: client,
+                            wheelCapability: probeReport?.capability ?? .init()
+                        )
+                        profileAppliedSuccessfully = true
+                    } catch {
+                        applyWarning = error.localizedDescription
+                    }
+                }
+
+                snapshot = DeviceRefreshSnapshot(
+                    state: state,
+                    probeReport: probeReport,
+                    becameConnected: becameConnected,
+                    commandError: nil,
+                    disconnected: false,
+                    applyWarning: applyWarning,
+                    profileAppliedSuccessfully: profileAppliedSuccessfully
+                )
+            } catch let error as RazerCommandError {
+                snapshot = DeviceRefreshSnapshot(
+                    state: nil,
+                    probeReport: nil,
+                    becameConnected: false,
+                    commandError: error,
+                    disconnected: true,
+                    applyWarning: nil,
+                    profileAppliedSuccessfully: false
+                )
+            } catch {
+                snapshot = DeviceRefreshSnapshot(
+                    state: nil,
+                    probeReport: nil,
+                    becameConnected: false,
+                    commandError: nil,
+                    disconnected: true,
+                    applyWarning: nil,
+                    profileAppliedSuccessfully: false
+                )
+            }
+
+            Task { @MainActor in
+                self.isRefreshInFlight = false
+                self.applyRefreshSnapshot(snapshot, shouldAutoApply: shouldAutoApply)
+            }
+        }
+    }
+
+    private func applyRefreshSnapshot(_ snapshot: DeviceRefreshSnapshot, shouldAutoApply: Bool) {
+        if snapshot.disconnected {
+            AutoApplyCoordinator.onDisconnect(&autoApplyState)
+            wasConnected = false
+            isConnected = false
+            if let error = snapshot.commandError {
+                statusMessage = error.localizedDescription
+                if error.isPermissionIssue || error.isConflictIssue {
+                    warningMessage = error.localizedDescription
+                }
+            } else {
+                statusMessage = "Disconnected"
+            }
+        } else if let state = snapshot.state {
+            if snapshot.becameConnected {
+                AutoApplyCoordinator.onConnect(autoReapplyEnabled: shouldAutoApply, state: &autoApplyState)
+            }
+            if snapshot.profileAppliedSuccessfully {
+                AutoApplyCoordinator.onApplySuccess(&autoApplyState)
+            } else if snapshot.applyWarning != nil {
+                AutoApplyCoordinator.onApplyFailure(&autoApplyState)
+            }
+
             wasConnected = true
             isConnected = true
             batteryPercent = state.batteryPercent
@@ -85,51 +203,53 @@ final class AppModel: ObservableObject {
             pollingRateHz = state.pollingRateHz
             warningMessage = nil
             statusMessage = "Connected"
-            wheelCapability = WheelCapabilityProbe.probe(client: client)
-
-            if becameConnected,
-               let profile = selectedProfile,
-               profile.autoReapplyEnabled {
-                try session.apply(profile: profile, to: client, wheelCapability: wheelCapability)
+            if let applyWarning = snapshot.applyWarning {
+                warningMessage = "Auto-apply failed: \(applyWarning)"
+                statusMessage = "Connected (profile not applied)"
+            }
+            if let probeReport = snapshot.probeReport {
+                wheelCapability = probeReport.capability
+                wheelProbeSummary = probeReport.summary
+            }
+            if snapshot.profileAppliedSuccessfully {
                 refreshProfileSummary()
             }
-        } catch let error as RazerCommandError {
-            wasConnected = false
-            isConnected = false
-            statusMessage = error.localizedDescription
-            if error.isPermissionIssue || error.isConflictIssue {
-                warningMessage = error.localizedDescription
-            }
-        } catch {
-            wasConnected = false
-            isConnected = false
-            statusMessage = "Disconnected"
         }
         syncRemapper()
     }
 
     func applySelectedProfile() {
         guard let profile = selectedProfile else { return }
-        do {
-            let client = try session.connect()
-            try session.apply(profile: profile, to: client, wheelCapability: wheelCapability)
-            activeDPI = profile.activeDPI
-            pollingRateHz = profile.pollingRateHz
-            statusMessage = "Applied profile \(profile.name)"
-            warningMessage = nil
-        } catch {
-            statusMessage = error.localizedDescription
-            if let commandError = error as? RazerCommandError,
-               commandError.isPermissionIssue || commandError.isConflictIssue {
-                warningMessage = commandError.localizedDescription
+        let capability = wheelCapability
+        hidQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let client = try self.session.connect()
+                try self.session.apply(profile: profile, to: client, wheelCapability: capability)
+                Task { @MainActor in
+                    self.activeDPI = profile.activeDPI
+                    self.pollingRateHz = profile.pollingRateHz
+                    self.statusMessage = "Applied profile \(profile.name)"
+                    self.warningMessage = nil
+                    AutoApplyCoordinator.onApplySuccess(&self.autoApplyState)
+                    self.syncRemapper()
+                }
+            } catch {
+                Task { @MainActor in
+                    self.statusMessage = error.localizedDescription
+                    if let commandError = error as? RazerCommandError,
+                       commandError.isPermissionIssue || commandError.isConflictIssue {
+                        self.warningMessage = commandError.localizedDescription
+                    }
+                    self.syncRemapper()
+                }
             }
         }
-        syncRemapper()
     }
 
     func selectProfile(_ profile: MouseProfile) {
         bundle.selectedProfileID = profile.id
-        saveBundle()
+        flushSaveBundle()
         refreshProfileSummary()
         applySelectedProfile()
         syncRemapper()
@@ -138,7 +258,7 @@ final class AppModel: ObservableObject {
     func updateProfile(_ profile: MouseProfile) {
         guard let index = bundle.profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         bundle.profiles[index] = profile
-        saveBundle()
+        scheduleSaveBundle()
         refreshProfileSummary()
         refreshMappingWarning()
         if bundle.selectedProfileID == profile.id {
@@ -157,7 +277,7 @@ final class AppModel: ObservableObject {
         )
         bundle.profiles.append(profile)
         bundle.selectedProfileID = profile.id
-        saveBundle()
+        flushSaveBundle()
         refreshProfileSummary()
         syncRemapper()
     }
@@ -166,7 +286,7 @@ final class AppModel: ObservableObject {
         guard bundle.profiles.count > 1, let selected = selectedProfile else { return }
         bundle.profiles.removeAll { $0.id == selected.id }
         bundle.selectedProfileID = bundle.profiles.first?.id
-        saveBundle()
+        flushSaveBundle()
         refreshProfileSummary()
         syncRemapper()
     }
@@ -195,6 +315,7 @@ final class AppModel: ObservableObject {
         diagnosticsCaptureEnabled = enabled
         if enabled {
             captureSession.clear()
+            captureEntries = []
             do {
                 try captureSession.start()
             } catch {
@@ -203,21 +324,35 @@ final class AppModel: ObservableObject {
             }
         } else {
             captureSession.stop()
+            captureEntries = captureSession.snapshotEntries()
         }
     }
 
     func probeWheelHardware() {
-        do {
-            let client = try session.connect()
-            wheelCapability = WheelCapabilityProbe.probe(client: client)
-            let state = try client.readWheelHardwareState()
-            wheelProbeSummary = """
-            scroll mode: \(wheelCapability.scrollMode.displayName) \(state.scrollMode?.displayName ?? "")
-            acceleration: \(wheelCapability.acceleration.displayName) \(state.accelerationEnabled.map { $0 ? "on" : "off" } ?? "")
-            smart reel: \(wheelCapability.smartReel.displayName) \(state.smartReelEnabled.map { $0 ? "on" : "off" } ?? "")
-            """
-        } catch {
-            wheelProbeSummary = error.localizedDescription
+        hidQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let client = try self.session.connect()
+                let probeReport = WheelCapabilityProbe.probe(client: client)
+                let readback = client.readWheelHardwareState(capability: probeReport.capability)
+                let summary = WheelCapabilityProbe.summary(probeReport: probeReport, readback: readback)
+                Task { @MainActor in
+                    self.wheelCapability = probeReport.capability
+                    self.wheelProbeSummary = summary
+                }
+            } catch {
+                Task { @MainActor in
+                    self.wheelProbeSummary = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func configureCaptureSession() {
+        captureSession.onEntriesChanged = { [weak self] entries in
+            Task { @MainActor in
+                self?.captureEntries = entries
+            }
         }
     }
 
@@ -310,7 +445,22 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func saveBundle() {
+    func flushPendingSave() {
+        flushSaveBundle()
+    }
+
+    private func scheduleSaveBundle() {
+        saveWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.flushSaveBundle()
+        }
+        saveWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + saveDebounceInterval, execute: work)
+    }
+
+    private func flushSaveBundle() {
+        saveWorkItem?.cancel()
+        saveWorkItem = nil
         do {
             try profileStore.save(bundle)
         } catch {

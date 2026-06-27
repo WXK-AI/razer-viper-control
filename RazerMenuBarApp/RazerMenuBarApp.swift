@@ -73,6 +73,7 @@ private struct MenuBarContent: View {
         Divider()
 
         Button("Quit") {
+            model.flushPendingSave()
             NSApplication.shared.terminate(nil)
         }
         .keyboardShortcut("q")

@@ -180,16 +180,16 @@ public final class RazerCommandClient {
         try sendAllowingUnsupported(.getScrollSmartReel())
     }
 
-    public func setScrollMode(_ mode: ScrollWheelMode) -> CommandSendResult {
-        (try? sendAllowingUnsupported(.setScrollMode(mode))) ?? .notSupported
+    public func setScrollMode(_ mode: ScrollWheelMode) throws -> CommandSendResult {
+        try sendAllowingUnsupported(.setScrollMode(mode))
     }
 
-    public func setScrollAcceleration(_ enabled: Bool) -> CommandSendResult {
-        (try? sendAllowingUnsupported(.setScrollAcceleration(enabled))) ?? .notSupported
+    public func setScrollAcceleration(_ enabled: Bool) throws -> CommandSendResult {
+        try sendAllowingUnsupported(.setScrollAcceleration(enabled))
     }
 
-    public func setScrollSmartReel(_ enabled: Bool) -> CommandSendResult {
-        (try? sendAllowingUnsupported(.setScrollSmartReel(enabled))) ?? .notSupported
+    public func setScrollSmartReel(_ enabled: Bool) throws -> CommandSendResult {
+        try sendAllowingUnsupported(.setScrollSmartReel(enabled))
     }
 
     public func readWheelHardwareState() throws -> HardwareWheelSettings {
@@ -213,6 +213,62 @@ public final class RazerCommandClient {
             break
         }
         return settings
+    }
+
+    public struct WheelHardwareReadback: Equatable, Sendable {
+        public var settings: HardwareWheelSettings
+        public var errors: [String]
+
+        public init(settings: HardwareWheelSettings = .init(), errors: [String] = []) {
+            self.settings = settings
+            self.errors = errors
+        }
+    }
+
+    public func readWheelHardwareState(capability: WheelHardwareCapability) -> WheelHardwareReadback {
+        var settings = HardwareWheelSettings()
+        var errors: [String] = []
+
+        if capability.scrollMode == .supported {
+            do {
+                switch try probeScrollMode() {
+                case let .success(report):
+                    settings.scrollMode = report.decodeScrollMode()
+                case .notSupported:
+                    break
+                }
+            } catch {
+                errors.append("scroll mode readback: \(error.localizedDescription)")
+            }
+        }
+
+        if capability.acceleration == .supported {
+            do {
+                switch try probeScrollAcceleration() {
+                case let .success(report):
+                    settings.accelerationEnabled = report.decodeBoolArgument()
+                case .notSupported:
+                    break
+                }
+            } catch {
+                errors.append("acceleration readback: \(error.localizedDescription)")
+            }
+        }
+
+        if capability.smartReel == .supported {
+            do {
+                switch try probeScrollSmartReel() {
+                case let .success(report):
+                    settings.smartReelEnabled = report.decodeBoolArgument()
+                case .notSupported:
+                    break
+                }
+            } catch {
+                errors.append("smart reel readback: \(error.localizedDescription)")
+            }
+        }
+
+        return WheelHardwareReadback(settings: settings, errors: errors)
     }
 
     private func performRoundTripAllowingUnsupported(_ request: RazerReport) throws -> CommandSendResult {

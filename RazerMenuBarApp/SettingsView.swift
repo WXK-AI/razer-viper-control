@@ -217,8 +217,8 @@ private struct ProfileTab: View {
 
 private struct ButtonsTab: View {
     @ObservedObject var model: AppModel
-    @State private var openAppPath = ""
     @State private var openURLString = "https://"
+    @State private var urlTargetControl: PhysicalControl = .leftClick
 
     var body: some View {
         ScrollView {
@@ -228,7 +228,7 @@ private struct ButtonsTab: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
 
-                    Table(PhysicalControl.allCases) {
+                    Table(PhysicalControl.assignableControls) {
                         TableColumn("Control") { control in
                             Text(control.displayName)
                         }
@@ -243,8 +243,34 @@ private struct ButtonsTab: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if let control = model.shortcutCaptureControl {
-                            Text("Capturing for \(control.displayName)… press a key combination.")
+                            Text("Capturing for \(control.displayName)… press a key combination (Esc to cancel).")
                                 .foregroundStyle(.blue)
+                        }
+                    }
+
+                    GroupBox("Open URL action") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Choose a control, enter an http(s) URL, then click Set URL.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("Target control", selection: $urlTargetControl) {
+                                ForEach(PhysicalControl.assignableControls, id: \.self) { control in
+                                    Text(control.displayName).tag(control)
+                                }
+                            }
+                            TextField("https://example.com", text: $openURLString)
+                                .textFieldStyle(.roundedBorder)
+                            HStack {
+                                Button("Set URL on selected control") {
+                                    assignOpenURL(control: urlTargetControl, profile: profile)
+                                }
+                                .disabled(ButtonActionValidator.validateOpenURL(openURLString) != nil)
+                                if let error = ButtonActionValidator.validateOpenURL(openURLString) {
+                                    Text(urlValidationMessage(error))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                     }
                 }
@@ -255,7 +281,7 @@ private struct ButtonsTab: View {
 
     @ViewBuilder
     private func actionPicker(control: PhysicalControl, profile: MouseProfile) -> some View {
-        let current = profile.buttonMappings[control] ?? .passthrough
+        let current = InputRemapperEngine.resolvedButtonAction(for: control, in: profile.buttonMappings)
         Menu(current.displayName) {
             Button("Default (passthrough)") { setAction(.passthrough, control: control, profile: profile) }
             Button("Disabled") { setAction(.disabled, control: control, profile: profile) }
@@ -267,9 +293,6 @@ private struct ButtonsTab: View {
             }
             Divider()
             Button("Keyboard Shortcut…") {
-                model.shortcutCaptureControl = control
-            }
-            Button("Capture Shortcut") {
                 model.shortcutCaptureControl = control
             }
             Divider()
@@ -287,15 +310,28 @@ private struct ButtonsTab: View {
                     setAction(.openApp(url.path), control: control, profile: profile)
                 }
             }
-            Button("Open URL…") {
-                setAction(.openURL(openURLString), control: control, profile: profile)
-            }
+        }
+    }
+
+    private func assignOpenURL(control: PhysicalControl, profile: MouseProfile) {
+        guard let normalized = ButtonActionValidator.normalizedOpenURL(openURLString) else { return }
+        setAction(.openURL(normalized), control: control, profile: profile)
+    }
+
+    private func urlValidationMessage(_ error: ButtonActionValidator.ValidationError) -> String {
+        switch error {
+        case .empty: return "Enter a URL."
+        case .invalidScheme: return "Use an http:// or https:// URL with a host."
+        case .missingHost: return "URL must include a host."
         }
     }
 
     private func setAction(_ action: ButtonAction, control: PhysicalControl, profile: MouseProfile) {
         var updated = profile
         updated.buttonMappings[control] = action
+        if control == .wheelClick {
+            updated.buttonMappings.removeValue(forKey: .middleClick)
+        }
         model.updateProfile(updated)
     }
 }
@@ -314,10 +350,17 @@ private struct ShortcutCaptureMonitor: View {
                 }
                 guard let control else { return }
                 monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    if event.keyCode == 53 {
+                        model.shortcutCaptureControl = nil
+                        return nil
+                    }
                     let flags = UInt64(event.modifierFlags.intersection([.command, .option, .control, .shift]).rawValue)
                     let shortcut = KeyboardShortcut(keyCode: UInt16(event.keyCode), modifierFlags: flags)
                     if var profile = model.selectedProfile {
                         profile.buttonMappings[control] = .keyboardShortcut(shortcut)
+                        if control == .wheelClick {
+                            profile.buttonMappings.removeValue(forKey: .middleClick)
+                        }
                         model.updateProfile(profile)
                     }
                     model.shortcutCaptureControl = nil
@@ -327,7 +370,9 @@ private struct ShortcutCaptureMonitor: View {
             .onDisappear {
                 if let monitor {
                     NSEvent.removeMonitor(monitor)
+                    self.monitor = nil
                 }
+                model.shortcutCaptureControl = nil
             }
     }
 }
@@ -510,8 +555,8 @@ private struct DiagnosticsTab: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        if !model.captureSession.entries.isEmpty {
-                            List(model.captureSession.entries.reversed()) { entry in
+                        if !model.captureEntries.isEmpty {
+                            List(model.captureEntries.reversed()) { entry in
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(entry.summary)
                                         .font(.system(.caption, design: .monospaced))

@@ -76,6 +76,16 @@ public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
         wheelSettings = .default
         remapperEnabled = true
     }
+
+    /// Folds legacy `.middleClick` mappings into `.wheelClick` and removes the alias key.
+    public mutating func migrateButton2Alias() {
+        let wheel = buttonMappings[.wheelClick] ?? .passthrough
+        let middle = buttonMappings[.middleClick] ?? .passthrough
+        if wheel == .passthrough, middle != .passthrough {
+            buttonMappings[.wheelClick] = middle
+        }
+        buttonMappings.removeValue(forKey: .middleClick)
+    }
 }
 
 public struct ProfileBundle: Codable, Equatable, Sendable {
@@ -124,8 +134,11 @@ public final class ProfileStore {
 
     public func load() -> ProfileBundle {
         guard let data = try? Data(contentsOf: fileURL),
-              let bundle = try? decoder.decode(ProfileBundle.self, from: data) else {
+              var bundle = try? decoder.decode(ProfileBundle.self, from: data) else {
             return defaultBundle()
+        }
+        for index in bundle.profiles.indices {
+            bundle.profiles[index].migrateButton2Alias()
         }
         return bundle
     }
@@ -158,14 +171,21 @@ public final class ProfileStore {
 
 public final class DeviceSession {
     private let discovery = HIDDeviceDiscovery()
+    private let lock = NSLock()
     private var device: IOHIDDevice?
     private var client: RazerCommandClient?
 
     public init() {}
 
-    public var isConnected: Bool { client != nil }
+    public var isConnected: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return client != nil
+    }
 
     public func connect() throws -> RazerCommandClient {
+        lock.lock()
+        defer { lock.unlock() }
         if let client { return client }
 
         guard let device = try discovery.findControlDevice() else {
@@ -186,6 +206,8 @@ public final class DeviceSession {
     }
 
     public func disconnect() {
+        lock.lock()
+        defer { lock.unlock() }
         client?.close()
         client = nil
         device = nil
@@ -208,32 +230,14 @@ public final class DeviceSession {
         to client: RazerCommandClient,
         capability: WheelHardwareCapability? = nil
     ) throws {
-        if let mode = settings.scrollMode {
-            if capability?.scrollMode != .notSupported {
-                switch client.setScrollMode(mode) {
-                case .notSupported: break
-                case let .success(report):
-                    _ = report
-                }
-            }
+        if let mode = settings.scrollMode, capability?.scrollMode != .notSupported {
+            _ = try client.setScrollMode(mode)
         }
-        if let enabled = settings.accelerationEnabled {
-            if capability?.acceleration != .notSupported {
-                switch client.setScrollAcceleration(enabled) {
-                case .notSupported: break
-                case let .success(report):
-                    _ = report
-                }
-            }
+        if let enabled = settings.accelerationEnabled, capability?.acceleration != .notSupported {
+            _ = try client.setScrollAcceleration(enabled)
         }
-        if let enabled = settings.smartReelEnabled {
-            if capability?.smartReel != .notSupported {
-                switch client.setScrollSmartReel(enabled) {
-                case .notSupported: break
-                case let .success(report):
-                    _ = report
-                }
-            }
+        if let enabled = settings.smartReelEnabled, capability?.smartReel != .notSupported {
+            _ = try client.setScrollSmartReel(enabled)
         }
     }
 }

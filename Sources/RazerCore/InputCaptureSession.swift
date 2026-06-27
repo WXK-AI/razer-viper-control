@@ -17,10 +17,12 @@ public final class InputCaptureSession: @unchecked Sendable {
         }
     }
 
+    public var onEntriesChanged: (([Entry]) -> Void)?
+
     public private(set) var isRunning = false
-    public private(set) var entries: [Entry] = []
 
     private let lock = NSLock()
+    private var entries: [Entry] = []
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private let maxEntries = 250
@@ -29,6 +31,12 @@ public final class InputCaptureSession: @unchecked Sendable {
 
     deinit {
         stop()
+    }
+
+    public func snapshotEntries() -> [Entry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries
     }
 
     public func start() throws {
@@ -81,7 +89,9 @@ public final class InputCaptureSession: @unchecked Sendable {
     public func clear() {
         lock.lock()
         entries.removeAll()
+        let snapshot = entries
         lock.unlock()
+        notifyEntriesChanged(snapshot)
     }
 
     private static let eventCallback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -107,7 +117,20 @@ public final class InputCaptureSession: @unchecked Sendable {
         if entries.count > maxEntries {
             entries.removeFirst(entries.count - maxEntries)
         }
+        let snapshot = entries
         lock.unlock()
+        notifyEntriesChanged(snapshot)
+    }
+
+    private func notifyEntriesChanged(_ snapshot: [Entry]) {
+        guard let onEntriesChanged else { return }
+        if Thread.isMainThread {
+            onEntriesChanged(snapshot)
+        } else {
+            DispatchQueue.main.async {
+                onEntriesChanged(snapshot)
+            }
+        }
     }
 
     private static func detectControl(type: CGEventType, event: CGEvent) -> PhysicalControl? {
@@ -118,7 +141,7 @@ public final class InputCaptureSession: @unchecked Sendable {
             return .rightClick
         case .otherMouseDown:
             switch event.getIntegerValueField(.mouseEventButtonNumber) {
-            case 2: return .middleClick
+            case 2: return .wheelClick
             case 3: return .sideButton1
             case 4: return .sideButton2
             case 5: return .dpiButton

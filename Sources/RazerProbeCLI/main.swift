@@ -169,34 +169,19 @@ struct RazerProbeCLI {
 
     private static func printWheel() throws {
         try withClient { client in
-            let capability = WheelCapabilityProbe.probe(client: client)
+            let report = WheelCapabilityProbe.probe(client: client)
             print("Wheel hardware capability:")
-            print(" scroll mode: \(capability.scrollMode.displayName)")
-            print(" acceleration: \(capability.acceleration.displayName)")
-            print(" smart reel: \(capability.smartReel.displayName)")
-
-            if capability.scrollMode == .supported {
-                let state = try client.readWheelHardwareState()
-                if let mode = state.scrollMode {
-                    print("Current scroll mode: \(mode.displayName)")
-                }
-                if let enabled = state.accelerationEnabled {
-                    print("Scroll acceleration: \(enabled ? "on" : "off")")
-                }
-                if let enabled = state.smartReelEnabled {
-                    print("Smart reel: \(enabled ? "on" : "off")")
-                }
-            }
+            let readback = client.readWheelHardwareState(capability: report.capability)
+            print(WheelCapabilityProbe.summary(probeReport: report, readback: readback))
         }
     }
 
     private static func runWheelProbe() throws {
         try withClient { client in
-            let capability = WheelCapabilityProbe.probe(client: client)
+            let report = WheelCapabilityProbe.probe(client: client)
+            let capability = report.capability
             print("Wheel probe results:")
-            print(" scroll mode: \(capability.scrollMode.displayName)")
-            print(" acceleration: \(capability.acceleration.displayName)")
-            print(" smart reel: \(capability.smartReel.displayName)")
+            print(report.summary)
 
             guard capability.scrollMode == .supported ||
                     capability.acceleration == .supported ||
@@ -205,16 +190,23 @@ struct RazerProbeCLI {
                 return
             }
 
-            let original = try client.readWheelHardwareState()
+            let originalReadback = client.readWheelHardwareState(capability: capability)
+            let original = originalReadback.settings
+            for error in originalReadback.errors {
+                print("readback error: \(error)")
+            }
             print("Original wheel state: mode=\(original.scrollMode?.displayName ?? "n/a"), acceleration=\(original.accelerationEnabled.map { $0 ? "on" : "off" } ?? "n/a"), smartReel=\(original.smartReelEnabled.map { $0 ? "on" : "off" } ?? "n/a")")
 
             if capability.scrollMode == .supported, let mode = original.scrollMode {
                 let alternate: ScrollWheelMode = mode == .tactile ? .freeSpin : .tactile
                 print("Trying alternate scroll mode: \(alternate.displayName)")
-                switch client.setScrollMode(alternate) {
+                switch try client.setScrollMode(alternate) {
                 case .success:
-                    let readback = try client.readWheelHardwareState()
-                    print("Readback scroll mode: \(readback.scrollMode?.displayName ?? "unknown")")
+                    let readback = client.readWheelHardwareState(capability: WheelHardwareCapability(scrollMode: .supported))
+                    for error in readback.errors {
+                        print("readback error: \(error)")
+                    }
+                    print("Readback scroll mode: \(readback.settings.scrollMode?.displayName ?? "unknown")")
                 case .notSupported:
                     print("Set scroll mode: not supported")
                 }
@@ -223,10 +215,13 @@ struct RazerProbeCLI {
             if capability.acceleration == .supported {
                 let target = !(original.accelerationEnabled ?? false)
                 print("Trying scroll acceleration: \(target ? "on" : "off")")
-                switch client.setScrollAcceleration(target) {
+                switch try client.setScrollAcceleration(target) {
                 case .success:
-                    let readback = try client.readWheelHardwareState()
-                    print("Readback acceleration: \(readback.accelerationEnabled.map { $0 ? "on" : "off" } ?? "unknown")")
+                    let readback = client.readWheelHardwareState(capability: WheelHardwareCapability(acceleration: .supported))
+                    for error in readback.errors {
+                        print("readback error: \(error)")
+                    }
+                    print("Readback acceleration: \(readback.settings.accelerationEnabled.map { $0 ? "on" : "off" } ?? "unknown")")
                 case .notSupported:
                     print("Set acceleration: not supported")
                 }
@@ -234,15 +229,19 @@ struct RazerProbeCLI {
 
             print("Restoring original wheel state...")
             if let mode = original.scrollMode {
-                _ = client.setScrollMode(mode)
+                _ = try? client.setScrollMode(mode)
             }
             if let enabled = original.accelerationEnabled {
-                _ = client.setScrollAcceleration(enabled)
+                _ = try? client.setScrollAcceleration(enabled)
             }
             if let enabled = original.smartReelEnabled {
-                _ = client.setScrollSmartReel(enabled)
+                _ = try? client.setScrollSmartReel(enabled)
             }
-            let restored = try client.readWheelHardwareState()
+            let restoredReadback = client.readWheelHardwareState(capability: capability)
+            let restored = restoredReadback.settings
+            for error in restoredReadback.errors {
+                print("readback error: \(error)")
+            }
             print("Restored wheel state: mode=\(restored.scrollMode?.displayName ?? "n/a"), acceleration=\(restored.accelerationEnabled.map { $0 ? "on" : "off" } ?? "n/a")")
         }
     }
@@ -266,13 +265,14 @@ struct RazerProbeCLI {
             CFRunLoopRunInMode(.defaultMode, min(remaining, 0.05), false)
         }
 
-        if session.entries.isEmpty {
+        if session.snapshotEntries().isEmpty {
             print("No events captured.")
             return
         }
 
-        print("Captured \(session.entries.count) events:")
-        for entry in session.entries {
+        let entries = session.snapshotEntries()
+        print("Captured \(entries.count) events:")
+        for entry in entries {
             print(" - \(entry.summary)")
         }
     }

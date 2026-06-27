@@ -17,8 +17,10 @@ final class ProfileSchemaTests: XCTestCase {
         let profile = try JSONDecoder().decode(MouseProfile.self, from: json)
         XCTAssertEqual(profile.name, "Legacy")
         XCTAssertTrue(profile.remapperEnabled)
-        XCTAssertEqual(profile.buttonMappings.count, PhysicalControl.allCases.count)
+        XCTAssertEqual(profile.buttonMappings.count, PhysicalControl.assignableControls.count)
         XCTAssertEqual(profile.buttonMappings[.leftClick], .passthrough)
+        XCTAssertEqual(profile.buttonMappings[.wheelClick], .passthrough)
+        XCTAssertNil(profile.buttonMappings[.middleClick])
         XCTAssertEqual(profile.wheelSettings, .default)
     }
 
@@ -31,7 +33,7 @@ final class ProfileSchemaTests: XCTestCase {
         )
         profile.buttonMappings[.leftClick] = .disabled
         profile.buttonMappings[.rightClick] = .keyboardShortcut(KeyboardShortcut(keyCode: 36, modifierFlags: 0))
-        XCTAssertEqual(ProfileMappingValidator.warnings(for: profile), [.bothPrimaryClicksDisabledOrRemapped])
+        XCTAssertEqual(ProfileMappingValidator.warnings(for: profile), [.primaryClickUnavailable])
     }
 
     func testSafePrimaryClickRemapToMouseButton() {
@@ -43,6 +45,30 @@ final class ProfileSchemaTests: XCTestCase {
         )
         profile.buttonMappings[.leftClick] = .mouseButton(.right)
         profile.buttonMappings[.rightClick] = .mouseButton(.left)
+        XCTAssertTrue(ProfileMappingValidator.warnings(for: profile).isEmpty)
+    }
+
+    func testWarnsWhenEitherPrimaryClickIsUnavailable() {
+        var profile = MouseProfile(
+            name: "No Left Click",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        profile.buttonMappings[.leftClick] = .mouseButton(.right)
+        profile.buttonMappings[.rightClick] = .mouseButton(.right)
+        XCTAssertEqual(ProfileMappingValidator.warnings(for: profile), [.primaryClickUnavailable])
+    }
+
+    func testPrimaryClickRemapOnOtherControlCountsAsAvailable() {
+        var profile = MouseProfile(
+            name: "Side Button Left",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        profile.buttonMappings[.leftClick] = .disabled
+        profile.buttonMappings[.sideButton1] = .mouseButton(.left)
         XCTAssertTrue(ProfileMappingValidator.warnings(for: profile).isEmpty)
     }
 }

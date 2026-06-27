@@ -20,12 +20,20 @@ public final class InputRemapper: @unchecked Sendable {
     private let lock = NSLock()
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private lazy var syntheticEventSource: CGEventSource? = {
+        let source = CGEventSource(stateID: .privateState)
+        source?.userData = InputRemapperEngine.syntheticMarker
+        return source
+    }()
     private var profile = MouseProfile(
         name: "Default",
         dpiStages: [800],
         activeStage: 1,
         pollingRateHz: 1000
     )
+    private var activeMouseRemaps: [PhysicalControl: MouseButtonTarget] = [:]
+    private var verticalScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    private var horizontalScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
 
     public init() {}
 
@@ -36,12 +44,14 @@ public final class InputRemapper: @unchecked Sendable {
     public func updateProfile(_ profile: MouseProfile) {
         lock.lock()
         self.profile = profile
+        resetScrollAccumulatorsLocked()
         lock.unlock()
     }
 
     public func pause() {
         lock.lock()
         isPaused = true
+        resetScrollAccumulatorsLocked()
         lock.unlock()
     }
 
@@ -100,6 +110,7 @@ public final class InputRemapper: @unchecked Sendable {
         eventTap = nil
         runLoopSource = nil
         isRunning = false
+        releaseAllActiveMouseRemaps()
     }
 
     private static let eventCallback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -116,6 +127,10 @@ public final class InputRemapper: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
 
+        if isSyntheticEvent(event) {
+            return Unmanaged.passUnretained(event)
+        }
+
         lock.lock()
         let currentProfile = profile
         let paused = isPaused
@@ -128,23 +143,56 @@ public final class InputRemapper: @unchecked Sendable {
             return nil
         }
 
-        if paused || !currentProfile.remapperEnabled {
-            return Unmanaged.passUnretained(event)
-        }
-
         switch type {
         case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
              .otherMouseDown, .otherMouseUp:
             guard let control = physicalControl(for: type, event: event) else {
+                break
+            }
+
+            if !isMouseDown(type), let pendingTarget = clearActiveMouseRemap(for: control) {
+                postMouseButton(pendingTarget, down: false)
+                return nil
+            }
+
+            if paused || !currentProfile.remapperEnabled {
                 return Unmanaged.passUnretained(event)
             }
+
             return handleButtonEvent(control: control, type: type, event: event, profile: currentProfile, callbacks: callbacks)
 
         case .scrollWheel:
+            if paused || !currentProfile.remapperEnabled {
+                return Unmanaged.passUnretained(event)
+            }
             return handleScrollEvent(event: event, profile: currentProfile, callbacks: callbacks)
 
         default:
-            return Unmanaged.passUnretained(event)
+            break
+        }
+
+        return Unmanaged.passUnretained(event)
+    }
+
+    private func clearActiveMouseRemap(for control: PhysicalControl) -> MouseButtonTarget? {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeMouseRemaps.removeValue(forKey: control)
+    }
+
+    private func setActiveMouseRemap(control: PhysicalControl, target: MouseButtonTarget) {
+        lock.lock()
+        activeMouseRemaps[control] = target
+        lock.unlock()
+    }
+
+    private func releaseAllActiveMouseRemaps() {
+        lock.lock()
+        let active = activeMouseRemaps
+        activeMouseRemaps.removeAll()
+        lock.unlock()
+        for target in active.values {
+            postMouseButton(target, down: false)
         }
     }
 
@@ -155,49 +203,53 @@ public final class InputRemapper: @unchecked Sendable {
         profile: MouseProfile,
         callbacks: Callbacks
     ) -> Unmanaged<CGEvent>? {
-        let action = profile.buttonMappings[control] ?? .passthrough
-        switch action {
-        case .passthrough:
+        let action = InputRemapperEngine.resolvedButtonAction(for: control, in: profile.buttonMappings)
+        let isDown = isMouseDown(type)
+        switch InputRemapperEngine.buttonOutcome(action: action, isDown: isDown) {
+        case .passThrough:
             return Unmanaged.passUnretained(event)
-        case .disabled:
+        case .consume:
             return nil
-        case let .mouseButton(target):
-            guard isMouseDown(type) else { return nil }
-            postMouseButton(target, down: true)
-            postMouseButton(target, down: false)
-            return nil
-        case let .keyboardShortcut(shortcut):
-            guard isMouseDown(type) else { return nil }
-            postKeyboardShortcut(shortcut, keyDown: true)
-            postKeyboardShortcut(shortcut, keyDown: false)
-            return nil
-        case .nextDPIStage:
-            guard isMouseDown(type) else { return nil }
-            callbacks.onNextDPIStage?()
-            return nil
-        case .previousDPIStage:
-            guard isMouseDown(type) else { return nil }
-            callbacks.onPreviousDPIStage?()
-            return nil
-        case .nextProfile:
-            guard isMouseDown(type) else { return nil }
-            callbacks.onNextProfile?()
-            return nil
-        case .previousProfile:
-            guard isMouseDown(type) else { return nil }
-            callbacks.onPreviousProfile?()
-            return nil
-        case let .openApp(path):
-            guard isMouseDown(type) else { return nil }
-            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration())
-            return nil
-        case let .openURL(urlString):
-            guard isMouseDown(type) else { return nil }
-            if let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url)
+        case let .postMouse(target, down):
+            if down {
+                setActiveMouseRemap(control: control, target: target)
             }
+            postMouseButton(target, down: down)
+            return nil
+        case let .fireOneShot(oneShotAction):
+            executeOneShotAction(oneShotAction, callbacks: callbacks)
             return nil
         }
+    }
+
+    private func executeOneShotAction(_ action: ButtonAction, callbacks: Callbacks) {
+        switch action {
+        case let .keyboardShortcut(shortcut):
+            postKeyboardShortcut(shortcut, keyDown: true)
+            postKeyboardShortcut(shortcut, keyDown: false)
+        case .nextDPIStage:
+            callbacks.onNextDPIStage?()
+        case .previousDPIStage:
+            callbacks.onPreviousDPIStage?()
+        case .nextProfile:
+            callbacks.onNextProfile?()
+        case .previousProfile:
+            callbacks.onPreviousProfile?()
+        case let .openApp(path):
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration())
+        case let .openURL(urlString):
+            if let normalized = ButtonActionValidator.normalizedOpenURL(urlString),
+               let url = URL(string: normalized) {
+                NSWorkspace.shared.open(url)
+            }
+        case .passthrough, .disabled, .mouseButton:
+            break
+        }
+    }
+
+    private func resetScrollAccumulatorsLocked() {
+        verticalScrollScaler.reset()
+        horizontalScrollScaler.reset()
     }
 
     private func handleScrollEvent(
@@ -205,11 +257,16 @@ public final class InputRemapper: @unchecked Sendable {
         profile: MouseProfile,
         callbacks: Callbacks
     ) -> Unmanaged<CGEvent>? {
-        let rawDelta = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-        guard rawDelta != 0 else { return Unmanaged.passUnretained(event) }
+        let axis1 = InputRemapperEngine.ScrollAxisValues(
+            line: event.getIntegerValueField(.scrollWheelEventDeltaAxis1),
+            point: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1),
+            fixedPt: event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+        )
+        guard !axis1.isEffectivelyZero else { return Unmanaged.passUnretained(event) }
 
+        let primaryDelta = axis1.line != 0 ? axis1.line : axis1.point
         let software = profile.wheelSettings.software
-        let wheelUp = rawDelta > 0
+        let wheelUp = primaryDelta > 0
         let wheelControl: PhysicalControl = wheelUp ? .wheelUp : .wheelDown
 
         let mappingAction = profile.buttonMappings[wheelControl] ?? .passthrough
@@ -218,59 +275,67 @@ public final class InputRemapper: @unchecked Sendable {
 
         if case .passthrough = action {
             let modified = event
-            var delta = Double(rawDelta) * software.verticalSpeedMultiplier
-            if software.scrollDirection == .inverted {
-                delta *= -1
-            }
+            let invert = software.scrollDirection == .inverted
+            let multiplier = software.verticalSpeedMultiplier
+            let moveHorizontal = software.horizontalScrollModifier == .shift && event.flags.contains(.maskShift)
 
-            if software.horizontalScrollModifier == .shift,
-               event.flags.contains(.maskShift) {
-                modified.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: 0)
-                modified.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: Int64(delta))
+            lock.lock()
+            let scaled: InputRemapperEngine.ScrollAxisPair
+            if moveHorizontal {
+                scaled = InputRemapperEngine.scalePassthroughScroll(
+                    axis1: axis1,
+                    lineScaler: &horizontalScrollScaler,
+                    multiplier: multiplier,
+                    invert: invert,
+                    moveToHorizontalAxis: true
+                )
             } else {
-                modified.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: Int64(delta))
+                scaled = InputRemapperEngine.scalePassthroughScroll(
+                    axis1: axis1,
+                    lineScaler: &verticalScrollScaler,
+                    multiplier: multiplier,
+                    invert: invert,
+                    moveToHorizontalAxis: false
+                )
             }
+            lock.unlock()
+
+            applyScrollAxes(scaled, to: modified)
             return Unmanaged.passUnretained(modified)
         }
 
         return executeScrollAction(action, callbacks: callbacks)
     }
 
+    private func applyScrollAxes(_ pair: InputRemapperEngine.ScrollAxisPair, to event: CGEvent) {
+        event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: pair.axis1.line)
+        event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: pair.axis2.line)
+        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: pair.axis1.point)
+        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: pair.axis2.point)
+        event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: pair.axis1.fixedPt)
+        event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: pair.axis2.fixedPt)
+    }
+
     private func executeScrollAction(_ action: ButtonAction, callbacks: Callbacks) -> Unmanaged<CGEvent>? {
         switch action {
-        case .passthrough:
-            return nil
-        case .disabled:
+        case .passthrough, .disabled:
             return nil
         case let .mouseButton(target):
             postMouseButton(target, down: true)
             postMouseButton(target, down: false)
             return nil
-        case let .keyboardShortcut(shortcut):
-            postKeyboardShortcut(shortcut, keyDown: true)
-            postKeyboardShortcut(shortcut, keyDown: false)
-            return nil
-        case .nextDPIStage:
-            callbacks.onNextDPIStage?()
-            return nil
-        case .previousDPIStage:
-            callbacks.onPreviousDPIStage?()
-            return nil
-        case .nextProfile:
-            callbacks.onNextProfile?()
-            return nil
-        case .previousProfile:
-            callbacks.onPreviousProfile?()
-            return nil
-        case let .openApp(path):
-            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration())
-            return nil
-        case let .openURL(urlString):
-            if let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url)
-            }
+        case .keyboardShortcut, .nextDPIStage, .previousDPIStage, .nextProfile, .previousProfile, .openApp, .openURL:
+            executeOneShotAction(action, callbacks: callbacks)
             return nil
         }
+    }
+
+    private func isSyntheticEvent(_ event: CGEvent) -> Bool {
+        InputRemapperEngine.shouldIgnoreSynthetic(sourceUserData: event.getIntegerValueField(.eventSourceUserData))
+    }
+
+    private func markSynthetic(_ event: CGEvent) {
+        event.setIntegerValueField(.eventSourceUserData, value: InputRemapperEngine.syntheticMarker)
     }
 
     private func physicalControl(for type: CGEventType, event: CGEvent) -> PhysicalControl? {
@@ -282,7 +347,7 @@ public final class InputRemapper: @unchecked Sendable {
         case .otherMouseDown, .otherMouseUp:
             let button = event.getIntegerValueField(.mouseEventButtonNumber)
             switch button {
-            case 2: return .middleClick
+            case 2: return .wheelClick
             case 3: return .sideButton1
             case 4: return .sideButton2
             case 5: return .dpiButton
@@ -305,8 +370,8 @@ public final class InputRemapper: @unchecked Sendable {
     private func matchesEmergencyPause(_ event: CGEvent) -> Bool {
         let shortcut = KeyboardShortcut.emergencyPause
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags.rawValue & 0x001F_FFFF
-        return keyCode == shortcut.keyCode && flags == shortcut.modifierFlags
+        let flags = event.flags.rawValue
+        return InputRemapperEngine.matchesShortcut(shortcut, keyCode: keyCode, modifierFlags: flags)
     }
 
     private func postMouseButton(_ target: MouseButtonTarget, down: Bool) {
@@ -318,7 +383,12 @@ public final class InputRemapper: @unchecked Sendable {
         case .side2: down ? (.otherMouseDown, CGMouseButton(rawValue: 4)!) : (.otherMouseUp, CGMouseButton(rawValue: 4)!)
         }
 
-        guard let cgEvent = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: NSEvent.mouseLocation, mouseButton: button) else {
+        guard let cgEvent = CGEvent(
+            mouseEventSource: syntheticEventSource,
+            mouseType: type,
+            mouseCursorPosition: NSEvent.mouseLocation,
+            mouseButton: button
+        ) else {
             return
         }
         if target == .side1 {
@@ -326,23 +396,21 @@ public final class InputRemapper: @unchecked Sendable {
         } else if target == .side2 {
             cgEvent.setIntegerValueField(.mouseEventButtonNumber, value: 4)
         }
+        markSynthetic(cgEvent)
         cgEvent.post(tap: .cghidEventTap)
     }
 
     private func postKeyboardShortcut(_ shortcut: KeyboardShortcut, keyDown: Bool) {
-        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        let source = syntheticEventSource ?? CGEventSource(stateID: .hidSystemState)
+        guard let source else { return }
+        source.userData = InputRemapperEngine.syntheticMarker
         let flags = CGEventFlags(rawValue: shortcut.modifierFlags)
-        if keyDown {
-            if let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(shortcut.keyCode), keyDown: true) {
-                event.flags = flags
-                event.post(tap: .cghidEventTap)
-            }
-        } else {
-            if let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(shortcut.keyCode), keyDown: false) {
-                event.flags = flags
-                event.post(tap: .cghidEventTap)
-            }
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(shortcut.keyCode), keyDown: keyDown) else {
+            return
         }
+        event.flags = flags
+        markSynthetic(event)
+        event.post(tap: .cghidEventTap)
     }
 }
 
