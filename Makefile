@@ -1,4 +1,4 @@
-.PHONY: build test cli-list cli-integration xcode xcode-run check-xcode
+.PHONY: build test cli-list cli-integration xcode xcode-run check-xcode release-dmg
 
 # Prefer default install, then common alternate locations (e.g. external drive).
 XCODE_APP := $(firstword $(wildcard /Applications/Xcode.app) $(wildcard /Volumes/*/Applications/Xcode.app))
@@ -46,3 +46,8 @@ xcode: check-xcode
 
 xcode-run: xcode
 	open "build/DerivedData/Build/Products/Debug/RazerMenuBarApp.app"
+
+release-dmg: check-xcode
+	bash scripts/ci-release-build.sh
+	bash scripts/package-dmg.sh
+	@echo "Release artifacts in build/Release/"

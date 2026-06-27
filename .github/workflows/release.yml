@@ -29,10 +29,11 @@ jobs:
 
       - name: Package downloads
         run: |
+          bash scripts/package-dmg.sh
           cd build/Release
           ditto -c -k --sequesterRsrc --keepParent RazerMenuBarApp.app RazerMenuBarApp-macOS.zip
           zip -j RazerProbeCLI-macOS.zip RazerProbeCLI
-          shasum -a 256 *.zip > SHA256SUMS.txt
+          shasum -a 256 RazerMenuBarApp-macOS.dmg *.zip > SHA256SUMS.txt
           ls -la
 
       - name: Resolve release tag
@@ -51,16 +52,19 @@ jobs:
           name: Razer Viper Control ${{ steps.tag.outputs.name }}
           generate_release_notes: true
           files: |
+            build/Release/RazerMenuBarApp-macOS.dmg
             build/Release/RazerMenuBarApp-macOS.zip
             build/Release/RazerProbeCLI-macOS.zip
             build/Release/SHA256SUMS.txt
           body: |
             ## Install RazerMenuBarApp
 
-            1. Download `RazerMenuBarApp-macOS.zip` and unzip.
-            2. Drag **RazerMenuBarApp.app** to **Applications**.
-            3. First launch: right-click the app → **Open** (bypasses Gatekeeper for ad-hoc builds).
-            4. Grant **Input Monitoring** and **Accessibility** in System Settings when prompted (or via Settings → Diagnostics).
+            **Recommended:** download `RazerMenuBarApp-macOS.dmg`, open it, and drag **RazerMenuBarApp** to **Applications**.
+
+            Alternate: download `RazerMenuBarApp-macOS.zip`, unzip, and move the app to **Applications**.
+
+            1. First launch: right-click the app → **Open** (bypasses Gatekeeper for ad-hoc builds).
+            2. Grant **Input Monitoring** and **Accessibility** in System Settings when prompted (or via Settings → Diagnostics).
 
             ## Optional: RazerProbeCLI
 
