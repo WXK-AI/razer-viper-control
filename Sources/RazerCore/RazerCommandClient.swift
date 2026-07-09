@@ -41,6 +41,17 @@ public enum RazerCommandError: Error, LocalizedError {
         if case .blockedDeviceAccess = self { return true }
         return false
     }
+
+    /// Errors that usually mean the cached IOHIDDevice handle is dead or wedged
+    /// (sleep/wake, dongle re-enumeration, timeout). Clear and reopen the session.
+    public var shouldInvalidateSession: Bool {
+        switch self {
+        case .timeout, .transport, .deviceNotOpen, .invalidResponse:
+            return true
+        case .permissionDenied, .blockedDeviceAccess, .deviceBusy, .unsupportedCommand:
+            return false
+        }
+    }
 }
 
 public enum CommandSendResult: Equatable, Sendable {

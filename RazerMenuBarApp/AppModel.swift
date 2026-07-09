@@ -102,74 +102,141 @@ final class AppModel: ObservableObject {
         hidQueue.async { [weak self] in
             guard let self else { return }
 
-            var snapshot: DeviceRefreshSnapshot
-            do {
-                let client = try self.session.connect()
-                let state = try client.readState()
-                let becameConnected = !wasConnectedBefore
-                let probeReport = becameConnected ? WheelCapabilityProbe.probe(client: client) : nil
-
-                var applyState = autoApplySnapshot
-                if becameConnected && shouldAutoApply {
-                    AutoApplyCoordinator.onConnect(autoReapplyEnabled: true, state: &applyState)
-                }
-
-                var applyWarning: String?
-                var profileAppliedSuccessfully = false
-                if AutoApplyCoordinator.shouldAttemptApply(
-                    state: applyState,
-                    autoReapplyEnabled: shouldAutoApply,
-                    hasProfile: selectedProfile != nil
-                ),
-                   let profile = selectedProfile {
-                    do {
-                        try self.session.apply(
-                            profile: profile,
-                            to: client,
-                            wheelCapability: probeReport?.capability ?? .init()
-                        )
-                        profileAppliedSuccessfully = true
-                    } catch {
-                        applyWarning = error.localizedDescription
-                    }
-                }
-
-                snapshot = DeviceRefreshSnapshot(
-                    state: state,
-                    probeReport: probeReport,
-                    becameConnected: becameConnected,
-                    commandError: nil,
-                    disconnected: false,
-                    applyWarning: applyWarning,
-                    profileAppliedSuccessfully: profileAppliedSuccessfully
-                )
-            } catch let error as RazerCommandError {
-                snapshot = DeviceRefreshSnapshot(
-                    state: nil,
-                    probeReport: nil,
-                    becameConnected: false,
-                    commandError: error,
-                    disconnected: true,
-                    applyWarning: nil,
-                    profileAppliedSuccessfully: false
-                )
-            } catch {
-                snapshot = DeviceRefreshSnapshot(
-                    state: nil,
-                    probeReport: nil,
-                    becameConnected: false,
-                    commandError: nil,
-                    disconnected: true,
-                    applyWarning: nil,
-                    profileAppliedSuccessfully: false
-                )
-            }
+            let snapshot = self.performDeviceRefresh(
+                wasConnectedBefore: wasConnectedBefore,
+                selectedProfile: selectedProfile,
+                shouldAutoApply: shouldAutoApply,
+                autoApplySnapshot: autoApplySnapshot
+            )
 
             Task { @MainActor in
                 self.isRefreshInFlight = false
                 self.applyRefreshSnapshot(snapshot, shouldAutoApply: shouldAutoApply)
             }
         }
+    }
+
+    /// Runs on `hidQueue`. On recoverable HID failures, clears the cached session
+    /// and retries once with a fresh device open (sleep/wake / stale handle).
+    private nonisolated func performDeviceRefresh(
+        wasConnectedBefore: Bool,
+        selectedProfile: MouseProfile?,
+        shouldAutoApply: Bool,
+        autoApplySnapshot: AutoApplyCoordinator.State
+    ) -> DeviceRefreshSnapshot {
+        do {
+            return try readRefreshSnapshot(
+                wasConnectedBefore: wasConnectedBefore,
+                selectedProfile: selectedProfile,
+                shouldAutoApply: shouldAutoApply,
+                autoApplySnapshot: autoApplySnapshot,
+                forceReconnect: false
+            )
+        } catch let error as RazerCommandError {
+            if error.shouldInvalidateSession {
+                session.disconnect()
+                do {
+                    return try readRefreshSnapshot(
+                        wasConnectedBefore: wasConnectedBefore,
+                        selectedProfile: selectedProfile,
+                        shouldAutoApply: shouldAutoApply,
+                        autoApplySnapshot: autoApplySnapshot,
+                        forceReconnect: true
+                    )
+                } catch let retryError as RazerCommandError {
+                    session.disconnect()
+                    return DeviceRefreshSnapshot(
+                        state: nil,
+                        probeReport: nil,
+                        becameConnected: false,
+                        commandError: retryError,
+                        disconnected: true,
+                        applyWarning: nil,
+                        profileAppliedSuccessfully: false
+                    )
+                } catch {
+                    session.disconnect()
+                    return DeviceRefreshSnapshot(
+                        state: nil,
+                        probeReport: nil,
+                        becameConnected: false,
+                        commandError: nil,
+                        disconnected: true,
+                        applyWarning: nil,
+                        profileAppliedSuccessfully: false
+                    )
+                }
+            }
+
+            return DeviceRefreshSnapshot(
+                state: nil,
+                probeReport: nil,
+                becameConnected: false,
+                commandError: error,
+                disconnected: true,
+                applyWarning: nil,
+                profileAppliedSuccessfully: false
+            )
+        } catch {
+            session.disconnect()
+            return DeviceRefreshSnapshot(
+                state: nil,
+                probeReport: nil,
+                becameConnected: false,
+                commandError: nil,
+                disconnected: true,
+                applyWarning: nil,
+                profileAppliedSuccessfully: false
+            )
+        }
+    }
+
+    private nonisolated func readRefreshSnapshot(
+        wasConnectedBefore: Bool,
+        selectedProfile: MouseProfile?,
+        shouldAutoApply: Bool,
+        autoApplySnapshot: AutoApplyCoordinator.State,
+        forceReconnect: Bool
+    ) throws -> DeviceRefreshSnapshot {
+        let client = forceReconnect ? try session.reconnect() : try session.connect()
+        let state = try client.readState()
+        let becameConnected = !wasConnectedBefore || forceReconnect
+        let probeReport = becameConnected ? WheelCapabilityProbe.probe(client: client) : nil
+
+        var applyState = autoApplySnapshot
+        if becameConnected && shouldAutoApply {
+            AutoApplyCoordinator.onConnect(autoReapplyEnabled: true, state: &applyState)
+        }
+
+        var applyWarning: String?
+        var profileAppliedSuccessfully = false
+        if AutoApplyCoordinator.shouldAttemptApply(
+            state: applyState,
+            autoReapplyEnabled: shouldAutoApply,
+            hasProfile: selectedProfile != nil
+        ),
+           let profile = selectedProfile {
+            do {
+                try session.apply(
+                    profile: profile,
+                    to: client,
+                    wheelCapability: probeReport?.capability ?? .init()
+                )
+                profileAppliedSuccessfully = true
+            } catch {
+                applyWarning = error.localizedDescription
+            }
+        }
+
+        return DeviceRefreshSnapshot(
+            state: state,
+            probeReport: probeReport,
+            becameConnected: becameConnected,
+            commandError: nil,
+            disconnected: false,
+            applyWarning: applyWarning,
+            profileAppliedSuccessfully: profileAppliedSuccessfully
+        )
     }
 
     private func applyRefreshSnapshot(_ snapshot: DeviceRefreshSnapshot, shouldAutoApply: Bool) {
