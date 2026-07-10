@@ -121,6 +121,119 @@ final class RazerReportTests: XCTestCase {
         report.arguments[1] = 0
         XCTAssertFalse(report.decodeBoolArgument())
     }
+
+    /// OpenRazer-compatible get-DPI-stages response: active stage 2, stages 400 / 800 / 1600.
+    func testDecodeDPIStagesMatchesOpenRazerFixture() throws {
+        let report = try Self.makeDPIStagesResponse(
+            activeStage: 2,
+            stages: [400, 800, 1600]
+        )
+        let decoded = try report.decodeDPIStages()
+        XCTAssertEqual(decoded.activeStage, 2)
+        XCTAssertEqual(decoded.stages.map(\.x), [400, 800, 1600])
+        XCTAssertEqual(decoded.stages.map(\.y), [400, 800, 1600])
+    }
+
+    func testDecodeDPIStagesRejectsOversizedDataSize() throws {
+        var bytes = try Self.makeDPIStagesResponse(activeStage: 1, stages: [800]).bytes
+        bytes[5] = 81
+        bytes[88] = RazerReport.calculateCRC(for: bytes)
+        XCTAssertThrowsError(try RazerReport(bytes: bytes)) { error in
+            XCTAssertEqual(error as? RazerReportError, .invalidDataSize(81))
+        }
+    }
+
+    func testDecodeDPIStagesRejectsStageCountGreaterThanFive() throws {
+        var report = try Self.makeDPIStagesResponse(activeStage: 1, stages: [400, 800, 1600])
+        report.arguments[2] = 6
+        report.refreshCRC()
+        XCTAssertThrowsError(try report.decodeDPIStages()) { error in
+            XCTAssertEqual(error as? RazerValidationError, .tooManyDPIStages(6))
+        }
+    }
+
+    func testDecodeDPIStagesRejectsTruncatedStagePayload() throws {
+        var report = RazerReport.makeCommand(
+            commandClass: 0x04,
+            commandID: 0x86,
+            dataSize: 0x26,
+            arguments: [RazerVariableStorage.varStore.rawValue]
+        )
+        report.status = RazerReportStatus.successful.rawValue
+        report.arguments[1] = 1
+        report.arguments[2] = 2
+        // Only first stage fully present; second stage truncated inside declared count.
+        report.arguments[3] = 0
+        report.arguments[4] = 0x03
+        report.arguments[5] = 0x20
+        report.arguments[6] = 0x03
+        report.arguments[7] = 0x20
+        report.arguments[8] = 0
+        report.arguments[9] = 0
+        report.arguments[10] = 1
+        // Missing X/Y for stage index 1
+        report.refreshCRC()
+        XCTAssertThrowsError(try report.decodeDPIStages())
+    }
+
+    func testDecodeDPIStagesRejectsActiveStageOutsideCount() throws {
+        let report = try Self.makeDPIStagesResponse(activeStage: 4, stages: [400, 800, 1600])
+        // Fixture helper writes the requested active stage even when invalid.
+        XCTAssertThrowsError(try report.decodeDPIStages()) { error in
+            XCTAssertEqual(error as? RazerValidationError, .invalidActiveStage(4, stageCount: 3))
+        }
+    }
+
+    func testBytesSurvivesNon80ArgumentArrays() {
+        let shortArgs = RazerReport(
+            dataSize: 1,
+            commandClass: 0x00,
+            commandID: 0x85,
+            arguments: [0x01, 0x02]
+        )
+        XCTAssertEqual(shortArgs.bytes.count, RazerReport.length)
+        XCTAssertEqual(shortArgs.arguments.count, 80)
+
+        let longArgs = RazerReport(
+            dataSize: 1,
+            commandClass: 0x00,
+            commandID: 0x85,
+            arguments: Array(repeating: 0xAB, count: 120)
+        )
+        XCTAssertEqual(longArgs.bytes.count, RazerReport.length)
+        XCTAssertEqual(longArgs.arguments.count, 80)
+        XCTAssertEqual(longArgs.arguments[0], 0xAB)
+        XCTAssertEqual(longArgs.arguments[79], 0xAB)
+    }
+
+    private static func makeDPIStagesResponse(
+        activeStage: Int,
+        stages: [Int]
+    ) throws -> RazerReport {
+        var report = RazerReport.makeCommand(
+            commandClass: 0x04,
+            commandID: 0x86,
+            dataSize: 0x26,
+            arguments: [RazerVariableStorage.varStore.rawValue]
+        )
+        report.status = RazerReportStatus.successful.rawValue
+        report.arguments[1] = UInt8(activeStage)
+        report.arguments[2] = UInt8(stages.count)
+        var offset = 3
+        for (index, dpi) in stages.enumerated() {
+            guard offset + 6 < report.arguments.count else { break }
+            report.arguments[offset] = UInt8(index)
+            report.arguments[offset + 1] = UInt8((dpi >> 8) & 0xFF)
+            report.arguments[offset + 2] = UInt8(dpi & 0xFF)
+            report.arguments[offset + 3] = UInt8((dpi >> 8) & 0xFF)
+            report.arguments[offset + 4] = UInt8(dpi & 0xFF)
+            report.arguments[offset + 5] = 0x00
+            report.arguments[offset + 6] = 0x00
+            offset += 7
+        }
+        report.refreshCRC()
+        return report
+    }
 }
 
 final class ProfileValidatorTests: XCTestCase {

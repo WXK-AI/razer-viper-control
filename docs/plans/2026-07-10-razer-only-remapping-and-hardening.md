@@ -111,13 +111,13 @@ No product or architecture questions remain. Entitlement approval, verified inte
 
 **Steps:**
 
-- [ ] Add an OpenRazer-compatible DPI-stage response fixture with active stage 2 and stages 400, 800, and 1600.
-- [ ] Assert `decodeDPIStages()` returns exactly those values. Run the test and confirm it fails with shifted values.
-- [ ] Add fixtures for oversized `dataSize`, stage count greater than five, truncated stage payload, and active stage outside `1...count`.
-- [ ] Add response-correlation tests for wrong transaction ID, remaining packets, protocol type, command class, command ID, and incompatible data size.
-- [ ] Add a serialization test proving a report with fewer or more than 80 argument bytes cannot crash `bytes`.
-- [ ] Run: `swift test --disable-sandbox --filter RazerReportTests`.
-- [ ] Expected before implementation: the offset and malformed-response tests fail.
+- [x] Add an OpenRazer-compatible DPI-stage response fixture with active stage 2 and stages 400, 800, and 1600.
+- [x] Assert `decodeDPIStages()` returns exactly those values. Run the test and confirm it fails with shifted values.
+- [x] Add fixtures for oversized `dataSize`, stage count greater than five, truncated stage payload, and active stage outside `1...count`.
+- [x] Add response-correlation tests for wrong transaction ID, remaining packets, protocol type, command class, command ID, and incompatible data size.
+- [x] Add a serialization test proving a report with fewer or more than 80 argument bytes cannot crash `bytes`.
+- [x] Run: `swift test --disable-sandbox --filter RazerReportTests`.
+- [x] Expected before implementation: the offset and malformed-response tests fail.
 - [ ] Commit tests separately: `test: cover Razer response layout and correlation`.
 
 ### Task 3: Harden Report Encoding, Decoding, And Response Correlation

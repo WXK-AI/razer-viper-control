@@ -1,7 +1,7 @@
 import Foundation
 import IOKit.hid
 
-public enum RazerCommandError: Error, LocalizedError {
+public enum RazerCommandError: Error, LocalizedError, Equatable {
     case deviceNotOpen
     case permissionDenied(String)
     case deviceBusy
@@ -134,7 +134,7 @@ public final class RazerCommandClient {
         let stages = try send(.getDPIStages())
         let polling = try send(.getPollingRate())
 
-        let decodedStages = stages.decodeDPIStages()
+        let decodedStages = try stages.decodeDPIStages()
         let stageValues = decodedStages.stages.map(\.x)
 
         return DeviceState(

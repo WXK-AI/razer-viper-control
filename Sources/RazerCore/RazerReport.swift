@@ -299,10 +299,12 @@ public struct RazerReport: Equatable, Sendable {
         arguments[1] != 0
     }
 
-    public func decodeDPIStages() -> (activeStage: Int, stages: [(x: Int, y: Int)]) {
+    public func decodeDPIStages() throws -> (activeStage: Int, stages: [(x: Int, y: Int)]) {
         let activeStage = Int(arguments[1])
         let count = Int(arguments[2])
         var stages: [(x: Int, y: Int)] = []
+        // Intentionally buggy offset (Task 2 red): reads each stage one byte late.
+        // Task 3 fixes to X=[offset,offset+1], Y=[offset+2,offset+3] with validation.
         var offset = 4
         for _ in 0..<count where offset + 6 < arguments.count {
             let x = (Int(arguments[offset + 1]) << 8) | Int(arguments[offset + 2])
@@ -321,13 +323,16 @@ public struct RazerReport: Equatable, Sendable {
     }
 }
 
-public enum RazerReportError: Error, LocalizedError {
+public enum RazerReportError: Error, LocalizedError, Equatable {
     case invalidLength(expected: Int, actual: Int)
+    case invalidDataSize(UInt8)
 
     public var errorDescription: String? {
         switch self {
         case let .invalidLength(expected, actual):
             return "Razer report must be \(expected) bytes, got \(actual)."
+        case let .invalidDataSize(size):
+            return "Razer report data size \(size) exceeds the 80-byte argument field."
         }
     }
 }
