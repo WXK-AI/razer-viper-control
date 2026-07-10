@@ -24,6 +24,11 @@ let package = Package(
             name: "RazerCoreTests",
             dependencies: ["RazerCore"],
             path: "Tests/RazerCoreTests"
+        ),
+        .testTarget(
+            name: "RazerProbeCLITests",
+            dependencies: ["RazerCore"],
+            path: "Tests/RazerProbeCLITests"
         )
     ]
 )

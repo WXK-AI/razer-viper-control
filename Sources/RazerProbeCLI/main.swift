@@ -1,60 +1,23 @@
 import Foundation
 import RazerCore
 
-enum ProbeCommand: String {
-    case list
-    case battery
-    case charging
-    case dpi
-    case stages
-    case polling
-    case wheel
-    case wheelProbe = "wheel-probe"
-    case inputCapture = "input-capture"
-    case integration
-    case help
-}
-
-struct ProbeOptions {
-    var command: ProbeCommand = .help
-    var temporaryDPI: Int = 1600
-    var temporaryPollingHz: Int = 500
-    var captureSeconds: Int = 15
-}
-
 @main
 struct RazerProbeCLI {
     static func main() {
-        let options = parseArguments(CommandLine.arguments)
+        let options: ProbeOptions
+        do {
+            options = try ProbeArgumentParser.parse(CommandLine.arguments)
+        } catch {
+            fputs("Error: \(error.localizedDescription)\n", stderr)
+            exit(64)
+        }
+
         do {
             try run(options)
         } catch {
             fputs("Error: \(error.localizedDescription)\n", stderr)
             exit(1)
         }
-    }
-
-    private static func parseArguments(_ arguments: [String]) -> ProbeOptions {
-        var options = ProbeOptions()
-        guard arguments.count > 1 else { return options }
-
-        let command = ProbeCommand(rawValue: arguments[1].lowercased()) ?? .help
-        options.command = command
-
-        if command == .integration {
-            if arguments.count > 2, let dpi = Int(arguments[2]) {
-                options.temporaryDPI = dpi
-            }
-            if arguments.count > 3, let polling = Int(arguments[3]) {
-                options.temporaryPollingHz = polling
-            }
-        }
-
-        if command == .inputCapture, arguments.count > 2, let seconds = Int(arguments[2]) {
-            options.captureSeconds = seconds
-        }
-
-        return options
     }
 
     private static func run(_ options: ProbeOptions) throws {
@@ -179,10 +142,10 @@ struct RazerProbeCLI {
     private static func runWheelProbe() throws {
         try withClient { client in
             let report = WheelCapabilityProbe.probe(client: client)
-            let capability = report.capability
             print("Wheel probe results:")
             print(report.summary)
 
+            let capability = report.capability
             guard capability.scrollMode == .supported ||
                     capability.acceleration == .supported ||
                     capability.smartReel == .supported else {
@@ -190,59 +153,13 @@ struct RazerProbeCLI {
                 return
             }
 
-            let originalReadback = client.readWheelHardwareState(capability: capability)
-            let original = originalReadback.settings
-            for error in originalReadback.errors {
-                print("readback error: \(error)")
-            }
-            print("Original wheel state: mode=\(original.scrollMode?.displayName ?? "n/a"), acceleration=\(original.accelerationEnabled.map { $0 ? "on" : "off" } ?? "n/a"), smartReel=\(original.smartReelEnabled.map { $0 ? "on" : "off" } ?? "n/a")")
-
-            if capability.scrollMode == .supported, let mode = original.scrollMode {
-                let alternate: ScrollWheelMode = mode == .tactile ? .freeSpin : .tactile
-                print("Trying alternate scroll mode: \(alternate.displayName)")
-                switch try client.setScrollMode(alternate) {
-                case .success:
-                    let readback = client.readWheelHardwareState(capability: WheelHardwareCapability(scrollMode: .supported))
-                    for error in readback.errors {
-                        print("readback error: \(error)")
-                    }
-                    print("Readback scroll mode: \(readback.settings.scrollMode?.displayName ?? "unknown")")
-                case .notSupported:
-                    print("Set scroll mode: not supported")
-                }
-            }
-
-            if capability.acceleration == .supported {
-                let target = !(original.accelerationEnabled ?? false)
-                print("Trying scroll acceleration: \(target ? "on" : "off")")
-                switch try client.setScrollAcceleration(target) {
-                case .success:
-                    let readback = client.readWheelHardwareState(capability: WheelHardwareCapability(acceleration: .supported))
-                    for error in readback.errors {
-                        print("readback error: \(error)")
-                    }
-                    print("Readback acceleration: \(readback.settings.accelerationEnabled.map { $0 ? "on" : "off" } ?? "unknown")")
-                case .notSupported:
-                    print("Set acceleration: not supported")
-                }
-            }
-
-            print("Restoring original wheel state...")
-            if let mode = original.scrollMode {
-                _ = try? client.setScrollMode(mode)
-            }
-            if let enabled = original.accelerationEnabled {
-                _ = try? client.setScrollAcceleration(enabled)
-            }
-            if let enabled = original.smartReelEnabled {
-                _ = try? client.setScrollSmartReel(enabled)
-            }
-            let restoredReadback = client.readWheelHardwareState(capability: capability)
-            let restored = restoredReadback.settings
-            for error in restoredReadback.errors {
-                print("readback error: \(error)")
-            }
-            print("Restored wheel state: mode=\(restored.scrollMode?.displayName ?? "n/a"), acceleration=\(restored.accelerationEnabled.map { $0 ? "on" : "off" } ?? "n/a")")
+            let restored = try HardwareStateTransaction.runWheelProbeMutation(
+                client: client,
+                capability: capability
+            )
+            print(
+                "Restored wheel state: mode=\(restored.scrollMode?.displayName ?? "n/a"), acceleration=\(restored.accelerationEnabled.map { $0 ? "on" : "off" } ?? "n/a"), smartReel=\(restored.smartReelEnabled.map { $0 ? "on" : "off" } ?? "n/a")"
+            )
         }
     }
 
@@ -265,12 +182,12 @@ struct RazerProbeCLI {
             CFRunLoopRunInMode(.defaultMode, min(remaining, 0.05), false)
         }
 
-        if session.snapshotEntries().isEmpty {
+        let entries = session.snapshotEntries()
+        if entries.isEmpty {
             print("No events captured.")
             return
         }
 
-        let entries = session.snapshotEntries()
         print("Captured \(entries.count) events:")
         for entry in entries {
             print(" - \(entry.summary)")
@@ -278,31 +195,16 @@ struct RazerProbeCLI {
     }
 
     private static func runIntegration(dpi: Int, pollingHz: Int) throws {
-        try ProfileValidator.validatePollingRate(pollingHz)
-        guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(dpi) else {
-            throw RazerValidationError.invalidDPI(dpi)
-        }
-
         try withClient { client in
-            let original = try client.readState()
-            print("Original state: DPI \(original.dpiX), polling \(original.pollingRateHz) Hz")
-
-            print("Applying temporary DPI \(dpi)...")
-            try client.setDPI(dpi)
-            let readDPI = try client.send(.getDPI()).decodeDPI()
-            print("Readback DPI: \(readDPI.x) x \(readDPI.y)")
-
-            print("Applying temporary polling \(pollingHz) Hz...")
-            try client.setPollingRate(hz: pollingHz)
-            let readPolling = try client.send(.getPollingRate()).decodePollingRateHz()
-            print("Readback polling: \(readPolling ?? -1) Hz")
-
-            print("Restoring previous values...")
-            try client.setDPI(original.dpiX)
-            try client.setPollingRate(hz: original.pollingRateHz)
-
-            let restored = try client.readState()
-            print("Restored state: DPI \(restored.dpiX), polling \(restored.pollingRateHz) Hz")
+            let result = try HardwareStateTransaction.runIntegration(
+                client: client,
+                temporaryDPI: dpi,
+                temporaryPollingHz: pollingHz
+            )
+            print("Original state: DPI \(result.original.dpiX)x\(result.original.dpiY), polling \(result.original.pollingRateHz) Hz")
+            print("Temporary DPI readback: \(result.temporaryDPI.x) x \(result.temporaryDPI.y)")
+            print("Temporary polling: \(result.temporaryPollingHz) Hz")
+            print("Restored state: DPI \(result.restored.dpiX)x\(result.restored.dpiY), polling \(result.restored.pollingRateHz) Hz")
         }
     }
 }

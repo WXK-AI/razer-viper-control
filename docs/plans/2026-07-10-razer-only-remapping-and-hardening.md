@@ -205,14 +205,14 @@ public enum ProfileLoadOutcome: Equatable, Sendable {
 
 **Steps:**
 
-- [ ] Represent editable DPI fields as strings or validated draft values; do not mutate `bundle` until every stage is parseable and within `100...30000`.
-- [ ] Validate active stage and polling rate at the same boundary.
-- [ ] Show field-level errors and disable Apply while the draft is invalid.
-- [ ] Track persistence as `.clean`, `.dirty`, or `.failed(message)` instead of storing save failures in the generic HID warning.
-- [ ] Make `flushPendingSave()` return success/failure.
-- [ ] Prevent termination after a failed required flush unless the user explicitly chooses to discard unsaved changes.
-- [ ] Add tests for intermediate empty text, nonnumeric text, out-of-range values, valid correction, and quit with save failure.
-- [ ] Commit: `fix: validate profile drafts before persistence`.
+- [x] Represent editable DPI fields as strings or validated draft values; do not mutate `bundle` until every stage is parseable and within `100...30000`.
+- [x] Validate active stage and polling rate at the same boundary.
+- [x] Show field-level errors and disable Apply while the draft is invalid.
+- [x] Track persistence as `.clean`, `.dirty`, or `.failed(message)` instead of storing save failures in the generic HID warning.
+- [x] Make `flushPendingSave()` return success/failure.
+- [x] Prevent termination after a failed required flush unless the user explicitly chooses to discard unsaved changes.
+- [x] Add tests for intermediate empty text, nonnumeric text, out-of-range values, valid correction, and quit with save failure.
+- [x] Commit: `fix: validate profile drafts before persistence`.
 
 ### Task 6: Make CLI Parsing And Hardware Mutation Transactional
 
@@ -226,16 +226,16 @@ public enum ProfileLoadOutcome: Equatable, Sendable {
 
 **Steps:**
 
-- [ ] Extract a throwing argument parser. Reject unknown commands, missing/extra parameters, invalid integers, and nonpositive capture durations with exit code 64.
-- [ ] Introduce an injectable command client so CLI behavior can be tested without a mouse.
-- [ ] Capture exact original X/Y DPI, polling, and every wheel value before the first mutation.
-- [ ] Do not mutate a feature whose original value is unknown.
-- [ ] Install guaranteed restoration before mutation. Preserve the primary error and report restoration failure separately.
-- [ ] Verify temporary and restored readback values; return nonzero on mismatch or `.unknown` probe state.
-- [ ] Do not collapse asymmetric X/Y DPI during restoration. Add `setDPI(x:y:)` if required.
-- [ ] Add failure-injection tests after each mutation/readback step and assert exact restoration attempts.
-- [ ] Run: `swift test --disable-sandbox --filter HardwareStateTransactionTests` and CLI parser tests.
-- [ ] Commit: `fix: make CLI probes transactional and strict`.
+- [x] Extract a throwing argument parser. Reject unknown commands, missing/extra parameters, invalid integers, and nonpositive capture durations with exit code 64.
+- [x] Introduce an injectable command client so CLI behavior can be tested without a mouse.
+- [x] Capture exact original X/Y DPI, polling, and every wheel value before the first mutation.
+- [x] Do not mutate a feature whose original value is unknown.
+- [x] Install guaranteed restoration before mutation. Preserve the primary error and report restoration failure separately.
+- [x] Verify temporary and restored readback values; return nonzero on mismatch or `.unknown` probe state.
+- [x] Do not collapse asymmetric X/Y DPI during restoration. Add `setDPI(x:y:)` if required.
+- [x] Add failure-injection tests after each mutation/readback step and assert exact restoration attempts.
+- [x] Run: `swift test --disable-sandbox --filter HardwareStateTransactionTests` and CLI parser tests.
+- [x] Commit: `fix: make CLI probes transactional and strict`.
 
 ### Task 7: Make Packaging And Release Scripts Non-Destructive
 

@@ -151,7 +151,11 @@ public final class RazerCommandClient {
     }
 
     public func setDPI(_ dpi: Int) throws {
-        _ = try send(try .setDPI(x: dpi, y: dpi))
+        try setDPI(x: dpi, y: dpi)
+    }
+
+    public func setDPI(x: Int, y: Int) throws {
+        _ = try send(try .setDPI(x: x, y: y))
     }
 
     public func setDPIStages(activeStage: Int, stages: [Int]) throws {
