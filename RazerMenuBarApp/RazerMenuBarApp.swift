@@ -40,6 +40,7 @@ struct RazerMenuBarApp: App {
 private struct MenuBarContent: View {
     @ObservedObject var model: AppModel
     let openSettings: () -> Void
+    @State private var showSaveFailureAlert = false
 
     var body: some View {
         Text(DeviceDescriptor.productName)
@@ -76,6 +77,7 @@ private struct MenuBarContent: View {
         Button("Apply Profile") {
             model.applySelectedProfile()
         }
+        .disabled(!(model.profileDraft?.isValid ?? true))
 
         Button("Refresh") {
             model.refreshDeviceState()
@@ -84,10 +86,31 @@ private struct MenuBarContent: View {
         Divider()
 
         Button("Quit") {
-            model.flushPendingSave()
-            NSApplication.shared.terminate(nil)
+            if model.flushPendingSave() {
+                NSApplication.shared.terminate(nil)
+            } else {
+                showSaveFailureAlert = true
+            }
         }
         .keyboardShortcut("q")
+        .alert("Could not save profiles", isPresented: $showSaveFailureAlert) {
+            Button("Retry") {
+                if model.flushPendingSave() {
+                    NSApplication.shared.terminate(nil)
+                }
+            }
+            Button("Discard And Quit", role: .destructive) {
+                model.discardUnsavedChangesAndMarkClean()
+                NSApplication.shared.terminate(nil)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if case let .failed(message) = model.persistenceStatus {
+                Text(message)
+            } else {
+                Text("Unsaved profile changes could not be written.")
+            }
+        }
     }
 }
 

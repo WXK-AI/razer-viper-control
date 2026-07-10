@@ -191,8 +191,8 @@ public enum ProfileLoadOutcome: Equatable, Sendable {
 - [x] Update migration tests to remove their temporary directory in teardown.
 - [x] Add tests for first run, malformed JSON, unreadable file, dangling selection, failed quarantine, failed save, and legacy alias migration.
 - [x] Run: `swift test --disable-sandbox --filter ProfileStore`.
-- [ ] Remove existing leaked `profiles-migration-test-*.json` files manually only after confirming they are test artifacts.
-- [ ] Commit: `fix: preserve and recover malformed profile storage`.
+- [x] Remove existing leaked `profiles-migration-test-*.json` files manually only after confirming they are test artifacts.
+- [x] Commit: `fix: preserve and recover malformed profile storage`.
 
 ### Task 5: Separate Valid UI Drafts From Canonical Profiles
 

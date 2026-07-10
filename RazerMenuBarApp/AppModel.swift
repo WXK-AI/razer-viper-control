@@ -14,7 +14,10 @@ final class AppModel: ObservableObject {
     @Published var warningMessage: String?
     @Published var persistenceWarning: String?
     @Published var quarantinedProfileURL: URL?
+    @Published var persistenceStatus: PersistenceStatus = .clean
+    @Published var profileDraft: ProfileDraft?
     @Published var mappingWarning: String?
+    @Published var pendingQuitAfterSaveFailure = false
     @Published var bundle: ProfileBundle
     @Published var launchAtLogin = false
     @Published var showSettings = false
@@ -73,12 +76,17 @@ final class AppModel: ObservableObject {
         configureCaptureSession()
         refreshProfileSummary()
         refreshMappingWarning()
+        reloadDraftFromSelectedProfile()
         startMonitoring()
         syncRemapper()
     }
 
     func dismissPersistenceWarning() {
         persistenceWarning = nil
+    }
+
+    func reloadDraftFromSelectedProfile() {
+        profileDraft = selectedProfile.map(ProfileDraft.init(profile:))
     }
 
     deinit {
@@ -333,13 +341,39 @@ final class AppModel: ObservableObject {
 
     func selectProfile(_ profile: MouseProfile) {
         bundle.selectedProfileID = profile.id
-        flushSaveBundle()
+        reloadDraftFromSelectedProfile()
+        _ = flushPendingSave()
         refreshProfileSummary()
         applySelectedProfile()
         syncRemapper()
     }
 
     func updateProfile(_ profile: MouseProfile) {
+        guard let index = bundle.profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        bundle.profiles[index] = profile
+        if profile.id == selectedProfile?.id {
+            profileDraft = ProfileDraft(profile: profile)
+        }
+        persistenceStatus = .dirty
+        scheduleSaveBundle()
+        refreshProfileSummary()
+        refreshMappingWarning()
+        if bundle.selectedProfileID == profile.id {
+            applySelectedProfile()
+            syncRemapper()
+        }
+    }
+
+    /// Updates the editable draft. Canonical profile hardware fields change only while the draft is valid.
+    func updateDraft(_ draft: ProfileDraft) {
+        profileDraft = draft
+        persistenceStatus = .dirty
+        guard draft.isValid,
+              var profile = selectedProfile,
+              let committed = try? draft.applying(to: profile) else {
+            return
+        }
+        profile = committed
         guard let index = bundle.profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         bundle.profiles[index] = profile
         scheduleSaveBundle()
@@ -361,7 +395,8 @@ final class AppModel: ObservableObject {
         )
         bundle.profiles.append(profile)
         bundle.selectedProfileID = profile.id
-        flushSaveBundle()
+        reloadDraftFromSelectedProfile()
+        _ = flushPendingSave()
         refreshProfileSummary()
         syncRemapper()
     }
@@ -370,7 +405,8 @@ final class AppModel: ObservableObject {
         guard bundle.profiles.count > 1, let selected = selectedProfile else { return }
         bundle.profiles.removeAll { $0.id == selected.id }
         bundle.selectedProfileID = bundle.profiles.first?.id
-        flushSaveBundle()
+        reloadDraftFromSelectedProfile()
+        _ = flushPendingSave()
         refreshProfileSummary()
         syncRemapper()
     }
@@ -529,26 +565,47 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func flushPendingSave() {
+    @discardableResult
+    func flushPendingSave() -> Bool {
         flushSaveBundle()
+    }
+
+    func discardUnsavedChangesAndMarkClean() {
+        saveWorkItem?.cancel()
+        saveWorkItem = nil
+        reloadDraftFromSelectedProfile()
+        persistenceStatus = .clean
+        pendingQuitAfterSaveFailure = false
     }
 
     private func scheduleSaveBundle() {
         saveWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.flushSaveBundle()
+            _ = self?.flushSaveBundle()
         }
         saveWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + saveDebounceInterval, execute: work)
     }
 
-    private func flushSaveBundle() {
+    @discardableResult
+    private func flushSaveBundle() -> Bool {
         saveWorkItem?.cancel()
         saveWorkItem = nil
+        if let draft = profileDraft, draft.isValid, var profile = selectedProfile {
+            if let committed = try? draft.applying(to: profile) {
+                profile = committed
+                if let index = bundle.profiles.firstIndex(where: { $0.id == profile.id }) {
+                    bundle.profiles[index] = profile
+                }
+            }
+        }
         do {
             try profileStore.save(bundle)
+            persistenceStatus = .clean
+            return true
         } catch {
-            warningMessage = error.localizedDescription
+            persistenceStatus = .failed(error.localizedDescription)
+            return false
         }
     }
 

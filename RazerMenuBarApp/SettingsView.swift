@@ -102,7 +102,14 @@ private struct ProfileTab: View {
                 GroupBox("Profile") {
                     VStack(alignment: .leading, spacing: 8) {
                         if let profile = model.selectedProfile {
-                            TextField("Name", text: binding(for: profile, keyPath: \.name))
+                            TextField("Name", text: Binding(
+                                get: { model.profileDraft?.name ?? profile.name },
+                                set: { newValue in
+                                    guard var draft = model.profileDraft else { return }
+                                    draft.name = newValue
+                                    model.updateDraft(draft)
+                                }
+                            ))
                         }
 
                         Picker("Active profile", selection: Binding(
@@ -127,15 +134,22 @@ private struct ProfileTab: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                if let profile = model.selectedProfile {
-                    dpiSection(profile: profile)
-                    pollingSection(profile: profile)
-                    behaviorSection(profile: profile)
+                if let profile = model.selectedProfile, let draft = model.profileDraft {
+                    dpiSection(profile: profile, draft: draft)
+                    pollingSection(profile: profile, draft: draft)
+                    behaviorSection(profile: profile, draft: draft)
+                }
+
+                if case let .failed(message) = model.persistenceStatus {
+                    Text("Could not save profiles: \(message)")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
                 }
 
                 HStack {
                     Button("Apply Now") { model.applySelectedProfile() }
                         .keyboardShortcut(.defaultAction)
+                        .disabled(!(model.profileDraft?.isValid ?? false))
                     Button("Refresh") { model.refreshDeviceState() }
                     Button("Reset Controls") { model.resetSelectedProfileControls() }
                 }
@@ -143,62 +157,89 @@ private struct ProfileTab: View {
         }
     }
 
-    private func dpiSection(profile: MouseProfile) -> some View {
+    private func dpiSection(profile: MouseProfile, draft: ProfileDraft) -> some View {
         GroupBox("DPI Stages") {
             VStack(alignment: .leading, spacing: 8) {
                 Stepper(
-                    "Active stage: \(profile.activeStage)",
-                    value: binding(for: profile, keyPath: \.activeStage),
-                    in: 1...max(profile.dpiStages.count, 1)
+                    "Active stage: \(draft.activeStage)",
+                    value: draftBinding(draft, keyPath: \.activeStage),
+                    in: 1...max(draft.stageTexts.count, 1)
                 )
+                if let error = draft.activeStageError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
-                ForEach(profile.dpiStages.indices, id: \.self) { index in
+                ForEach(draft.stageTexts.indices, id: \.self) { index in
                     HStack {
                         Text("Stage \(index + 1)")
                         Spacer()
-                        TextField("DPI", value: stageBinding(profile: profile, index: index), format: .number)
-                            .frame(width: 90)
+                        TextField(
+                            "DPI",
+                            text: Binding(
+                                get: { draft.stageTexts[index] },
+                                set: { newValue in
+                                    var updated = draft
+                                    updated.stageTexts[index] = newValue
+                                    model.updateDraft(updated)
+                                }
+                            )
+                        )
+                        .frame(width: 90)
+                    }
+                    if let error = draft.stageErrors[index] {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
                 }
 
                 HStack {
                     Button("Add Stage") {
-                        var updated = profile
-                        guard updated.dpiStages.count < DeviceDescriptor.maxDPIStages else { return }
-                        updated.dpiStages.append(updated.dpiStages.last ?? 800)
-                        model.updateProfile(updated)
+                        var updated = draft
+                        guard updated.stageTexts.count < DeviceDescriptor.maxDPIStages else { return }
+                        updated.stageTexts.append(updated.stageTexts.last ?? "800")
+                        model.updateDraft(updated)
                     }
-                    .disabled(profile.dpiStages.count >= DeviceDescriptor.maxDPIStages)
+                    .disabled(draft.stageTexts.count >= DeviceDescriptor.maxDPIStages)
 
                     Button("Remove Stage") {
-                        var updated = profile
-                        guard updated.dpiStages.count > 1 else { return }
-                        updated.dpiStages.removeLast()
-                        updated.activeStage = min(updated.activeStage, updated.dpiStages.count)
-                        model.updateProfile(updated)
+                        var updated = draft
+                        guard updated.stageTexts.count > 1 else { return }
+                        updated.stageTexts.removeLast()
+                        updated.activeStage = min(updated.activeStage, updated.stageTexts.count)
+                        model.updateDraft(updated)
                     }
-                    .disabled(profile.dpiStages.count <= 1)
+                    .disabled(draft.stageTexts.count <= 1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func pollingSection(profile: MouseProfile) -> some View {
+    private func pollingSection(profile: MouseProfile, draft: ProfileDraft) -> some View {
         GroupBox("Polling Rate") {
-            Picker("Hz", selection: binding(for: profile, keyPath: \.pollingRateHz)) {
-                ForEach(DeviceDescriptor.supportedPollingRates, id: \.self) { rate in
-                    Text("\(rate) Hz").tag(rate)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Hz", selection: draftBinding(draft, keyPath: \.pollingRateHz)) {
+                    ForEach(DeviceDescriptor.supportedPollingRates, id: \.self) { rate in
+                        Text("\(rate) Hz").tag(rate)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if let error = draft.pollingError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
-            .pickerStyle(.segmented)
         }
     }
 
-    private func behaviorSection(profile: MouseProfile) -> some View {
+    private func behaviorSection(profile: MouseProfile, draft: ProfileDraft) -> some View {
         GroupBox("Behavior") {
-            Toggle("Auto-reapply profile on launch/reconnect", isOn: binding(for: profile, keyPath: \.autoReapplyEnabled))
-            Toggle("Enable software remapper", isOn: binding(for: profile, keyPath: \.remapperEnabled))
+            Toggle("Auto-reapply profile on launch/reconnect", isOn: draftBinding(draft, keyPath: \.autoReapplyEnabled))
+            Toggle("Enable software remapper", isOn: draftBinding(draft, keyPath: \.remapperEnabled))
             Toggle("Launch at login", isOn: Binding(
                 get: { model.launchAtLogin },
                 set: { model.setLaunchAtLogin($0) }
@@ -223,16 +264,13 @@ private struct ProfileTab: View {
         )
     }
 
-    private func stageBinding(profile: MouseProfile, index: Int) -> Binding<Int> {
+    private func draftBinding<T>(_ draft: ProfileDraft, keyPath: WritableKeyPath<ProfileDraft, T>) -> Binding<T> {
         Binding(
-            get: {
-                model.bundle.profiles.first(where: { $0.id == profile.id })?.dpiStages[index]
-                    ?? profile.dpiStages[index]
-            },
+            get: { draft[keyPath: keyPath] },
             set: { newValue in
-                var updated = profile
-                updated.dpiStages[index] = newValue
-                model.updateProfile(updated)
+                var updated = draft
+                updated[keyPath: keyPath] = newValue
+                model.updateDraft(updated)
             }
         )
     }
