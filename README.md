@@ -57,12 +57,14 @@ Get the latest release from **[GitHub Releases](https://github.com/WXK-AI/razer-
 
 ### First launch and Gatekeeper
 
-GitHub CI builds are **ad-hoc signed** (not notarized). macOS may block the first launch:
+Current GitHub CI builds are **ad-hoc signed** (not notarized). macOS may block the first launch:
 
 - **Right-click** the app → **Open** → **Open** again, or
 - **System Settings → Privacy & Security** → **Open Anyway**
 
 After the first successful launch, double-click works normally.
+
+The official v2 release path is **Developer ID signed and notarized**. Ad-hoc builds cannot activate the HID DriverKit extension required for Razer-only remapping.
 
 ### Install (zip)
 
@@ -178,11 +180,28 @@ make release-dmg    # unsigned release + DMG in build/Release/
 
 ---
 
+## Release prerequisites (v2 / Razer-only remapping)
+
+Razer-only button and wheel remapping requires an Apple-approved **HID DriverKit** system extension that exclusively owns `1532:00B8`. Without that extension:
+
+- Local profile editing still works
+- Hardware read/apply and remapping stay disabled, with an actionable driver status in Settings
+- There is **no** system-wide `CGEvent` remapping fallback
+
+Before a distributable release:
+
+1. Apple approves the DriverKit entitlement group for the team (see [`docs/driverkit-entitlements.md`](docs/driverkit-entitlements.md))
+2. Host app and driver App IDs / provisioning profiles exist
+3. Developer ID signing and notarization credentials are available (local or CI)
+4. Physical acceptance on a Viper V3 HyperSpeed plus a second pointing device passes
+
+Ad-hoc or unsigned builds are for development only; they are not a substitute for a notarized DriverKit release.
+
 ## Scope and limitations
 
-- **Device:** Razer Viper V3 HyperSpeed (`1532:00B8`) only in v1
+- **Device:** Razer Viper V3 HyperSpeed (`1532:00B8`) only
 - **No** RGB, onboard profile save, or Mac App Store distribution
-- **CI builds:** ad-hoc signed, arm64 only
+- **CI builds today:** ad-hoc signed, arm64 only (official path: Developer ID + notarization)
 - **Unofficial:** not affiliated with Razer Inc.
 
 ---
