@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import RazerCore
 
 struct SettingsView: View {
@@ -9,6 +10,9 @@ struct SettingsView: View {
             header
             if let warning = model.warningMessage {
                 warningBanner(warning)
+            }
+            if let warning = model.persistenceWarning {
+                persistenceWarningBanner(warning)
             }
             if let warning = model.mappingWarning {
                 warningBanner(warning)
@@ -57,6 +61,27 @@ struct SettingsView: View {
                 }
                 if text.localizedCaseInsensitiveContains("Accessibility") {
                     Button("Open Accessibility") { model.openAccessibilitySettings() }
+                }
+            }
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func persistenceWarningBanner(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.orange)
+            HStack {
+                if let url = model.quarantinedProfileURL {
+                    Button("Reveal Quarantined File") {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                }
+                Button("Dismiss") {
+                    model.dismissPersistenceWarning()
                 }
             }
         }

@@ -1,4 +1,5 @@
 import Foundation
+import IOKit.hid
 
 public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
@@ -103,9 +104,16 @@ public struct ProfileBundle: Codable, Equatable, Sendable {
     }
 }
 
-public enum ProfileStoreError: Error, LocalizedError {
+public enum ProfileLoadOutcome: Equatable, Sendable {
+    case loaded(ProfileBundle)
+    case firstRun(ProfileBundle)
+    case recovered(ProfileBundle, quarantinedURL: URL, reason: String)
+}
+
+public enum ProfileStoreError: Error, LocalizedError, Equatable {
     case validation(RazerValidationError)
     case writeFailed(String)
+    case quarantineFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -113,45 +121,96 @@ public enum ProfileStoreError: Error, LocalizedError {
             return error.localizedDescription
         case let .writeFailed(details):
             return "Failed to save profiles: \(details)"
+        case let .quarantineFailed(details):
+            return "Failed to quarantine corrupt profiles: \(details)"
         }
     }
 }
 
 public final class ProfileStore {
     private let fileURL: URL
+    private let directoryURL: URL
+    private let deviceKey: String
+    private let fileManager: FileManager
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let now: () -> Date
 
-    public init(deviceKey: String = DeviceDescriptor.deviceKey, fileManager: FileManager = .default) {
-        let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    public init(
+        deviceKey: String = DeviceDescriptor.deviceKey,
+        applicationSupportDirectory: URL? = nil,
+        fileManager: FileManager = .default,
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.deviceKey = deviceKey
+        self.fileManager = fileManager
+        self.now = now
+
+        let support = applicationSupportDirectory
+            ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let folder = support.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
         try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        directoryURL = folder
         fileURL = folder.appendingPathComponent("profiles-\(deviceKey).json")
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     }
 
     public var storageURL: URL { fileURL }
+    public var storageDirectoryURL: URL { directoryURL }
 
     public func load() -> ProfileBundle {
-        guard let data = try? Data(contentsOf: fileURL),
-              var bundle = try? decoder.decode(ProfileBundle.self, from: data) else {
-            return defaultBundle()
+        switch loadOutcome() {
+        case let .loaded(bundle), let .firstRun(bundle), let .recovered(bundle, _, _):
+            return bundle
         }
+    }
+
+    public func loadOutcome() -> ProfileLoadOutcome {
+        if !fileManager.fileExists(atPath: fileURL.path) {
+            return .firstRun(defaultBundle())
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL)
+        } catch {
+            return quarantineAndRecover(reason: "unreadable profile file: \(error.localizedDescription)")
+        }
+
+        let decoded: ProfileBundle
+        do {
+            decoded = try decoder.decode(ProfileBundle.self, from: data)
+        } catch {
+            return quarantineAndRecover(reason: "malformed profile JSON: \(error.localizedDescription)")
+        }
+
+        var bundle = decoded
         for index in bundle.profiles.indices {
             bundle.profiles[index].migrateButton2Alias()
         }
-        return bundle
+
+        let repaired = repairSelection(bundle)
+        if repaired != decoded {
+            try? save(repaired)
+        }
+        return .loaded(repaired)
     }
 
     public func save(_ bundle: ProfileBundle) throws {
         for profile in bundle.profiles {
-            _ = try ProfileValidator.validateStages(profile.dpiStages, activeStage: profile.activeStage)
-            try ProfileValidator.validatePollingRate(profile.pollingRateHz)
+            do {
+                _ = try ProfileValidator.validateStages(profile.dpiStages, activeStage: profile.activeStage)
+                try ProfileValidator.validatePollingRate(profile.pollingRateHz)
+            } catch let error as RazerValidationError {
+                throw ProfileStoreError.validation(error)
+            }
         }
 
         do {
             let data = try encoder.encode(bundle)
             try data.write(to: fileURL, options: .atomic)
+        } catch let error as ProfileStoreError {
+            throw error
         } catch {
             throw ProfileStoreError.writeFailed(error.localizedDescription)
         }
@@ -166,6 +225,44 @@ public final class ProfileStore {
             autoReapplyEnabled: true
         )
         return ProfileBundle(selectedProfileID: profile.id, profiles: [profile])
+    }
+
+    private func repairSelection(_ bundle: ProfileBundle) -> ProfileBundle {
+        var repaired = bundle
+        if repaired.profiles.isEmpty {
+            return defaultBundle()
+        }
+        if let selected = repaired.selectedProfileID,
+           repaired.profiles.contains(where: { $0.id == selected }) {
+            return repaired
+        }
+        repaired.selectedProfileID = repaired.profiles[0].id
+        return repaired
+    }
+
+    private func quarantineAndRecover(reason: String) -> ProfileLoadOutcome {
+        let defaults = defaultBundle()
+        let stamp = Self.quarantineTimestamp(from: now())
+        let quarantineURL = directoryURL.appendingPathComponent(
+            "profiles-\(deviceKey)-corrupt-\(stamp).json"
+        )
+
+        do {
+            if fileManager.fileExists(atPath: quarantineURL.path) {
+                try fileManager.removeItem(at: quarantineURL)
+            }
+            try fileManager.moveItem(at: fileURL, to: quarantineURL)
+            return .recovered(defaults, quarantinedURL: quarantineURL, reason: reason)
+        } catch {
+            let combined = "\(reason); quarantine failed: \(error.localizedDescription)"
+            return .recovered(defaults, quarantinedURL: fileURL, reason: combined)
+        }
+    }
+
+    private static func quarantineTimestamp(from date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date).replacingOccurrences(of: ":", with: "-")
     }
 }
 

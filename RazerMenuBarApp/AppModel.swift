@@ -12,6 +12,8 @@ final class AppModel: ObservableObject {
     @Published var pollingRateHz = 1000
     @Published var statusMessage = "Waiting for mouse…"
     @Published var warningMessage: String?
+    @Published var persistenceWarning: String?
+    @Published var quarantinedProfileURL: URL?
     @Published var mappingWarning: String?
     @Published var bundle: ProfileBundle
     @Published var launchAtLogin = false
@@ -48,7 +50,18 @@ final class AppModel: ObservableObject {
     }
 
     init() {
-        bundle = profileStore.load()
+        switch profileStore.loadOutcome() {
+        case let .loaded(loaded):
+            bundle = loaded
+        case let .firstRun(defaults):
+            bundle = defaults
+            try? profileStore.save(bundle)
+        case let .recovered(defaults, quarantinedURL, reason):
+            bundle = defaults
+            quarantinedProfileURL = quarantinedURL
+            persistenceWarning = "Saved profiles were unreadable and were reset to defaults. \(reason)"
+            try? profileStore.save(bundle)
+        }
         if bundle.profiles.isEmpty {
             bundle = profileStore.defaultBundle()
             try? profileStore.save(bundle)
@@ -62,6 +75,10 @@ final class AppModel: ObservableObject {
         refreshMappingWarning()
         startMonitoring()
         syncRemapper()
+    }
+
+    func dismissPersistenceWarning() {
+        persistenceWarning = nil
     }
 
     deinit {

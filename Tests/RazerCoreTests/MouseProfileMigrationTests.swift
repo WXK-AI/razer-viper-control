@@ -2,6 +2,21 @@ import XCTest
 @testable import RazerCore
 
 final class MouseProfileMigrationTests: XCTestCase {
+    private var tempDirectory: URL!
+
+    override func setUpWithError() throws {
+        tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("razer-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let tempDirectory {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        tempDirectory = nil
+    }
+
     private func sampleProfile(buttonMappings: [PhysicalControl: ButtonAction]) -> MouseProfile {
         MouseProfile(
             name: "Test",
@@ -70,8 +85,10 @@ final class MouseProfileMigrationTests: XCTestCase {
         )
         let bundle = ProfileBundle(selectedProfileID: profileID, profiles: [profile])
 
-        let store = ProfileStore(deviceKey: "migration-test-\(UUID().uuidString)", fileManager: .default)
-        try? FileManager.default.removeItem(at: store.storageURL)
+        let store = ProfileStore(
+            deviceKey: "migration-test-\(UUID().uuidString)",
+            applicationSupportDirectory: tempDirectory
+        )
         try store.save(bundle)
 
         let loaded = store.load()

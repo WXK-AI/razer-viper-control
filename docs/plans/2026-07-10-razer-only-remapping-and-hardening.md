@@ -98,7 +98,7 @@ No product or architecture questions remain. Entitlement approval, verified inte
 - [ ] Create explicit App IDs and development/distribution profiles for `com.razermenubar.RazerMenuBarApp` and `com.razermenubar.RazerViperHIDDriver`. *(operator)*
 - [x] Document identifiers, requested capabilities, approval status, profile names, and renewal dates without committing certificates, credentials, or profile files.
 - [x] Add a README release prerequisite explaining that Razer-only remapping requires the approved extension and that ad-hoc releases cannot activate it.
-- [ ] Commit: `docs: record DriverKit entitlement and signing gates`.
+- [x] Commit: `docs: record DriverKit entitlement and signing gates`.
 
 **Verification:** Confirm the entitlement request is visible in the Apple developer account and both local development profiles can be selected by Xcode.
 
@@ -118,7 +118,7 @@ No product or architecture questions remain. Entitlement approval, verified inte
 - [x] Add a serialization test proving a report with fewer or more than 80 argument bytes cannot crash `bytes`.
 - [x] Run: `swift test --disable-sandbox --filter RazerReportTests`.
 - [x] Expected before implementation: the offset and malformed-response tests fail.
-- [ ] Commit tests separately: `test: cover Razer response layout and correlation`.
+- [x] Commit tests separately: `test: cover Razer response layout and correlation`.
 
 ### Task 3: Harden Report Encoding, Decoding, And Response Correlation
 
@@ -158,7 +158,7 @@ public enum RazerResponseValidator {
 - [x] Treat correlation mismatch as `invalidResponse`; allow the caller to invalidate/reopen the session.
 - [x] Avoid sleeping after the final BUSY attempt.
 - [x] Run: `swift test --disable-sandbox --filter RazerReportTests` and `swift test --disable-sandbox --filter RazerResponseValidatorTests`.
-- [ ] Commit: `fix: validate and correlate Razer feature reports`.
+- [x] Commit: `fix: validate and correlate Razer feature reports`.
 
 ### Task 4: Make Profile Loading Recoverable And Tests Hermetic
 
@@ -182,15 +182,15 @@ public enum ProfileLoadOutcome: Equatable, Sendable {
 
 **Steps:**
 
-- [ ] Add an injectable application-support directory URL. Tests must use a unique temporary directory, not `FileManager.default` production storage.
-- [ ] Distinguish file-not-found from read failure and decode failure.
-- [ ] On corruption, atomically move the source to `profiles-<device>-corrupt-<timestamp>.json` before returning defaults.
-- [ ] Preserve the corruption warning until the user dismisses it; successful HID refresh must not clear it.
-- [ ] Repair nil/dangling `selectedProfileID` to the actual fallback profile ID during load and save the repaired bundle.
-- [ ] Return validation errors without replacing the last valid persisted bundle.
-- [ ] Update migration tests to remove their temporary directory in teardown.
-- [ ] Add tests for first run, malformed JSON, unreadable file, dangling selection, failed quarantine, failed save, and legacy alias migration.
-- [ ] Run: `swift test --disable-sandbox --filter ProfileStore`.
+- [x] Add an injectable application-support directory URL. Tests must use a unique temporary directory, not `FileManager.default` production storage.
+- [x] Distinguish file-not-found from read failure and decode failure.
+- [x] On corruption, atomically move the source to `profiles-<device>-corrupt-<timestamp>.json` before returning defaults.
+- [x] Preserve the corruption warning until the user dismisses it; successful HID refresh must not clear it.
+- [x] Repair nil/dangling `selectedProfileID` to the actual fallback profile ID during load and save the repaired bundle.
+- [x] Return validation errors without replacing the last valid persisted bundle.
+- [x] Update migration tests to remove their temporary directory in teardown.
+- [x] Add tests for first run, malformed JSON, unreadable file, dangling selection, failed quarantine, failed save, and legacy alias migration.
+- [x] Run: `swift test --disable-sandbox --filter ProfileStore`.
 - [ ] Remove existing leaked `profiles-migration-test-*.json` files manually only after confirming they are test artifacts.
 - [ ] Commit: `fix: preserve and recover malformed profile storage`.
 
