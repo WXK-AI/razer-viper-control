@@ -132,6 +132,8 @@ final class RazerResponseValidatorTests: XCTestCase {
         let request = RazerReport.getScrollMode()
         var response = request
         response.status = RazerReportStatus.notSupported.rawValue
+        // Error/unsupported replies are not required to echo request dataSize.
+        response.dataSize = 0x00
         response.refreshCRC()
 
         let result = try RazerResponseValidator.validate(

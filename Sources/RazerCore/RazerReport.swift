@@ -320,6 +320,16 @@ public struct RazerReport: Equatable, Sendable {
     }
 
     public func decodeDPIStages() throws -> (activeStage: Int, stages: [(x: Int, y: Int)]) {
+        // Layout: [store][active][count] then count × [index][x_hi][x_lo][y_hi][y_lo][0][0]
+        // Compare against declared dataSize — arguments is always normalized to 80 bytes.
+        let declaredPayloadLength = Int(dataSize)
+        guard declaredPayloadLength >= 3 else {
+            throw RazerReportError.truncatedDPIStagesPayload(
+                requiredBytes: 3,
+                available: declaredPayloadLength
+            )
+        }
+
         let activeStage = Int(arguments[1])
         let count = Int(arguments[2])
 
@@ -333,10 +343,12 @@ public struct RazerReport: Equatable, Sendable {
             throw RazerValidationError.invalidActiveStage(activeStage, stageCount: count)
         }
 
-        // Layout: [store][active][count] then count × [index][x_hi][x_lo][y_hi][y_lo][0][0]
         let requiredArgumentBytes = 3 + (count * 7)
-        guard requiredArgumentBytes <= arguments.count else {
-            throw RazerReportError.truncatedDPIStagesPayload(requiredBytes: requiredArgumentBytes, available: arguments.count)
+        guard requiredArgumentBytes <= declaredPayloadLength else {
+            throw RazerReportError.truncatedDPIStagesPayload(
+                requiredBytes: requiredArgumentBytes,
+                available: declaredPayloadLength
+            )
         }
 
         var stages: [(x: Int, y: Int)] = []

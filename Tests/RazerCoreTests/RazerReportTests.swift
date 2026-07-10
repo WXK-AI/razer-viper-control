@@ -153,16 +153,17 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testDecodeDPIStagesRejectsTruncatedStagePayload() throws {
+        // count=2 requires 3 + 2*7 = 17 argument bytes; declare only 11 so truncation is real.
         var report = RazerReport.makeCommand(
             commandClass: 0x04,
             commandID: 0x86,
-            dataSize: 0x26,
+            dataSize: 11,
             arguments: [RazerVariableStorage.varStore.rawValue]
         )
         report.status = RazerReportStatus.successful.rawValue
         report.arguments[1] = 1
         report.arguments[2] = 2
-        // Only first stage fully present; second stage truncated inside declared count.
+        // First stage fully present so a weak guard cannot pass via invalidDPI(0).
         report.arguments[3] = 0
         report.arguments[4] = 0x03
         report.arguments[5] = 0x20
@@ -171,9 +172,33 @@ final class RazerReportTests: XCTestCase {
         report.arguments[8] = 0
         report.arguments[9] = 0
         report.arguments[10] = 1
-        // Missing X/Y for stage index 1
         report.refreshCRC()
-        XCTAssertThrowsError(try report.decodeDPIStages())
+        XCTAssertThrowsError(try report.decodeDPIStages()) { error in
+            XCTAssertEqual(
+                error as? RazerReportError,
+                .truncatedDPIStagesPayload(requiredBytes: 17, available: 11)
+            )
+        }
+    }
+
+    func testDecodeDPIStagesRejectsShortHeaderBeforeReadingActiveOrCount() throws {
+        var report = RazerReport.makeCommand(
+            commandClass: 0x04,
+            commandID: 0x86,
+            dataSize: 2,
+            arguments: [RazerVariableStorage.varStore.rawValue]
+        )
+        report.status = RazerReportStatus.successful.rawValue
+        // Plausible undeclared bytes outside dataSize — must not drive empty/tooMany/invalidActive.
+        report.arguments[1] = 1
+        report.arguments[2] = 0
+        report.refreshCRC()
+        XCTAssertThrowsError(try report.decodeDPIStages()) { error in
+            XCTAssertEqual(
+                error as? RazerReportError,
+                .truncatedDPIStagesPayload(requiredBytes: 3, available: 2)
+            )
+        }
     }
 
     func testDecodeDPIStagesRejectsActiveStageOutsideCount() throws {

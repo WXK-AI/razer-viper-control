@@ -32,10 +32,13 @@ public enum RazerResponseValidator {
         guard response.commandID == request.commandID else {
             throw RazerCommandError.invalidResponse("command ID mismatch")
         }
-        try validateDataSize(response: response, for: request)
 
         switch response.responseStatus {
         case .successful:
+            // Exact dataSize match is provisional policy for successful replies only.
+            // Unsupported/error statuses are not required to echo request dataSize until
+            // captured Viper V3 fixtures confirm device behavior (see docs/testing/).
+            try validateDataSize(response: response, for: request)
             return .success(response)
         case .busy:
             throw RazerCommandError.deviceBusy
@@ -56,8 +59,10 @@ public enum RazerResponseValidator {
         }
     }
 
-    /// Fixed responses require an exact `dataSize` match.
-    /// Commands that may return a larger known payload can be listed here later with an explicit minimum.
+    /// Successful fixed responses require an exact `dataSize` match.
+    /// **Unconfirmed on physical Viper V3 HyperSpeed** until captured fixtures exist under
+    /// `docs/testing/device-fixtures/`. Commands that return a larger known payload can later
+    /// document an explicit minimum here.
     private static func validateDataSize(response: RazerReport, for request: RazerReport) throws {
         guard response.dataSize == request.dataSize else {
             throw RazerCommandError.invalidResponse("data size mismatch")
