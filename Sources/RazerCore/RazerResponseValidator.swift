@@ -1,7 +1,11 @@
 import Foundation
 
+/// Injectable transport for 90-byte Razer feature-report round trips.
+public protocol RazerReportTransport: Sendable {
+    func roundTrip(_ request: [UInt8]) throws -> [UInt8]
+}
+
 /// Validates feature-report responses against the originating request.
-/// Task 2 ships a CRC/status-only stub so correlation tests fail until Task 3.
 public enum RazerResponseValidator {
     public static func validate(
         response: RazerReport,
@@ -13,8 +17,22 @@ public enum RazerResponseValidator {
             throw RazerCommandError.invalidResponse("CRC mismatch.")
         }
 
-        // Intentionally incomplete: no transaction / command correlation yet.
-        _ = request
+        guard response.transactionID == request.transactionID else {
+            throw RazerCommandError.invalidResponse("transaction ID mismatch")
+        }
+        guard response.remainingPackets == 0 else {
+            throw RazerCommandError.invalidResponse("remaining packets mismatch")
+        }
+        guard response.protocolType == request.protocolType else {
+            throw RazerCommandError.invalidResponse("protocol type mismatch")
+        }
+        guard response.commandClass == request.commandClass else {
+            throw RazerCommandError.invalidResponse("command class mismatch")
+        }
+        guard response.commandID == request.commandID else {
+            throw RazerCommandError.invalidResponse("command ID mismatch")
+        }
+        try validateDataSize(response: response, for: request)
 
         switch response.responseStatus {
         case .successful:
@@ -35,6 +53,14 @@ public enum RazerResponseValidator {
                 throw RazerCommandError.blockedDeviceAccess("status 0x00 — no acknowledgement")
             }
             throw RazerCommandError.invalidResponse("status 0x\(String(response.status, radix: 16))")
+        }
+    }
+
+    /// Fixed responses require an exact `dataSize` match.
+    /// Commands that may return a larger known payload can be listed here later with an explicit minimum.
+    private static func validateDataSize(response: RazerReport, for request: RazerReport) throws {
+        guard response.dataSize == request.dataSize else {
+            throw RazerCommandError.invalidResponse("data size mismatch")
         }
     }
 }

@@ -118,7 +118,9 @@ public final class RazerCommandClient {
                 return try performRoundTrip(request)
             } catch RazerCommandError.deviceBusy {
                 lastError = RazerCommandError.deviceBusy
-                Thread.sleep(forTimeInterval: 0.05 * Double(attempt))
+                if attempt < DeviceDescriptor.maxCommandRetries {
+                    Thread.sleep(forTimeInterval: 0.05 * Double(attempt))
+                }
             } catch {
                 throw error
             }
@@ -170,7 +172,9 @@ public final class RazerCommandClient {
                 return report
             } catch RazerCommandError.deviceBusy {
                 lastError = RazerCommandError.deviceBusy
-                Thread.sleep(forTimeInterval: 0.05 * Double(attempt))
+                if attempt < DeviceDescriptor.maxCommandRetries {
+                    Thread.sleep(forTimeInterval: 0.05 * Double(attempt))
+                }
             } catch {
                 throw error
             }
@@ -319,45 +323,15 @@ public final class RazerCommandClient {
         }
 
         let report = try RazerReport(bytes: response)
-        return try validateResponseAllowingUnsupported(report, for: request)
+        return try RazerResponseValidator.validate(
+            response: report,
+            for: request,
+            allowingUnsupported: true
+        )
     }
 
     private func performRoundTrip(_ request: RazerReport) throws -> RazerReport {
         switch try performRoundTripAllowingUnsupported(request) {
-        case let .success(report):
-            return report
-        case .notSupported:
-            throw RazerCommandError.unsupportedCommand
-        }
-    }
-
-    private func validateResponseAllowingUnsupported(_ response: RazerReport, for request: RazerReport) throws -> CommandSendResult {
-        let expectedCRC = RazerReport.calculateCRC(for: response.bytes)
-        guard response.crc == expectedCRC else {
-            throw RazerCommandError.invalidResponse("CRC mismatch.")
-        }
-
-        switch response.responseStatus {
-        case .successful:
-            return .success(response)
-        case .busy:
-            throw RazerCommandError.deviceBusy
-        case .notSupported:
-            return .notSupported
-        case .timeout:
-            throw RazerCommandError.timeout
-        case .failure:
-            throw RazerCommandError.invalidResponse("Command failed.")
-        case .newCommand, .none:
-            if response.status == 0x00 && response.commandClass == request.commandClass {
-                throw RazerCommandError.blockedDeviceAccess("status 0x00 — no acknowledgement")
-            }
-            throw RazerCommandError.invalidResponse("status 0x\(String(response.status, radix: 16))")
-        }
-    }
-
-    private func validateResponse(_ response: RazerReport, for request: RazerReport) throws -> RazerReport {
-        switch try validateResponseAllowingUnsupported(response, for: request) {
         case let .success(report):
             return report
         case .notSupported:

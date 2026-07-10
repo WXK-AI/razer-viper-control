@@ -148,16 +148,16 @@ public enum RazerResponseValidator {
 
 **Steps:**
 
-- [ ] Change DPI-stage decoding to read X from `[offset, offset + 1]` and Y from `[offset + 2, offset + 3]`, then advance by seven.
-- [ ] Validate `dataSize <= 80` while decoding raw reports.
-- [ ] Validate DPI stage count, declared payload length, active stage, and decoded DPI ranges before returning stage data.
-- [ ] Make `RazerReport.arguments` fixed-length by construction. Reject or normalize external arrays at initialization and prevent callers from replacing them with a differently sized array.
-- [ ] Extract response validation from the IOHID implementation so it can be tested without hardware and reused after DriverKit migration.
-- [ ] Require matching transaction ID, zero remaining packets, protocol type, command class, and command ID before accepting status.
-- [ ] Decide data-size compatibility per command: exact match for fixed responses; explicitly documented minimum only where the device returns a larger known payload.
-- [ ] Treat correlation mismatch as `invalidResponse`; allow the caller to invalidate/reopen the session.
-- [ ] Avoid sleeping after the final BUSY attempt.
-- [ ] Run: `swift test --disable-sandbox --filter RazerReportTests` and `swift test --disable-sandbox --filter RazerResponseValidatorTests`.
+- [x] Change DPI-stage decoding to read X from `[offset, offset + 1]` and Y from `[offset + 2, offset + 3]`, then advance by seven.
+- [x] Validate `dataSize <= 80` while decoding raw reports.
+- [x] Validate DPI stage count, declared payload length, active stage, and decoded DPI ranges before returning stage data.
+- [x] Make `RazerReport.arguments` fixed-length by construction. Reject or normalize external arrays at initialization and prevent callers from replacing them with a differently sized array.
+- [x] Extract response validation from the IOHID implementation so it can be tested without hardware and reused after DriverKit migration.
+- [x] Require matching transaction ID, zero remaining packets, protocol type, command class, and command ID before accepting status.
+- [x] Decide data-size compatibility per command: exact match for fixed responses; explicitly documented minimum only where the device returns a larger known payload.
+- [x] Treat correlation mismatch as `invalidResponse`; allow the caller to invalidate/reopen the session.
+- [x] Avoid sleeping after the final BUSY attempt.
+- [x] Run: `swift test --disable-sandbox --filter RazerReportTests` and `swift test --disable-sandbox --filter RazerResponseValidatorTests`.
 - [ ] Commit: `fix: validate and correlate Razer feature reports`.
 
 ### Task 4: Make Profile Loading Recoverable And Tests Hermetic

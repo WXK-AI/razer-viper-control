@@ -17,6 +17,7 @@ public enum RazerVariableStorage: UInt8 {
 /// Independent encoder/decoder for the 90-byte Razer HID configuration packet.
 public struct RazerReport: Equatable, Sendable {
     public static let length = DeviceDescriptor.featureReportLength
+    public static let argumentLength = 80
 
     public var status: UInt8
     public var transactionID: UInt8
@@ -25,9 +26,14 @@ public struct RazerReport: Equatable, Sendable {
     public var dataSize: UInt8
     public var commandClass: UInt8
     public var commandID: UInt8
-    public var arguments: [UInt8]
+    public var arguments: [UInt8] {
+        get { _arguments }
+        set { _arguments = Self.normalizedArguments(newValue) }
+    }
     public var crc: UInt8
     public var reserved: UInt8
+
+    private var _arguments: [UInt8]
 
     public init(
         status: UInt8 = 0,
@@ -37,7 +43,7 @@ public struct RazerReport: Equatable, Sendable {
         dataSize: UInt8 = 0,
         commandClass: UInt8 = 0,
         commandID: UInt8 = 0,
-        arguments: [UInt8] = Array(repeating: 0, count: 80),
+        arguments: [UInt8] = Array(repeating: 0, count: argumentLength),
         crc: UInt8 = 0,
         reserved: UInt8 = 0
     ) {
@@ -48,7 +54,7 @@ public struct RazerReport: Equatable, Sendable {
         self.dataSize = dataSize
         self.commandClass = commandClass
         self.commandID = commandID
-        self.arguments = arguments
+        self._arguments = Self.normalizedArguments(arguments)
         self.crc = crc
         self.reserved = reserved
     }
@@ -57,14 +63,18 @@ public struct RazerReport: Equatable, Sendable {
         guard bytes.count == Self.length else {
             throw RazerReportError.invalidLength(expected: Self.length, actual: bytes.count)
         }
+        let size = bytes[5]
+        guard size <= UInt8(Self.argumentLength) else {
+            throw RazerReportError.invalidDataSize(size)
+        }
         status = bytes[0]
         transactionID = bytes[1]
         remainingPackets = UInt16(bytes[2]) << 8 | UInt16(bytes[3])
         protocolType = bytes[4]
-        dataSize = bytes[5]
+        dataSize = size
         commandClass = bytes[6]
         commandID = bytes[7]
-        arguments = Array(bytes[8..<88])
+        _arguments = Array(bytes[8..<88])
         crc = bytes[88]
         reserved = bytes[89]
     }
@@ -79,8 +89,8 @@ public struct RazerReport: Equatable, Sendable {
         report[5] = dataSize
         report[6] = commandClass
         report[7] = commandID
-        for index in 0..<80 {
-            report[8 + index] = arguments[index]
+        for index in 0..<Self.argumentLength {
+            report[8 + index] = _arguments[index]
         }
         report[88] = crc
         report[89] = reserved
@@ -97,6 +107,16 @@ public struct RazerReport: Equatable, Sendable {
         return bytes[2..<88].reduce(0, ^)
     }
 
+    public static func normalizedArguments(_ arguments: [UInt8]) -> [UInt8] {
+        if arguments.count == argumentLength {
+            return arguments
+        }
+        if arguments.count > argumentLength {
+            return Array(arguments.prefix(argumentLength))
+        }
+        return arguments + Array(repeating: 0, count: argumentLength - arguments.count)
+    }
+
     public static func makeCommand(
         commandClass: UInt8,
         commandID: UInt8,
@@ -109,7 +129,7 @@ public struct RazerReport: Equatable, Sendable {
             commandClass: commandClass,
             commandID: commandID
         )
-        for (index, value) in arguments.prefix(80).enumerated() {
+        for (index, value) in arguments.prefix(argumentLength).enumerated() {
             report.arguments[index] = value
         }
         report.refreshCRC()
@@ -233,7 +253,7 @@ public struct RazerReport: Equatable, Sendable {
 
     public static func setDPIStages(activeStage: Int, stages: [Int]) throws -> RazerReport {
         let validated = try ProfileValidator.validateStages(stages, activeStage: activeStage)
-        var args = [UInt8](repeating: 0, count: 80)
+        var args = [UInt8](repeating: 0, count: argumentLength)
         args[0] = RazerVariableStorage.varStore.rawValue
         args[1] = UInt8(validated.activeStage)
         args[2] = UInt8(validated.stages.count)
@@ -302,13 +322,34 @@ public struct RazerReport: Equatable, Sendable {
     public func decodeDPIStages() throws -> (activeStage: Int, stages: [(x: Int, y: Int)]) {
         let activeStage = Int(arguments[1])
         let count = Int(arguments[2])
+
+        guard count > 0 else {
+            throw RazerValidationError.emptyDPIStages
+        }
+        guard count <= DeviceDescriptor.maxDPIStages else {
+            throw RazerValidationError.tooManyDPIStages(count)
+        }
+        guard activeStage >= 1, activeStage <= count else {
+            throw RazerValidationError.invalidActiveStage(activeStage, stageCount: count)
+        }
+
+        // Layout: [store][active][count] then count × [index][x_hi][x_lo][y_hi][y_lo][0][0]
+        let requiredArgumentBytes = 3 + (count * 7)
+        guard requiredArgumentBytes <= arguments.count else {
+            throw RazerReportError.truncatedDPIStagesPayload(requiredBytes: requiredArgumentBytes, available: arguments.count)
+        }
+
         var stages: [(x: Int, y: Int)] = []
-        // Intentionally buggy offset (Task 2 red): reads each stage one byte late.
-        // Task 3 fixes to X=[offset,offset+1], Y=[offset+2,offset+3] with validation.
         var offset = 4
-        for _ in 0..<count where offset + 6 < arguments.count {
-            let x = (Int(arguments[offset + 1]) << 8) | Int(arguments[offset + 2])
-            let y = (Int(arguments[offset + 3]) << 8) | Int(arguments[offset + 4])
+        for _ in 0..<count {
+            let x = (Int(arguments[offset]) << 8) | Int(arguments[offset + 1])
+            let y = (Int(arguments[offset + 2]) << 8) | Int(arguments[offset + 3])
+            guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(x) else {
+                throw RazerValidationError.invalidDPI(x)
+            }
+            guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(y) else {
+                throw RazerValidationError.invalidDPI(y)
+            }
             stages.append((x, y))
             offset += 7
         }
@@ -326,6 +367,7 @@ public struct RazerReport: Equatable, Sendable {
 public enum RazerReportError: Error, LocalizedError, Equatable {
     case invalidLength(expected: Int, actual: Int)
     case invalidDataSize(UInt8)
+    case truncatedDPIStagesPayload(requiredBytes: Int, available: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -333,6 +375,8 @@ public enum RazerReportError: Error, LocalizedError, Equatable {
             return "Razer report must be \(expected) bytes, got \(actual)."
         case let .invalidDataSize(size):
             return "Razer report data size \(size) exceeds the 80-byte argument field."
+        case let .truncatedDPIStagesPayload(requiredBytes, available):
+            return "DPI stage payload needs \(requiredBytes) argument bytes, only \(available) available."
         }
     }
 }
