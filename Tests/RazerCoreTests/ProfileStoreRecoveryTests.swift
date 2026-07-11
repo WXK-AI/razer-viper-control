@@ -281,6 +281,38 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: localStore.storageURL.path))
     }
 
+    func testQuarantineCollisionPreservesOlderArtifact() throws {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        let collisionStore = ProfileStore(
+            deviceKey: "collision",
+            applicationSupportDirectory: tempDirectory,
+            now: { fixedNow }
+        )
+
+        let stamp = ISO8601DateFormatter()
+        stamp.formatOptions = [.withInternetDateTime]
+        let stampText = stamp.string(from: fixedNow).replacingOccurrences(of: ":", with: "-")
+        let olderURL = collisionStore.storageDirectoryURL
+            .appendingPathComponent("profiles-collision-corrupt-\(stampText).json")
+        let olderBytes = Data("older-quarantine-artifact".utf8)
+        try olderBytes.write(to: olderURL)
+
+        let newerCorrupt = Data("newer-corrupt-source".utf8)
+        try newerCorrupt.write(to: collisionStore.storageURL)
+
+        let outcome = collisionStore.loadOutcome()
+        guard case let .recovered(_, quarantinedURL, _, _) = outcome else {
+            return XCTFail("Expected recovered, got \(outcome)")
+        }
+
+        XCTAssertNotEqual(quarantinedURL, olderURL)
+        XCTAssertTrue(quarantinedURL.lastPathComponent.contains("-2.json"))
+        XCTAssertEqual(try Data(contentsOf: olderURL), olderBytes)
+        XCTAssertEqual(try Data(contentsOf: quarantinedURL), newerCorrupt)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: olderURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: quarantinedURL.path))
+    }
+
     func testSuccessfulQuarantineAllowsPersistingDefaults() throws {
         try "{not-json".data(using: .utf8)!.write(to: store.storageURL)
         let outcome = store.loadOutcome()

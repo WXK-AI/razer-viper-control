@@ -268,19 +268,15 @@ public final class ProfileStore {
     /// Retries moving the corrupt primary file aside, then clears the write block.
     @discardableResult
     public func retryQuarantineCorruptSource() throws -> URL {
-        let stamp = Self.quarantineTimestamp(from: now())
-        let quarantineURL = directoryURL.appendingPathComponent(
-            "profiles-\(deviceKey)-corrupt-\(stamp).json"
-        )
         do {
-            if fileManager.fileExists(atPath: quarantineURL.path) {
-                try fileManager.removeItem(at: quarantineURL)
-            }
+            let quarantineURL = try uniqueQuarantineURL()
             if fileManager.fileExists(atPath: fileURL.path) {
                 try fileManager.moveItem(at: fileURL, to: quarantineURL)
             }
             writesBlockedForCorruptSource = false
             return quarantineURL
+        } catch let error as ProfileStoreError {
+            throw error
         } catch {
             throw ProfileStoreError.quarantineFailed(error.localizedDescription)
         }
@@ -346,15 +342,32 @@ public final class ProfileStore {
     }
 
     private func performQuarantineMove() throws -> URL {
-        let stamp = Self.quarantineTimestamp(from: now())
-        let quarantineURL = directoryURL.appendingPathComponent(
-            "profiles-\(deviceKey)-corrupt-\(stamp).json"
-        )
-        if fileManager.fileExists(atPath: quarantineURL.path) {
-            try fileManager.removeItem(at: quarantineURL)
-        }
+        let quarantineURL = try uniqueQuarantineURL()
         try fileManager.moveItem(at: fileURL, to: quarantineURL)
         return quarantineURL
+    }
+
+    /// Picks a quarantine path that does not already exist. Never deletes prior artifacts.
+    func uniqueQuarantineURL(uuid: @escaping () -> UUID = UUID.init) throws -> URL {
+        let stamp = Self.quarantineTimestamp(from: now())
+        let baseName = "profiles-\(deviceKey)-corrupt-\(stamp)"
+        let primary = directoryURL.appendingPathComponent("\(baseName).json")
+        if !fileManager.fileExists(atPath: primary.path) {
+            return primary
+        }
+
+        for suffix in 2...1_000 {
+            let candidate = directoryURL.appendingPathComponent("\(baseName)-\(suffix).json")
+            if !fileManager.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
+        let fallback = directoryURL.appendingPathComponent("\(baseName)-\(uuid().uuidString).json")
+        if fileManager.fileExists(atPath: fallback.path) {
+            throw ProfileStoreError.quarantineFailed("Unable to allocate a unique quarantine filename.")
+        }
+        return fallback
     }
 
     private static func quarantineTimestamp(from date: Date) -> String {

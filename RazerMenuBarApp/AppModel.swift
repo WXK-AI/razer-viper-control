@@ -17,6 +17,7 @@ final class AppModel: ObservableObject {
     @Published var persistenceStatus: PersistenceStatus = .clean
     @Published var profileDraft: ProfileDraft?
     @Published var pendingQuitAfterSaveFailure = false
+    @Published var confirmDiscardCorruptFile = false
     @Published var mappingWarning: String?
 
     var writesBlockedForCorruptSource: Bool {
@@ -140,6 +141,7 @@ final class AppModel: ObservableObject {
             persistenceStatus = .clean
             persistenceWarning = nil
             quarantinedProfileURL = nil
+            confirmDiscardCorruptFile = false
         } catch {
             persistenceStatus = .failed(error.localizedDescription)
             persistenceWarning = error.localizedDescription

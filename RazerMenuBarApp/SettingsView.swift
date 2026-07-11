@@ -85,7 +85,7 @@ struct SettingsView: View {
                         model.retryQuarantineCorruptProfiles()
                     }
                     Button("Discard Corrupt File and Start Fresh", role: .destructive) {
-                        model.discardCorruptFileAndStartFresh()
+                        model.confirmDiscardCorruptFile = true
                     }
                 } else {
                     Button("Dismiss") {
@@ -97,6 +97,14 @@ struct SettingsView: View {
         .padding(10)
         .background(Color.orange.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .alert("Discard corrupt profile file?", isPresented: $model.confirmDiscardCorruptFile) {
+            Button("Cancel", role: .cancel) {}
+            Button("Discard Permanently", role: .destructive) {
+                model.discardCorruptFileAndStartFresh()
+            }
+        } message: {
+            Text("This permanently deletes the only remaining corrupt profile file. Recovery from that file will become impossible.")
+        }
     }
 }
 
