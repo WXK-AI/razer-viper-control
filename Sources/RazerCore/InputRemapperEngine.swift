@@ -139,6 +139,111 @@ public enum InputRemapperEngine {
             return isDown ? .fireOneShot(action) : .consume
         }
     }
+
+    public enum ButtonEventKind: Equatable, Sendable {
+        case down
+        case drag
+        case up
+    }
+
+    /// Per-source hold record resolved once on button-down.
+    public struct HeldButtonRecord: Equatable, Sendable {
+        public let source: PhysicalControl
+        public let consumedPhysical: Bool
+        public let mouseTarget: MouseButtonTarget?
+        public let oneShot: ButtonAction?
+
+        public init(
+            source: PhysicalControl,
+            consumedPhysical: Bool,
+            mouseTarget: MouseButtonTarget? = nil,
+            oneShot: ButtonAction? = nil
+        ) {
+            self.source = source
+            self.consumedPhysical = consumedPhysical
+            self.mouseTarget = mouseTarget
+            self.oneShot = oneShot
+        }
+    }
+
+    /// Stateful button remapping across down / drag / up, including mid-hold profile changes.
+    public struct ButtonRemapSession: Equatable, Sendable {
+        private var held: [PhysicalControl: HeldButtonRecord] = [:]
+
+        public init() {}
+
+        public func isHolding(_ control: PhysicalControl) -> Bool {
+            held[control] != nil
+        }
+
+        public func snapshotHeldMouseTargets() -> [MouseButtonTarget] {
+            held.values.compactMap(\.mouseTarget)
+        }
+
+        public mutating func clearAllHolds() {
+            held.removeAll()
+        }
+
+        public mutating func handle(
+            control: PhysicalControl,
+            kind: ButtonEventKind,
+            mappings: [PhysicalControl: ButtonAction]
+        ) -> RemapButtonOutcome {
+            switch kind {
+            case .down:
+                return handleDown(control: control, mappings: mappings)
+            case .drag:
+                return handleDrag(control: control)
+            case .up:
+                return handleUp(control: control)
+            }
+        }
+
+        private mutating func handleDown(
+            control: PhysicalControl,
+            mappings: [PhysicalControl: ButtonAction]
+        ) -> RemapButtonOutcome {
+            let action = resolvedButtonAction(for: control, in: mappings)
+            let outcome = buttonOutcome(action: action, isDown: true)
+            switch outcome {
+            case .passThrough:
+                held[control] = HeldButtonRecord(source: control, consumedPhysical: false)
+            case .consume:
+                held[control] = HeldButtonRecord(source: control, consumedPhysical: true)
+            case let .postMouse(target, _):
+                held[control] = HeldButtonRecord(
+                    source: control,
+                    consumedPhysical: true,
+                    mouseTarget: target
+                )
+            case let .fireOneShot(oneShot):
+                held[control] = HeldButtonRecord(
+                    source: control,
+                    consumedPhysical: true,
+                    oneShot: oneShot
+                )
+            }
+            return outcome
+        }
+
+        private func handleDrag(control: PhysicalControl) -> RemapButtonOutcome {
+            guard let record = held[control] else {
+                return .passThrough
+            }
+            return record.consumedPhysical ? .consume : .passThrough
+        }
+
+        private mutating func handleUp(control: PhysicalControl) -> RemapButtonOutcome {
+            guard let record = held.removeValue(forKey: control) else {
+                // Unmatched ups pass through.
+                return .passThrough
+            }
+            if let target = record.mouseTarget {
+                return .postMouse(target, isDown: false)
+            }
+            return record.consumedPhysical ? .consume : .passThrough
+        }
+    }
 }
 
 public enum ButtonActionValidator {

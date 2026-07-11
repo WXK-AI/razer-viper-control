@@ -79,13 +79,13 @@
 
 **Steps:**
 
-- [ ] Add failing sequence tests for left/right swap down-drag-up, many-to-one targets, mapping changes while a button is held, disabled controls, and one-shot actions.
-- [ ] Define a held-button record containing source control, disposition chosen on down, and synthetic target when applicable.
-- [ ] Resolve each source mapping once on down; use the stored disposition for drag/up even if the active profile changes.
-- [ ] Preserve source location, timestamp-independent click state where CoreGraphics allows it, and modifier flags on translated events.
-- [ ] Consume unmatched ups only when the corresponding down was consumed; otherwise pass them through.
-- [ ] Run `swift test --disable-sandbox --filter InputRemapper`.
-- [ ] Commit: `fix: make button remapping stateful across drag and profile changes`.
+- [x] Add failing sequence tests for left/right swap down-drag-up, many-to-one targets, mapping changes while a button is held, disabled controls, and one-shot actions.
+- [x] Define a held-button record containing source control, disposition chosen on down, and synthetic target when applicable.
+- [x] Resolve each source mapping once on down; use the stored disposition for drag/up even if the active profile changes.
+- [x] Preserve source location, timestamp-independent click state where CoreGraphics allows it, and modifier flags on translated events.
+- [x] Consume unmatched ups only when the corresponding down was consumed; otherwise pass them through.
+- [x] Run `swift test --disable-sandbox --filter InputRemapper`.
+- [x] Commit: `fix: make button remapping stateful across drag and profile changes`.
 
 ### Task 3: Release Held Outputs On Every Recovery Path
 

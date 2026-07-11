@@ -31,7 +31,7 @@ public final class InputRemapper: @unchecked Sendable {
         activeStage: 1,
         pollingRateHz: 1000
     )
-    private var activeMouseRemaps: [PhysicalControl: MouseButtonTarget] = [:]
+    private var buttonSession = InputRemapperEngine.ButtonRemapSession()
     private var verticalScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
     private var horizontalScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
 
@@ -71,10 +71,13 @@ public final class InputRemapper: @unchecked Sendable {
         let mask = (
             (1 << CGEventType.leftMouseDown.rawValue) |
             (1 << CGEventType.leftMouseUp.rawValue) |
+            (1 << CGEventType.leftMouseDragged.rawValue) |
             (1 << CGEventType.rightMouseDown.rawValue) |
             (1 << CGEventType.rightMouseUp.rawValue) |
+            (1 << CGEventType.rightMouseDragged.rawValue) |
             (1 << CGEventType.otherMouseDown.rawValue) |
             (1 << CGEventType.otherMouseUp.rawValue) |
+            (1 << CGEventType.otherMouseDragged.rawValue) |
             (1 << CGEventType.scrollWheel.rawValue) |
             (1 << CGEventType.keyDown.rawValue)
         )
@@ -144,22 +147,37 @@ public final class InputRemapper: @unchecked Sendable {
         }
 
         switch type {
-        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
-             .otherMouseDown, .otherMouseUp:
+        case .leftMouseDown, .leftMouseUp, .leftMouseDragged,
+             .rightMouseDown, .rightMouseUp, .rightMouseDragged,
+             .otherMouseDown, .otherMouseUp, .otherMouseDragged:
             guard let control = physicalControl(for: type, event: event) else {
                 break
             }
 
-            if !isMouseDown(type), let pendingTarget = clearActiveMouseRemap(for: control) {
-                postMouseButton(pendingTarget, down: false)
-                return nil
+            let kind = buttonEventKind(for: type)
+            if kind != .down {
+                // Finish holds even when paused/disabled so synthetic buttons cannot stick.
+                lock.lock()
+                let outcome = buttonSession.handle(
+                    control: control,
+                    kind: kind,
+                    mappings: currentProfile.buttonMappings
+                )
+                lock.unlock()
+                return applyButtonOutcome(outcome, event: event, callbacks: callbacks)
             }
 
             if paused || !currentProfile.remapperEnabled {
                 return Unmanaged.passUnretained(event)
             }
 
-            return handleButtonEvent(control: control, type: type, event: event, profile: currentProfile, callbacks: callbacks)
+            return handleButtonEvent(
+                control: control,
+                kind: kind,
+                event: event,
+                profile: currentProfile,
+                callbacks: callbacks
+            )
 
         case .scrollWheel:
             if paused || !currentProfile.remapperEnabled {
@@ -174,51 +192,60 @@ public final class InputRemapper: @unchecked Sendable {
         return Unmanaged.passUnretained(event)
     }
 
-    private func clearActiveMouseRemap(for control: PhysicalControl) -> MouseButtonTarget? {
-        lock.lock()
-        defer { lock.unlock() }
-        return activeMouseRemaps.removeValue(forKey: control)
-    }
-
-    private func setActiveMouseRemap(control: PhysicalControl, target: MouseButtonTarget) {
-        lock.lock()
-        activeMouseRemaps[control] = target
-        lock.unlock()
-    }
-
-    private func releaseAllActiveMouseRemaps() {
-        lock.lock()
-        let active = activeMouseRemaps
-        activeMouseRemaps.removeAll()
-        lock.unlock()
-        for target in active.values {
-            postMouseButton(target, down: false)
-        }
-    }
-
     private func handleButtonEvent(
         control: PhysicalControl,
-        type: CGEventType,
+        kind: InputRemapperEngine.ButtonEventKind,
         event: CGEvent,
         profile: MouseProfile,
         callbacks: Callbacks
     ) -> Unmanaged<CGEvent>? {
-        let action = InputRemapperEngine.resolvedButtonAction(for: control, in: profile.buttonMappings)
-        let isDown = isMouseDown(type)
-        switch InputRemapperEngine.buttonOutcome(action: action, isDown: isDown) {
+        lock.lock()
+        let outcome = buttonSession.handle(
+            control: control,
+            kind: kind,
+            mappings: profile.buttonMappings
+        )
+        lock.unlock()
+        return applyButtonOutcome(outcome, event: event, callbacks: callbacks)
+    }
+
+    private func applyButtonOutcome(
+        _ outcome: RemapButtonOutcome,
+        event: CGEvent,
+        callbacks: Callbacks
+    ) -> Unmanaged<CGEvent>? {
+        switch outcome {
         case .passThrough:
             return Unmanaged.passUnretained(event)
         case .consume:
             return nil
         case let .postMouse(target, down):
-            if down {
-                setActiveMouseRemap(control: control, target: target)
-            }
-            postMouseButton(target, down: down)
+            postMouseButton(target, down: down, mirroring: event)
             return nil
         case let .fireOneShot(oneShotAction):
             executeOneShotAction(oneShotAction, callbacks: callbacks)
             return nil
+        }
+    }
+
+    private func releaseAllActiveMouseRemaps() {
+        lock.lock()
+        let targets = buttonSession.snapshotHeldMouseTargets()
+        buttonSession.clearAllHolds()
+        lock.unlock()
+        for target in targets {
+            postMouseButton(target, down: false)
+        }
+    }
+
+    private func buttonEventKind(for type: CGEventType) -> InputRemapperEngine.ButtonEventKind {
+        switch type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            return .down
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            return .drag
+        default:
+            return .up
         }
     }
 
@@ -338,13 +365,20 @@ public final class InputRemapper: @unchecked Sendable {
         event.setIntegerValueField(.eventSourceUserData, value: InputRemapperEngine.syntheticMarker)
     }
 
+    private func matchesEmergencyPause(_ event: CGEvent) -> Bool {
+        let shortcut = KeyboardShortcut.emergencyPause
+        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        let flags = event.flags.rawValue
+        return InputRemapperEngine.matchesShortcut(shortcut, keyCode: keyCode, modifierFlags: flags)
+    }
+
     private func physicalControl(for type: CGEventType, event: CGEvent) -> PhysicalControl? {
         switch type {
-        case .leftMouseDown, .leftMouseUp:
+        case .leftMouseDown, .leftMouseUp, .leftMouseDragged:
             return .leftClick
-        case .rightMouseDown, .rightMouseUp:
+        case .rightMouseDown, .rightMouseUp, .rightMouseDragged:
             return .rightClick
-        case .otherMouseDown, .otherMouseUp:
+        case .otherMouseDown, .otherMouseUp, .otherMouseDragged:
             let button = event.getIntegerValueField(.mouseEventButtonNumber)
             switch button {
             case 2: return .wheelClick
@@ -358,23 +392,7 @@ public final class InputRemapper: @unchecked Sendable {
         }
     }
 
-    private func isMouseDown(_ type: CGEventType) -> Bool {
-        switch type {
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func matchesEmergencyPause(_ event: CGEvent) -> Bool {
-        let shortcut = KeyboardShortcut.emergencyPause
-        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags.rawValue
-        return InputRemapperEngine.matchesShortcut(shortcut, keyCode: keyCode, modifierFlags: flags)
-    }
-
-    private func postMouseButton(_ target: MouseButtonTarget, down: Bool) {
+    private func postMouseButton(_ target: MouseButtonTarget, down: Bool, mirroring sourceEvent: CGEvent? = nil) {
         let (type, button): (CGEventType, CGMouseButton) = switch target {
         case .left: down ? (.leftMouseDown, .left) : (.leftMouseUp, .left)
         case .right: down ? (.rightMouseDown, .right) : (.rightMouseUp, .right)
@@ -383,13 +401,17 @@ public final class InputRemapper: @unchecked Sendable {
         case .side2: down ? (.otherMouseDown, CGMouseButton(rawValue: 4)!) : (.otherMouseUp, CGMouseButton(rawValue: 4)!)
         }
 
+        let position = sourceEvent?.location ?? NSEvent.mouseLocation
         guard let cgEvent = CGEvent(
             mouseEventSource: syntheticEventSource,
             mouseType: type,
-            mouseCursorPosition: NSEvent.mouseLocation,
+            mouseCursorPosition: position,
             mouseButton: button
         ) else {
             return
+        }
+        if let sourceEvent {
+            cgEvent.flags = sourceEvent.flags
         }
         if target == .side1 {
             cgEvent.setIntegerValueField(.mouseEventButtonNumber, value: 3)
