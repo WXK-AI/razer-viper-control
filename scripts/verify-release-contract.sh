@@ -6,10 +6,35 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/build/Release"
 ARCH="${RELEASE_ARCH:-arm64}"
 MARKETING_VERSION="$(awk -F'"' '/MARKETING_VERSION:/ {print $2; exit}' "$ROOT/project.yml")"
+GIT_HEAD="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+# Set VERIFY_RELEASE_ARTIFACTS=1 after a successful ci-release-build (CI post-build step).
+VERIFY_ARTIFACTS="${VERIFY_RELEASE_ARTIFACTS:-0}"
 failures=0
 
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
+
+meta_field() {
+  local key="$1"
+  local file="$2"
+  awk -F= -v k="$key" '$1 == k { print substr($0, index($0, "=") + 1); exit }' "$file"
+}
+
+require_exact_arch() {
+  local label="$1"
+  local bin="$2"
+  if [ ! -f "$bin" ]; then
+    fail "${label} binary missing: $bin"
+    return
+  fi
+  local archs
+  archs="$(lipo -archs "$bin")"
+  if [ "$archs" = "$ARCH" ]; then
+    pass "${label} architecture exactly ${ARCH}"
+  else
+    fail "${label} architecture must be exactly '${ARCH}', got '${archs}'"
+  fi
+}
 
 echo "=== verify-release-contract ==="
 
@@ -49,42 +74,77 @@ else
   echo "SKIP: no RELEASE_TAG/GITHUB_REF_NAME; tag equality not checked"
 fi
 
-# 4) Optional artifact checks when build/Release exists
-if [ -d "$OUT/RazerMenuBarApp.app" ]; then
-  plist="$OUT/RazerMenuBarApp.app/Contents/Info.plist"
-  bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
-  if [ "$bundle_version" = "$MARKETING_VERSION" ]; then
-    pass "CFBundleShortVersionString (${bundle_version}) == MARKETING_VERSION"
-  else
-    fail "CFBundleShortVersionString (${bundle_version}) != MARKETING_VERSION (${MARKETING_VERSION})"
+# 4) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
+#    (avoids false passes on stale/partial build/Release trees during pre-build).
+if [ "$VERIFY_ARTIFACTS" = "1" ]; then
+  APP="$OUT/RazerMenuBarApp.app"
+  CLI="$OUT/RazerProbeCLI"
+  META="$OUT/BUILD_REVISION"
+  APP_BIN="$APP/Contents/MacOS/RazerMenuBarApp"
+
+  if [ ! -d "$APP" ]; then
+    fail "app bundle missing: $APP"
+  fi
+  if [ ! -f "$CLI" ]; then
+    fail "CLI binary missing: $CLI"
+  fi
+  if [ ! -f "$META" ]; then
+    fail "BUILD_REVISION missing: $META"
   fi
 
-  app_bin="$OUT/RazerMenuBarApp.app/Contents/MacOS/RazerMenuBarApp"
-  if [ -f "$app_bin" ]; then
-    info="$(lipo -info "$app_bin")"
-    if echo "$info" | grep -Eq "(^| )${ARCH}( |$)"; then
-      pass "app architecture includes ${ARCH} ($info)"
+  if [ -d "$APP" ]; then
+    plist="$APP/Contents/Info.plist"
+    if [ -f "$plist" ]; then
+      bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+      if [ "$bundle_version" = "$MARKETING_VERSION" ]; then
+        pass "CFBundleShortVersionString (${bundle_version}) == MARKETING_VERSION"
+      else
+        fail "CFBundleShortVersionString (${bundle_version}) != MARKETING_VERSION (${MARKETING_VERSION})"
+      fi
     else
-      fail "app architecture missing ${ARCH}: $info"
+      fail "Info.plist missing in app bundle"
     fi
+    require_exact_arch "app" "$APP_BIN"
   fi
 
-  if [ -f "$OUT/RazerProbeCLI" ]; then
-    info="$(lipo -info "$OUT/RazerProbeCLI")"
-    if echo "$info" | grep -Eq "(^| )${ARCH}( |$)"; then
-      pass "CLI architecture includes ${ARCH} ($info)"
+  if [ -f "$CLI" ]; then
+    require_exact_arch "CLI" "$CLI"
+  fi
+
+  if [ -f "$META" ]; then
+    recorded_rev="$(meta_field git_revision "$META")"
+    recorded_ver="$(meta_field marketing_version "$META")"
+    recorded_arch="$(meta_field arch "$META")"
+    recorded_built="$(meta_field built_at "$META")"
+
+    if [ -z "$GIT_HEAD" ]; then
+      fail "unable to resolve current git HEAD for BUILD_REVISION comparison"
+    elif [ "$recorded_rev" = "$GIT_HEAD" ]; then
+      pass "BUILD_REVISION.git_revision matches HEAD (${GIT_HEAD})"
     else
-      fail "CLI architecture missing ${ARCH}: $info"
+      fail "BUILD_REVISION.git_revision (${recorded_rev:-<empty>}) != HEAD (${GIT_HEAD})"
     fi
-  fi
 
-  if [ -f "$OUT/BUILD_REVISION" ]; then
-    pass "BUILD_REVISION metadata present"
-  else
-    fail "BUILD_REVISION missing (ci-release-build.sh should write it)"
+    if [ "$recorded_ver" = "$MARKETING_VERSION" ]; then
+      pass "BUILD_REVISION.marketing_version matches ${MARKETING_VERSION}"
+    else
+      fail "BUILD_REVISION.marketing_version (${recorded_ver:-<empty>}) != ${MARKETING_VERSION}"
+    fi
+
+    if [ "$recorded_arch" = "$ARCH" ]; then
+      pass "BUILD_REVISION.arch matches ${ARCH}"
+    else
+      fail "BUILD_REVISION.arch (${recorded_arch:-<empty>}) != ${ARCH}"
+    fi
+
+    if [ -n "$recorded_built" ]; then
+      pass "BUILD_REVISION.built_at present (${recorded_built})"
+    else
+      fail "BUILD_REVISION.built_at missing"
+    fi
   fi
 else
-  echo "SKIP: no app in build/Release; artifact lipo/version checks deferred"
+  echo "SKIP: artifact checks (set VERIFY_RELEASE_ARTIFACTS=1 after ci-release-build)"
 fi
 
 # 5) shellcheck when available (required in CI via workflow install)

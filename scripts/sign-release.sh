@@ -43,24 +43,48 @@ done
 
 verify_build_revision() {
   local meta="$OUT/BUILD_REVISION"
-  local expected
-  expected="$(git -C "$ROOT" rev-parse HEAD)"
-  if [ ! -f "$meta" ]; then
-    echo "error: missing $meta; refuse to reuse an unverifiable build" >&2
+  local expected_rev expected_ver expected_arch
+  expected_rev="$(git -C "$ROOT" rev-parse HEAD)"
+  expected_ver="$(awk -F'"' '/MARKETING_VERSION:/ {print $2; exit}' "$ROOT/project.yml")"
+  expected_arch="${RELEASE_ARCH:-arm64}"
+
+  if [ ! -d "$APP" ] || [ ! -f "$OUT/RazerProbeCLI" ] || [ ! -f "$meta" ]; then
+    echo "error: incomplete release tree; refuse to reuse (need app, CLI, BUILD_REVISION)" >&2
     exit 1
   fi
-  local recorded
-  recorded="$(awk -F= '/^git_revision=/ {print $2; exit}' "$meta")"
-  if [ -z "$recorded" ] || [ "$recorded" = "unknown" ]; then
+
+  local recorded_rev recorded_ver recorded_arch
+  recorded_rev="$(awk -F= '/^git_revision=/ {print substr($0, index($0, "=") + 1); exit}' "$meta")"
+  recorded_ver="$(awk -F= '/^marketing_version=/ {print substr($0, index($0, "=") + 1); exit}' "$meta")"
+  recorded_arch="$(awk -F= '/^arch=/ {print substr($0, index($0, "=") + 1); exit}' "$meta")"
+
+  if [ -z "$recorded_rev" ] || [ "$recorded_rev" = "unknown" ]; then
     echo "error: BUILD_REVISION has no usable git_revision" >&2
     exit 1
   fi
-  if [ "$recorded" != "$expected" ]; then
-    echo "error: build revision mismatch (build=$recorded HEAD=$expected)" >&2
+  if [ "$recorded_rev" != "$expected_rev" ]; then
+    echo "error: build revision mismatch (build=$recorded_rev HEAD=$expected_rev)" >&2
     echo "Rebuild without --reuse-existing-build, or check out the matching commit." >&2
     exit 1
   fi
-  echo "Reusing existing build at revision $recorded"
+  if [ "$recorded_ver" != "$expected_ver" ]; then
+    echo "error: BUILD_REVISION.marketing_version ($recorded_ver) != $expected_ver" >&2
+    exit 1
+  fi
+  if [ "$recorded_arch" != "$expected_arch" ]; then
+    echo "error: BUILD_REVISION.arch ($recorded_arch) != $expected_arch" >&2
+    exit 1
+  fi
+
+  local app_archs cli_archs
+  app_archs="$(lipo -archs "$APP/Contents/MacOS/RazerMenuBarApp")"
+  cli_archs="$(lipo -archs "$OUT/RazerProbeCLI")"
+  if [ "$app_archs" != "$expected_arch" ] || [ "$cli_archs" != "$expected_arch" ]; then
+    echo "error: reuse requires exact ${expected_arch} binaries (app='${app_archs}' cli='${cli_archs}')" >&2
+    exit 1
+  fi
+
+  echo "Reusing existing build at revision $recorded_rev (${expected_arch}, v${recorded_ver})"
 }
 
 if [ "$REUSE_EXISTING" -eq 1 ]; then

@@ -6,10 +6,23 @@ DERIVED="$ROOT/build/DerivedData"
 OUT="$ROOT/build/Release"
 ARCH="${RELEASE_ARCH:-arm64}"
 MARKETING_VERSION="$(awk -F'"' '/MARKETING_VERSION:/ {print $2; exit}' "$ROOT/project.yml")"
-GIT_REVISION="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+GIT_REVISION="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+
+if [ -z "${GIT_REVISION}" ] || [ "${GIT_REVISION}" = "unknown" ]; then
+  echo "error: unable to resolve git HEAD for BUILD_REVISION" >&2
+  exit 1
+fi
 
 cd "$ROOT"
-mkdir -p "$OUT"
+
+STAGING="$ROOT/build/.release-staging-$$"
+rm -rf "$STAGING"
+mkdir -p "$STAGING"
+
+cleanup_staging() {
+  rm -rf "$STAGING"
+}
+trap cleanup_staging EXIT
 
 bash "$ROOT/scripts/generate-xcodeproj.sh"
 
@@ -36,41 +49,51 @@ fi
 xattr -cr "$APP_SRC" 2>/dev/null || true
 codesign --force --deep --sign - "$APP_SRC"
 
-APP_DST="$OUT/RazerMenuBarApp.app"
-rm -rf "$APP_DST"
-cp -R "$APP_SRC" "$APP_DST"
+cp -R "$APP_SRC" "$STAGING/RazerMenuBarApp.app"
 
 echo "Building RazerProbeCLI (Release, ${ARCH})…"
 swift build -c release --arch "$ARCH" --product RazerProbeCLI
-cp "$ROOT/.build/release/RazerProbeCLI" "$OUT/RazerProbeCLI"
+cp "$ROOT/.build/release/RazerProbeCLI" "$STAGING/RazerProbeCLI"
 
-APP_BIN="$APP_DST/Contents/MacOS/RazerMenuBarApp"
-CLI_BIN="$OUT/RazerProbeCLI"
-for bin in "$APP_BIN" "$CLI_BIN"; do
-  info="$(lipo -info "$bin")"
-  echo "lipo: $info"
-  if ! echo "$info" | grep -Eq "(^| )${ARCH}( |$)"; then
-    echo "error: expected architecture ${ARCH} in $bin" >&2
-    echo "  got: $info" >&2
+require_exact_arch() {
+  local bin="$1"
+  local archs
+  archs="$(lipo -archs "$bin")"
+  echo "lipo -archs ${bin}: ${archs}"
+  if [ "$archs" != "$ARCH" ]; then
+    echo "error: expected exact architecture '${ARCH}' in $bin" >&2
+    echo "  got: '${archs}'" >&2
     exit 1
   fi
-done
+}
 
-BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DST/Contents/Info.plist")"
+APP_BIN="$STAGING/RazerMenuBarApp.app/Contents/MacOS/RazerMenuBarApp"
+CLI_BIN="$STAGING/RazerProbeCLI"
+require_exact_arch "$APP_BIN"
+require_exact_arch "$CLI_BIN"
+
+BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGING/RazerMenuBarApp.app/Contents/Info.plist")"
 if [ "$BUNDLE_VERSION" != "$MARKETING_VERSION" ]; then
   echo "error: CFBundleShortVersionString (${BUNDLE_VERSION}) != MARKETING_VERSION (${MARKETING_VERSION})" >&2
   exit 1
 fi
 
-cat > "$OUT/BUILD_REVISION" <<EOF
+echo "Running unit tests…"
+swift test -c release --arch "$ARCH" --disable-sandbox
+
+# Marker is written only after every build + test step succeeds.
+cat > "$STAGING/BUILD_REVISION" <<EOF
 git_revision=${GIT_REVISION}
 marketing_version=${MARKETING_VERSION}
 arch=${ARCH}
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 
-echo "Running unit tests…"
-swift test -c release --arch "$ARCH" --disable-sandbox
+# Atomically replace the public release directory (drops stale DMG/ZIP/CLI/metadata).
+mkdir -p "$ROOT/build"
+rm -rf "$OUT"
+mv "$STAGING" "$OUT"
+trap - EXIT
 
 echo "Release artifacts:"
 ls -la "$OUT"

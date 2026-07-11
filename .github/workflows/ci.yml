@@ -19,6 +19,8 @@ jobs:
         run: brew install shellcheck
 
       - name: Verify release contract
+        env:
+          VERIFY_RELEASE_ARTIFACTS: "0"
         run: bash scripts/verify-release-contract.sh
 
   tests:
