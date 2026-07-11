@@ -156,12 +156,12 @@
 
 **Steps:**
 
-- [ ] Add bounded diagnostic entries for event type, button number, wheel axes, detected control, synthetic marker, and remap disposition.
-- [ ] Keep capture opt-in, memory-only, and capped; clearing capture must release retained entries immediately.
-- [ ] Exclude keyboard contents beyond key code/modifier data needed for explicit shortcut capture.
-- [ ] Add tests for cap eviction, clear callbacks, main-thread publication, and synthetic-event labeling.
-- [ ] Verify capture remains responsive during fast scrolling and cannot write to disk.
-- [ ] Commit: `feat: improve bounded input diagnostics`.
+- [x] Add bounded diagnostic entries for event type, button number, wheel axes, detected control, synthetic marker, and remap disposition.
+- [x] Keep capture opt-in, memory-only, and capped; clearing capture must release retained entries immediately.
+- [x] Exclude keyboard contents beyond key code/modifier data needed for explicit shortcut capture.
+- [x] Add tests for cap eviction, clear callbacks, main-thread publication, and synthetic-event labeling.
+- [x] Verify capture remains responsive during fast scrolling and cannot write to disk.
+- [x] Commit: `feat: improve bounded input diagnostics`.
 
 ### Task 7: Full Regression And Manual Acceptance
 

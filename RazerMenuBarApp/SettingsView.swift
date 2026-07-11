@@ -709,29 +709,53 @@ private struct DiagnosticsTab: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                GroupBox("Input capture (opt-in, not saved)") {
+                GroupBox("Input capture (opt-in, memory-only)") {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Capture session", isOn: Binding(
                             get: { model.diagnosticsCaptureEnabled },
                             set: { model.setDiagnosticsCaptureEnabled($0) }
                         ))
-                        Text("Shows raw button/scroll events and detected control names. Nothing is written to disk.")
+                        Text("Bounded in-memory log of event type, button number, wheel axes, control, synthetic marker, and remap disposition. Nothing is written to disk. Keyboard characters are not captured.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        HStack {
+                            Text("\(model.captureEntries.count) entries")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Clear") { model.clearDiagnosticsCapture() }
+                                .disabled(model.captureEntries.isEmpty)
+                        }
 
                         if !model.captureEntries.isEmpty {
                             List(model.captureEntries.reversed()) { entry in
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(entry.summary)
                                         .font(.system(.caption, design: .monospaced))
-                                    if let control = entry.control {
-                                        Text(control.displayName)
-                                            .font(.caption2)
+                                    HStack(spacing: 8) {
+                                        Text(entry.eventType)
+                                        Text(entry.disposition.displayName)
+                                        if entry.isSynthetic {
+                                            Text("synthetic")
+                                        }
+                                        if let button = entry.buttonNumber {
+                                            Text("btn \(button)")
+                                        }
+                                        if let control = entry.control {
+                                            Text(control.displayName)
+                                        }
+                                    }
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    if let axes = entry.wheelAxes {
+                                        Text(axes.summary)
+                                            .font(.system(.caption2, design: .monospaced))
                                             .foregroundStyle(.secondary)
                                     }
                                 }
                             }
-                            .frame(minHeight: 180)
+                            .frame(minHeight: 220)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

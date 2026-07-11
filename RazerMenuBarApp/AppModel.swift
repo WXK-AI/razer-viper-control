@@ -618,8 +618,14 @@ final class AppModel: ObservableObject {
             }
         } else {
             captureSession.stop()
-            captureEntries = captureSession.snapshotEntries()
+            captureSession.clear()
+            captureEntries = []
         }
+    }
+
+    func clearDiagnosticsCapture() {
+        captureSession.clear()
+        captureEntries = []
     }
 
     func probeWheelHardware() {
@@ -715,6 +721,16 @@ final class AppModel: ObservableObject {
                     self?.remapperRunning = false
                     self?.remapperRecovering = false
                 }
+            }
+        }
+        remapper.callbacks.onInputDiagnostic = { [weak self] control, disposition, detail in
+            Task { @MainActor in
+                guard let self, self.diagnosticsCaptureEnabled else { return }
+                self.captureSession.recordRemapObservation(
+                    control: control,
+                    disposition: disposition,
+                    detail: detail
+                )
             }
         }
     }

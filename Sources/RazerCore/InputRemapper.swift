@@ -19,6 +19,8 @@ public final class InputRemapper: @unchecked Sendable {
         public var onEmergencyPause: (() -> Void)?
         /// Fired after a recovery transition. Tap-disable always notifies, even with no holds.
         public var onHeldOutputsReleased: ((HeldOutputRecoveryReason) -> Void)?
+        /// Optional diagnostics sink (memory-only; never blocks on I/O).
+        public var onInputDiagnostic: ((PhysicalControl?, InputCaptureSession.Disposition, String) -> Void)?
 
         public init() {}
     }
@@ -383,7 +385,12 @@ public final class InputRemapper: @unchecked Sendable {
                     mappings: currentProfile.buttonMappings
                 )
                 lock.unlock()
-                return applyButtonOutcome(outcome, event: event, callbacks: callbacks)
+                return applyButtonOutcome(
+                    outcome,
+                    control: control,
+                    event: event,
+                    callbacks: callbacks
+                )
             }
 
             // Re-check pause/enabled/transition gate under the same lock as hold creation.
@@ -398,7 +405,12 @@ public final class InputRemapper: @unchecked Sendable {
                 mappings: profile.buttonMappings
             )
             lock.unlock()
-            return applyButtonOutcome(outcome, event: event, callbacks: callbacks)
+            return applyButtonOutcome(
+                outcome,
+                control: control,
+                event: event,
+                callbacks: callbacks
+            )
 
         case .scrollWheel:
             if paused || !currentProfile.remapperEnabled {
@@ -415,21 +427,31 @@ public final class InputRemapper: @unchecked Sendable {
 
     private func applyButtonOutcome(
         _ outcome: RemapButtonOutcome,
+        control: PhysicalControl,
         event: CGEvent,
         callbacks: Callbacks
     ) -> Unmanaged<CGEvent>? {
         switch outcome {
         case .passThrough:
+            callbacks.onInputDiagnostic?(control, .passthrough, "button")
             return Unmanaged.passUnretained(event)
         case .consume:
+            callbacks.onInputDiagnostic?(control, .consumed, "button")
             return nil
         case let .postMouse(target, down):
+            callbacks.onInputDiagnostic?(
+                control,
+                .remapped,
+                "mouse \(target) \(down ? "down" : "up")"
+            )
             postMouseButton(target, down: down, mirroring: event)
             return nil
         case let .postMouseDrag(target):
+            callbacks.onInputDiagnostic?(control, .remapped, "mouse \(target) drag")
             postMouseDrag(target, mirroring: event)
             return nil
         case let .fireOneShot(oneShotAction):
+            callbacks.onInputDiagnostic?(control, .consumed, "one-shot \(oneShotAction)")
             executeOneShotAction(oneShotAction, callbacks: callbacks)
             return nil
         }
@@ -547,10 +569,15 @@ public final class InputRemapper: @unchecked Sendable {
             lock.unlock()
 
             applyScrollAxes(scaled, to: modified)
+            callbacks.onInputDiagnostic?(
+                wheelControl,
+                .passthrough,
+                moveHorizontal ? "scroll→horizontal" : "scroll"
+            )
             return Unmanaged.passUnretained(modified)
         }
 
-        return executeScrollAction(action, callbacks: callbacks)
+        return executeScrollAction(action, wheelControl: wheelControl, callbacks: callbacks)
     }
 
     private func applyScrollAxes(_ pair: InputRemapperEngine.ScrollAxisPair, to event: CGEvent) {
@@ -562,15 +589,22 @@ public final class InputRemapper: @unchecked Sendable {
         event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: pair.axis2.fixedPt)
     }
 
-    private func executeScrollAction(_ action: ButtonAction, callbacks: Callbacks) -> Unmanaged<CGEvent>? {
+    private func executeScrollAction(
+        _ action: ButtonAction,
+        wheelControl: PhysicalControl,
+        callbacks: Callbacks
+    ) -> Unmanaged<CGEvent>? {
         switch action {
         case .passthrough, .disabled:
+            callbacks.onInputDiagnostic?(wheelControl, .consumed, "scroll disabled")
             return nil
         case let .mouseButton(target):
+            callbacks.onInputDiagnostic?(wheelControl, .remapped, "scroll→\(target)")
             postMouseButton(target, down: true)
             postMouseButton(target, down: false)
             return nil
         case .keyboardShortcut, .nextDPIStage, .previousDPIStage, .nextProfile, .previousProfile, .openApp, .openURL:
+            callbacks.onInputDiagnostic?(wheelControl, .consumed, "scroll one-shot")
             executeOneShotAction(action, callbacks: callbacks)
             return nil
         }
