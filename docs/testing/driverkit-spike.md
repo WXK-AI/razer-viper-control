@@ -1,7 +1,7 @@
 # DriverKit Spike — Razer Viper V3 HyperSpeed (`1532:00B8`)
 
-**Status: SCAFFOLD ONLY — physical acceptance incomplete.**  
-Do not start Task 9+ remapper work until every acceptance row below is **PASS**.
+**Status: DEFERRED FUTURE ENHANCEMENT — physical acceptance incomplete.**
+Tracked in [GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2). The matrix remains mandatory before claiming DriverKit support, but it does not block improvements to the existing `CGEvent` implementation.
 
 ## Goal
 
@@ -80,4 +80,4 @@ If any row fails: **stop**, revise matching/architecture, and do **not** restore
 2. Run `RazerMenuBarAppSpike`, open Diagnostics → **DriverKit spike** → Activate Driver.
 3. If state is **Needs approval**, use System Settings → Privacy & Security. If state is **Pending reboot**, reboot — do not treat reboot-required as approval-required.
 4. Exercise the acceptance matrix; paste evidence into this file.
-5. Only after all rows are PASS, commit an update marking status **PASS** and proceed to Task 9.
+5. Only after all rows are PASS, commit an update marking DriverKit status **PASS** and resume the deferred DriverKit plan.

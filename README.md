@@ -37,9 +37,9 @@ Get the latest release from **[GitHub Releases](https://github.com/WXK-AI/razer-
 
 - **Menu bar status** — battery %, charging state, active profile, DPI, polling rate, remapper state
 - **Profiles** — multiple local profiles (JSON), quick switching, auto-reapply on reconnect
-- **Hardware control** — DPI stages, active stage, polling rate (125 / 500 / 1000 Hz)
-- **Software remapping** — per-button actions (mouse targets, shortcuts, URL, app launch, DPI/profile cycling)
-- **Scroll tuning** — speed, direction, shift-to-scroll-horizontal, wheel up/down actions
+- **Hardware control** — device-specific DPI stages, active stage, polling rate (125 / 500 / 1000 Hz)
+- **Software remapping** — session-wide button/scroll remapping via a `CGEvent` tap (mouse targets, shortcuts, URL, app launch, DPI/profile cycling). Not limited to the Razer mouse.
+- **Scroll tuning** — software speed/direction and shift-to-scroll-horizontal; optional hardware wheel settings when supported
 - **Safety** — emergency remapper pause via **⌃⌥⌘R**; mapping warnings when primary clicks are unavailable
 - **Diagnostics** — live input capture, wheel capability probe, permission shortcuts
 - **Launch at login** — optional menu bar startup
@@ -64,7 +64,7 @@ GitHub CI currently publishes **ad-hoc signed** arm64 builds (not notarized). ma
 
 After the first successful launch, double-click works normally.
 
-The official release path is **Developer ID signed and notarized** (`scripts/sign-release.sh`). Ad-hoc builds cannot activate the HID DriverKit extension required for Razer-only remapping.
+The official release path for Gatekeeper-clean distribution is **Developer ID signed and notarized** (`scripts/sign-release.sh`). Optional DriverKit exclusive-ownership work is deferred ([GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2)) and is not required for the current remapper.
 
 ### Install (zip)
 
@@ -117,9 +117,10 @@ See [`scripts/sign-release.sh`](scripts/sign-release.sh) for the full flow.
 
 1. Plug in the Razer Viper V3 HyperSpeed.
 2. Open **Settings…** from the menu bar (⌘,).
-3. On the **Profile** tab, set DPI stages and polling rate, then click **Apply Profile**.
-4. On **Buttons** / **Wheel**, configure remaps as needed; enable **Enable software remapper**.
-5. If remapping is active, grant **Input Monitoring** and **Accessibility**.
+3. On the **Profile** tab, set DPI stages and polling rate, then click **Apply Profile** (hardware commands go only to `1532:00B8`).
+4. Grant **Input Monitoring** and **Accessibility** (Settings → Diagnostics has shortcuts).
+5. On **Buttons** / **Wheel**, configure software remaps if desired, then enable **Enable software remapper**.
+6. Remember: software remapping is **session-wide** — trackpads and other mice can be affected while it is enabled.
 
 ---
 
@@ -127,10 +128,14 @@ See [`scripts/sign-release.sh`](scripts/sign-release.sh) for the full flow.
 
 | Permission | Why it's needed |
 |------------|-----------------|
-| **Input Monitoring** | Read HID feature reports to apply DPI/polling and run diagnostics |
-| **Accessibility** | Software button/scroll remapping via event tap |
+| **Input Monitoring** | Read HID feature reports to apply DPI/polling, run diagnostics, and observe input for remapping |
+| **Accessibility** | Install the software button/scroll remapping event tap |
 
-Open **System Settings → Privacy & Security** and allow **RazerMenuBarApp** for both.
+Open **System Settings → Privacy & Security** and allow **RazerMenuBarApp** for both. Remapping cannot start until both are granted.
+
+### Emergency pause
+
+Press **⌃⌥⌘R** to pause the software remapper immediately if a mapping makes the pointer unusable. Re-enable from Settings after fixing mappings, or press the shortcut again if your build toggles pause.
 
 ---
 
@@ -190,28 +195,22 @@ make release-dmg    # unsigned release + DMG in build/Release/
 
 ---
 
-## Release prerequisites (v2 / Razer-only remapping)
+## Architecture notes
 
-Razer-only button and wheel remapping requires an Apple-approved **HID DriverKit** system extension that exclusively owns `1532:00B8`. Without that extension:
+| Layer | Scope |
+|-------|--------|
+| Hardware DPI / polling / supported wheel firmware settings | Device-specific (`1532:00B8` only) via HID feature reports |
+| Software button and scroll remapping | Session-wide `CGEvent` tap — cannot identify which pointing device produced an event |
+| DriverKit exclusive ownership | Deferred future enhancement ([issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2)); scaffold only, disabled in normal builds |
 
-- Local profile editing still works
-- Hardware read/apply and remapping stay disabled, with an actionable driver status in Settings
-- There is **no** system-wide `CGEvent` remapping fallback
-
-Before a distributable release:
-
-1. Apple approves the DriverKit entitlement group for the team (see [`docs/driverkit-entitlements.md`](docs/driverkit-entitlements.md))
-2. Host app and driver App IDs / provisioning profiles exist
-3. Developer ID signing and notarization credentials are available (local or CI)
-4. Physical acceptance on a Viper V3 HyperSpeed plus a second pointing device passes
-
-Ad-hoc or unsigned builds are for development only; they are not a substitute for a notarized DriverKit release.
+Active plan: [`docs/plans/2026-07-11-cgevent-remapper-continuation.md`](docs/plans/2026-07-11-cgevent-remapper-continuation.md).
 
 ## Scope and limitations
 
-- **Device:** Razer Viper V3 HyperSpeed (`1532:00B8`) only
+- **Device (hardware):** Razer Viper V3 HyperSpeed (`1532:00B8`) only
+- **Software remapping:** session-wide; a trackpad or second mouse may be remapped while the remapper is enabled
 - **No** RGB, onboard profile save, or Mac App Store distribution
-- **CI builds today:** ad-hoc signed, arm64 only (official path: Developer ID + notarization)
+- **CI builds today:** ad-hoc signed, arm64 only (optional local path: Developer ID + notarization)
 - **Unofficial:** not affiliated with Razer Inc.
 
 ---

@@ -1,5 +1,7 @@
 # Razer-Only Remapping And Full Hardening Implementation Plan
 
+> **Status (2026-07-11): DEFERRED.** The DriverKit ownership path requires paid Apple Developer Program access, approved entitlements, signed profiles, and physical acceptance testing. It is tracked as [GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2). This document remains the future DriverKit plan; it no longer blocks work on the current `CGEvent` implementation. Continue from `docs/plans/2026-07-11-cgevent-remapper-continuation.md`.
+
 > **For Claude/Cursor:** Use the repository's plan-execution workflow and implement this document task-by-task. Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` when available.
 
 **Goal:** Ship one release in which button and wheel remapping applies only to the Razer Viper V3 HyperSpeed, all confirmed review defects are fixed, and the app is Developer ID signed and notarized with its HID DriverKit extension.
