@@ -177,13 +177,13 @@
 
 **Steps:**
 
-- [ ] Create a manual matrix for normal click, hold, drag, swapped buttons, side buttons, wheel click, vertical scroll, Shift-horizontal scroll, slow multipliers, one-shot actions, pause, permission loss, and tap recovery.
-- [ ] Explicitly test with a trackpad and second mouse and record that session-wide remapping affects them; this is a known limitation, not a failed DriverKit criterion.
-- [ ] Run `swift test --disable-sandbox`.
-- [ ] Run `make xcode` if `project.yml` changed.
-- [ ] Run `xcodebuild -scheme RazerMenuBarApp -configuration Debug -derivedDataPath build/ReviewDerivedData build`.
-- [ ] Run `git diff --check` and inspect `git status --short` for generated or unrelated changes.
-- [ ] Commit: `test: document CGEvent remapper acceptance`.
+- [x] Create a manual matrix for normal click, hold, drag, swapped buttons, side buttons, wheel click, vertical scroll, Shift-horizontal scroll, slow multipliers, one-shot actions, pause, permission loss, and tap recovery.
+- [x] Explicitly test with a trackpad and second mouse and record that session-wide remapping affects them; this is a known limitation, not a failed DriverKit criterion.
+- [x] Run `swift test --disable-sandbox`.
+- [x] Run `make xcode` if `project.yml` changed.
+- [x] Run `xcodebuild -scheme RazerMenuBarApp -configuration Debug -derivedDataPath build/ReviewDerivedData build`.
+- [x] Run `git diff --check` and inspect `git status --short` for generated or unrelated changes.
+- [x] Commit: `test: document CGEvent remapper acceptance`.
 
 ## Cursor Handoff Prompt
 

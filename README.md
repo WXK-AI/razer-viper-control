@@ -191,7 +191,7 @@ make release-dmg    # unsigned release + DMG in build/Release/
 | `Sources/RazerProbeCLI/` | CLI probe tool |
 | `scripts/` | Release build, DMG packaging, optional signing |
 | `design/` | Icon and DMG artwork sources |
-| `docs/` | README assets |
+| `docs/` | README assets, plans, testing matrices |
 
 ---
 
@@ -204,6 +204,8 @@ make release-dmg    # unsigned release + DMG in build/Release/
 | DriverKit exclusive ownership | Deferred future enhancement ([issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2)); scaffold only, disabled in normal builds |
 
 Active plan: [`docs/plans/2026-07-11-cgevent-remapper-continuation.md`](docs/plans/2026-07-11-cgevent-remapper-continuation.md).
+
+Manual acceptance for the CGEvent remapper (button/drag/scroll/pause/permissions/session-wide scope/diagnostics): [`docs/testing/cgevent-remapper-acceptance.md`](docs/testing/cgevent-remapper-acceptance.md). DriverKit physical matrix remains in [`docs/testing/driverkit-spike.md`](docs/testing/driverkit-spike.md).
 
 ## Scope and limitations
 
