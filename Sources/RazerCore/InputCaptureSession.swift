@@ -99,6 +99,10 @@ public final class InputCaptureSession: @unchecked Sendable {
     private var entries: [Entry] = []
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    /// Coalesces main-queue publication so scroll bursts don't enqueue one block per event.
+    private var publicationWorkItem: DispatchWorkItem?
+    /// Delay before delivering a coalesced snapshot to observers.
+    private static let publicationCoalesceInterval: DispatchTimeInterval = .milliseconds(16)
 
     public init(maxEntries: Int = 250) {
         self.maxEntries = max(1, maxEntries)
@@ -168,9 +172,11 @@ public final class InputCaptureSession: @unchecked Sendable {
     public func clear() {
         lock.lock()
         entries.removeAll(keepingCapacity: false)
-        let snapshot = entries
+        publicationWorkItem?.cancel()
+        publicationWorkItem = nil
         lock.unlock()
-        notifyEntriesChanged(snapshot)
+        // Deliver empty snapshot promptly; pending debounced work is cancelled above.
+        publishSnapshotOnMain(immediately: true)
     }
 
     /// Records a remapper-side observation while diagnostics capture is enabled.
@@ -189,7 +195,8 @@ public final class InputCaptureSession: @unchecked Sendable {
             Entry(
                 eventType: "remap",
                 control: control,
-                isSynthetic: disposition == .synthetic || disposition == .remapped,
+                // Only true synthetic-marker events are synthetic; remapped is a remapper decision.
+                isSynthetic: disposition == .synthetic,
                 disposition: disposition,
                 summary: summaryParts.joined(separator: " ")
             )
@@ -203,9 +210,8 @@ public final class InputCaptureSession: @unchecked Sendable {
         if entries.count > maxEntries {
             entries.removeFirst(entries.count - maxEntries)
         }
-        let snapshot = entries
         lock.unlock()
-        notifyEntriesChanged(snapshot)
+        schedulePublication()
     }
 
     private static let eventCallback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -275,14 +281,33 @@ public final class InputCaptureSession: @unchecked Sendable {
         )
     }
 
-    private func notifyEntriesChanged(_ snapshot: [Entry]) {
-        guard let onEntriesChanged else { return }
-        if Thread.isMainThread {
-            onEntriesChanged(snapshot)
+    /// At most one coalesced main-queue publish is outstanding; delivery always re-reads `entries`.
+    private func schedulePublication() {
+        publishSnapshotOnMain(immediately: false)
+    }
+
+    private func publishSnapshotOnMain(immediately: Bool) {
+        lock.lock()
+        publicationWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.publicationWorkItem = nil
+            let snapshot = self.entries
+            let callback = self.onEntriesChanged
+            self.lock.unlock()
+            callback?(snapshot)
+        }
+        publicationWorkItem = work
+        lock.unlock()
+
+        if immediately {
+            DispatchQueue.main.async(execute: work)
         } else {
-            DispatchQueue.main.async {
-                onEntriesChanged(snapshot)
-            }
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + Self.publicationCoalesceInterval,
+                execute: work
+            )
         }
     }
 

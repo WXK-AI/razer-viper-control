@@ -160,8 +160,10 @@
 - [x] Keep capture opt-in, memory-only, and capped; clearing capture must release retained entries immediately.
 - [x] Exclude keyboard contents beyond key code/modifier data needed for explicit shortcut capture.
 - [x] Add tests for cap eviction, clear callbacks, main-thread publication, and synthetic-event labeling.
+- [x] Coalesce observer publication (16ms debounce + re-snapshot); remapped ≠ synthetic; clear cancels stale publishes.
 - [x] Verify capture remains responsive during fast scrolling and cannot write to disk.
 - [x] Commit: `feat: improve bounded input diagnostics`.
+- [x] Follow-up: `fix: coalesce diagnostics publication and clear races`.
 
 ### Task 7: Full Regression And Manual Acceptance
 
