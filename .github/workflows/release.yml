@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create or rebuild (e.g. v1.0.2). Existing tags build that commit only."
+        description: "New release tag (e.g. v1.0.3). Published tags are immutable — an existing tag is allowed only when it already points at this workflow commit."
         required: true
-        default: "v1.0.2"
+        default: "v1.0.3"
 
 permissions:
   contents: write
@@ -37,7 +37,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Resolve and checkout release commit
+      - name: Resolve release commit
         id: commit
         run: |
           set -euo pipefail
@@ -52,20 +52,22 @@ jobs:
 
           git fetch --tags --force origin
 
+          # Always build from the initially selected workflow commit so release
+          # tooling matches the sources under test. Never check out a historical tag.
           INTENDED_SHA="$(git rev-parse HEAD)"
+
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
             TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
             echo "Tag ${TAG} already exists at ${TAG_SHA}"
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              if [ "$TAG_SHA" != "$INTENDED_SHA" ]; then
-                echo "Building existing tag commit ${TAG_SHA} (workflow HEAD was ${INTENDED_SHA})."
-              fi
-            elif [ "$TAG_SHA" != "$INTENDED_SHA" ]; then
-              echo "error: checked-out commit ${INTENDED_SHA} does not match tag ${TAG} (${TAG_SHA})" >&2
+            if [ "$TAG_SHA" != "$INTENDED_SHA" ]; then
+              echo "error: published tags are immutable" >&2
+              echo "  ${TAG} points at ${TAG_SHA}" >&2
+              echo "  workflow commit is ${INTENDED_SHA}" >&2
+              echo "Cut a new version/tag from the commit you want to release." >&2
               exit 1
             fi
-            git checkout --force "$TAG_SHA"
-            echo "sha=${TAG_SHA}" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} already matches this commit; will republish assets without moving the tag"
+            echo "sha=${INTENDED_SHA}" >> "$GITHUB_OUTPUT"
             echo "create_tag=false" >> "$GITHUB_OUTPUT"
           else
             if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
@@ -73,7 +75,6 @@ jobs:
               exit 1
             fi
             echo "New tag ${TAG} will be pushed at ${INTENDED_SHA} only after validation succeeds"
-            git checkout --force "$INTENDED_SHA"
             echo "sha=${INTENDED_SHA}" >> "$GITHUB_OUTPUT"
             echo "create_tag=true" >> "$GITHUB_OUTPUT"
           fi
