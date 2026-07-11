@@ -87,7 +87,7 @@ final class InputCaptureSessionTests: XCTestCase {
         }
         wait(for: [burstDone], timeout: 2)
 
-        let settled = expectation(description: "coalesced publish delivered")
+        let settled = expectation(description: "publication delivered")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             settled.fulfill()
         }
@@ -100,9 +100,29 @@ final class InputCaptureSessionTests: XCTestCase {
 
         XCTAssertEqual(session.snapshotEntries().count, 50)
         XCTAssertEqual(observedLastCount, 50)
-        // Sliding debounce must collapse a tight burst far below one callback per event.
-        XCTAssertLessThan(observedCallbacks, 10, "expected coalesced publishes, got \(observedCallbacks)")
-        XCTAssertGreaterThanOrEqual(observedCallbacks, 1)
+        XCTAssertEqual(observedCallbacks, 1)
+        XCTAssertEqual(
+            session.publicationEnqueueCount,
+            1,
+            "tight burst must enqueue a single coalesced publication, not one per event"
+        )
+    }
+
+    func testBurstDoesNotEnqueuePerEventPublication() {
+        let session = InputCaptureSession(maxEntries: 50)
+        // No observer required: enqueue counting is on the schedule path itself.
+        for index in 0..<500 {
+            session.append(
+                .init(eventType: "scrollWheel", disposition: .observed, summary: "scroll-\(index)")
+            )
+        }
+        XCTAssertEqual(session.publicationEnqueueCount, 1)
+        XCTAssertEqual(session.snapshotEntries().count, 50)
+
+        let settled = expectation(description: "drain main")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { settled.fulfill() }
+        wait(for: [settled], timeout: 1)
+        XCTAssertEqual(session.publicationEnqueueCount, 1)
     }
 
     func testEntriesChangedPublishedOnMainThread() {

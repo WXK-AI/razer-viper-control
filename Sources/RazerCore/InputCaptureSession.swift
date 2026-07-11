@@ -99,9 +99,13 @@ public final class InputCaptureSession: @unchecked Sendable {
     private var entries: [Entry] = []
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    /// Coalesces main-queue publication so scroll bursts don't enqueue one block per event.
-    private var publicationWorkItem: DispatchWorkItem?
-    /// Delay before delivering a coalesced snapshot to observers.
+    /// True while a main-queue publication block is outstanding or running.
+    private var publicationScheduled = false
+    /// Set by append/clear; consumed when a publication re-snapshots `entries`.
+    private var publicationDirty = false
+    /// Test seam: increments only when a main-queue publication block is enqueued.
+    private(set) var publicationEnqueueCount = 0
+    /// Coalesce window so continuous input cannot enqueue denser than one publish per interval.
     private static let publicationCoalesceInterval: DispatchTimeInterval = .milliseconds(16)
 
     public init(maxEntries: Int = 250) {
@@ -172,11 +176,9 @@ public final class InputCaptureSession: @unchecked Sendable {
     public func clear() {
         lock.lock()
         entries.removeAll(keepingCapacity: false)
-        publicationWorkItem?.cancel()
-        publicationWorkItem = nil
         lock.unlock()
-        // Deliver empty snapshot promptly; pending debounced work is cancelled above.
-        publishSnapshotOnMain(immediately: true)
+        // Prefer prompt empty UI when nothing is already outstanding.
+        schedulePublication(immediate: true)
     }
 
     /// Records a remapper-side observation while diagnostics capture is enabled.
@@ -211,7 +213,7 @@ public final class InputCaptureSession: @unchecked Sendable {
             entries.removeFirst(entries.count - maxEntries)
         }
         lock.unlock()
-        schedulePublication()
+        schedulePublication(immediate: false)
     }
 
     private static let eventCallback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -281,34 +283,66 @@ public final class InputCaptureSession: @unchecked Sendable {
         )
     }
 
-    /// At most one coalesced main-queue publish is outstanding; delivery always re-reads `entries`.
-    private func schedulePublication() {
-        publishSnapshotOnMain(immediately: false)
-    }
-
-    private func publishSnapshotOnMain(immediately: Bool) {
+    /// At most one main-queue publication is outstanding. Further events only set a dirty flag
+    /// (no per-event `DispatchWorkItem` / `async` allocation).
+    private func schedulePublication(immediate: Bool) {
         lock.lock()
-        publicationWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.lock.lock()
-            self.publicationWorkItem = nil
-            let snapshot = self.entries
-            let callback = self.onEntriesChanged
-            self.lock.unlock()
-            callback?(snapshot)
+        publicationDirty = true
+        if publicationScheduled {
+            lock.unlock()
+            return
         }
-        publicationWorkItem = work
+        publicationScheduled = true
+        publicationEnqueueCount += 1
         lock.unlock()
 
-        if immediately {
-            DispatchQueue.main.async(execute: work)
+        let deliver: () -> Void = { [weak self] in
+            self?.deliverPublication()
+        }
+        if immediate {
+            DispatchQueue.main.async(execute: deliver)
         } else {
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + Self.publicationCoalesceInterval,
-                execute: work
+                execute: deliver
             )
         }
+    }
+
+    private func deliverPublication() {
+        lock.lock()
+        publicationDirty = false
+        let snapshot = entries
+        let callback = onEntriesChanged
+        lock.unlock()
+
+        callback?(snapshot)
+
+        lock.lock()
+        if publicationDirty {
+            // Keep the single outstanding slot; schedule one follow-up after the coalesce window.
+            publicationEnqueueCount += 1
+            lock.unlock()
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + Self.publicationCoalesceInterval
+            ) { [weak self] in
+                self?.deliverPublication()
+            }
+            return
+        }
+        publicationScheduled = false
+        if publicationDirty {
+            publicationScheduled = true
+            publicationEnqueueCount += 1
+            lock.unlock()
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + Self.publicationCoalesceInterval
+            ) { [weak self] in
+                self?.deliverPublication()
+            }
+            return
+        }
+        lock.unlock()
     }
 
     private static func eventTypeName(type: CGEventType, buttonNumber: Int64?) -> String {
