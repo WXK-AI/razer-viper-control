@@ -57,6 +57,8 @@ final class AppModel: ObservableObject {
     private let remapper = InputRemapper()
     private let systemExtensionManager = SystemExtensionManager()
     private let hidQueue = DispatchQueue(label: "com.razermenubar.hid", qos: .utility)
+    /// Event-tap-safe diagnostic bridge; avoids per-event MainActor `Task` hops.
+    private let remapDiagnosticSink = InputCaptureDiagnosticSink()
     private var monitorTimer: Timer?
     private var wasConnected = false
     private var isRefreshInFlight = false
@@ -612,11 +614,14 @@ final class AppModel: ObservableObject {
             captureEntries = []
             do {
                 try captureSession.start()
+                remapDiagnosticSink.update(enabled: true, session: captureSession)
             } catch {
                 diagnosticsCaptureEnabled = false
+                remapDiagnosticSink.update(enabled: false, session: captureSession)
                 warningMessage = error.localizedDescription
             }
         } else {
+            remapDiagnosticSink.update(enabled: false, session: captureSession)
             captureSession.stop()
             captureSession.clear()
             captureEntries = []
@@ -649,6 +654,7 @@ final class AppModel: ObservableObject {
     }
 
     private func configureCaptureSession() {
+        remapDiagnosticSink.update(enabled: false, session: captureSession)
         captureSession.onEntriesChanged = { [weak self] entries in
             Task { @MainActor in
                 self?.captureEntries = entries
@@ -723,15 +729,9 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        remapper.callbacks.onInputDiagnostic = { [weak self] control, disposition, detail in
-            Task { @MainActor in
-                guard let self, self.diagnosticsCaptureEnabled else { return }
-                self.captureSession.recordRemapObservation(
-                    control: control,
-                    disposition: disposition,
-                    detail: detail
-                )
-            }
+        remapper.callbacks.onInputDiagnostic = { [remapDiagnosticSink] control, disposition, detail in
+            // Hot path: record directly on the capture session. Do not spawn a Task per event.
+            remapDiagnosticSink.record(control: control, disposition: disposition, detail: detail)
         }
     }
 
