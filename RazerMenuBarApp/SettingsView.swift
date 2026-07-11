@@ -76,12 +76,21 @@ struct SettingsView: View {
                 .foregroundStyle(.orange)
             HStack {
                 if let url = model.quarantinedProfileURL {
-                    Button("Reveal Quarantined File") {
+                    Button("Reveal File") {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
                 }
-                Button("Dismiss") {
-                    model.dismissPersistenceWarning()
+                if model.writesBlockedForCorruptSource {
+                    Button("Retry Quarantine") {
+                        model.retryQuarantineCorruptProfiles()
+                    }
+                    Button("Discard Corrupt File and Start Fresh", role: .destructive) {
+                        model.discardCorruptFileAndStartFresh()
+                    }
+                } else {
+                    Button("Dismiss") {
+                        model.dismissPersistenceWarning()
+                    }
                 }
             }
         }

@@ -16,8 +16,12 @@ final class AppModel: ObservableObject {
     @Published var quarantinedProfileURL: URL?
     @Published var persistenceStatus: PersistenceStatus = .clean
     @Published var profileDraft: ProfileDraft?
-    @Published var mappingWarning: String?
     @Published var pendingQuitAfterSaveFailure = false
+    @Published var mappingWarning: String?
+
+    var writesBlockedForCorruptSource: Bool {
+        profileStore.writesBlockedForCorruptSource
+    }
     @Published var bundle: ProfileBundle
     @Published var launchAtLogin = false
     @Published var showSettings = false
@@ -55,26 +59,44 @@ final class AppModel: ObservableObject {
     }
 
     init() {
-        switch profileStore.loadOutcome() {
-        case let .loaded(loaded):
-            bundle = loaded
-        case let .firstRun(defaults):
-            bundle = defaults
-            try? profileStore.save(bundle)
-        case let .recovered(defaults, quarantinedURL, reason):
-            bundle = defaults
+        let outcome = profileStore.loadOutcome()
+        bundle = outcome.bundle
+
+        switch outcome {
+        case .loaded:
+            if let warning = outcome.persistenceWarning {
+                persistenceStatus = .failed(warning)
+                persistenceWarning = "Profiles loaded in memory, but repairing/saving them failed: \(warning)"
+            }
+        case .firstRun:
+            if let warning = outcome.persistenceWarning {
+                persistenceStatus = .failed(warning)
+                persistenceWarning = "Could not create initial profile storage: \(warning)"
+            }
+        case let .recovered(_, quarantinedURL, reason, persistenceWarning):
             quarantinedProfileURL = quarantinedURL
-            persistenceWarning = "Saved profiles were unreadable and were reset to defaults. \(reason)"
-            try? profileStore.save(bundle)
-        case let .corruptPreserved(defaults, sourceURL, reason):
-            bundle = defaults
+            if let persistenceWarning {
+                persistenceStatus = .failed(persistenceWarning)
+                self.persistenceWarning = "Corrupt profiles were quarantined, but saving defaults failed: \(persistenceWarning). \(reason)"
+            } else {
+                self.persistenceWarning = "Saved profiles were unreadable and were reset to defaults. \(reason)"
+            }
+        case let .corruptPreserved(_, sourceURL, reason):
             quarantinedProfileURL = sourceURL
-            persistenceWarning = "Saved profiles are corrupt and could not be quarantined. Defaults are in use in-memory only; the original file was left untouched. \(reason)"
-            // Do not save — writing would overwrite the only remaining corrupt source.
+            persistenceStatus = .failed(ProfileStoreError.writeBlockedCorruptSource(sourceURL.path).localizedDescription)
+            persistenceWarning = "Saved profiles are corrupt and could not be quarantined. Edits stay in memory until you quarantine or discard the corrupt file. \(reason)"
         }
+
         if bundle.profiles.isEmpty {
             bundle = profileStore.defaultBundle()
-            try? profileStore.save(bundle)
+            if !profileStore.writesBlockedForCorruptSource {
+                do {
+                    try profileStore.save(bundle)
+                } catch {
+                    persistenceStatus = .failed(error.localizedDescription)
+                    persistenceWarning = "Could not save empty-profile recovery defaults: \(error.localizedDescription)"
+                }
+            }
         }
         if #available(macOS 13.0, *) {
             launchAtLogin = LaunchAtLoginManager.isEnabled
@@ -89,7 +111,39 @@ final class AppModel: ObservableObject {
     }
 
     func dismissPersistenceWarning() {
+        // Dismissing the banner must not clear a durable corrupt-source write block.
+        if profileStore.writesBlockedForCorruptSource {
+            return
+        }
         persistenceWarning = nil
+    }
+
+    /// Retries quarantine, then persists the in-memory defaults/bundle.
+    func retryQuarantineCorruptProfiles() {
+        do {
+            let url = try profileStore.retryQuarantineCorruptSource()
+            quarantinedProfileURL = url
+            try profileStore.save(bundle)
+            persistenceStatus = .clean
+            persistenceWarning = "Corrupt profiles were quarantined and defaults were saved."
+        } catch {
+            persistenceStatus = .failed(error.localizedDescription)
+            persistenceWarning = error.localizedDescription
+        }
+    }
+
+    /// Explicitly discards the corrupt primary file and starts fresh with the in-memory bundle.
+    func discardCorruptFileAndStartFresh() {
+        do {
+            try profileStore.discardCorruptSourceAndAllowWrites()
+            try profileStore.save(bundle)
+            persistenceStatus = .clean
+            persistenceWarning = nil
+            quarantinedProfileURL = nil
+        } catch {
+            persistenceStatus = .failed(error.localizedDescription)
+            persistenceWarning = error.localizedDescription
+        }
     }
 
     func reloadDraftFromSelectedProfile() {

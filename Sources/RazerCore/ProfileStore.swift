@@ -105,14 +105,30 @@ public struct ProfileBundle: Codable, Equatable, Sendable {
 }
 
 public enum ProfileLoadOutcome: Equatable, Sendable {
-    case loaded(ProfileBundle)
-    case firstRun(ProfileBundle)
+    case loaded(ProfileBundle, persistenceWarning: String?)
+    case firstRun(ProfileBundle, persistenceWarning: String?)
     /// Corrupt source was moved aside successfully; defaults may be persisted.
-    case recovered(ProfileBundle, quarantinedURL: URL, reason: String)
-    /// Quarantine failed; corrupt source must not be overwritten.
+    case recovered(ProfileBundle, quarantinedURL: URL, reason: String, persistenceWarning: String?)
+    /// Quarantine failed; corrupt source must not be overwritten until quarantined or discarded.
     case corruptPreserved(ProfileBundle, sourceURL: URL, reason: String)
 
-    /// Whether it is safe to write a default bundle to the primary storage URL.
+    public var bundle: ProfileBundle {
+        switch self {
+        case let .loaded(bundle, _), let .firstRun(bundle, _), let .recovered(bundle, _, _, _), let .corruptPreserved(bundle, _, _):
+            return bundle
+        }
+    }
+
+    public var persistenceWarning: String? {
+        switch self {
+        case let .loaded(_, warning), let .firstRun(_, warning), let .recovered(_, _, _, warning):
+            return warning
+        case let .corruptPreserved(_, _, reason):
+            return reason
+        }
+    }
+
+    /// Whether it is safe to write a default bundle to the primary storage URL immediately after load.
     public var shouldPersistDefaults: Bool {
         switch self {
         case .firstRun, .recovered:
@@ -127,6 +143,7 @@ public enum ProfileStoreError: Error, LocalizedError, Equatable {
     case validation(RazerValidationError)
     case writeFailed(String)
     case quarantineFailed(String)
+    case writeBlockedCorruptSource(String)
 
     public var errorDescription: String? {
         switch self {
@@ -136,6 +153,8 @@ public enum ProfileStoreError: Error, LocalizedError, Equatable {
             return "Failed to save profiles: \(details)"
         case let .quarantineFailed(details):
             return "Failed to quarantine corrupt profiles: \(details)"
+        case let .writeBlockedCorruptSource(path):
+            return "Profile saves are blocked until the corrupt file is quarantined or discarded: \(path)"
         }
     }
 }
@@ -148,6 +167,9 @@ public final class ProfileStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let now: () -> Date
+
+    /// When true, `save` refuses to write the primary path so a corrupt source cannot be overwritten.
+    public private(set) var writesBlockedForCorruptSource = false
 
     public init(
         deviceKey: String = DeviceDescriptor.deviceKey,
@@ -172,15 +194,20 @@ public final class ProfileStore {
     public var storageDirectoryURL: URL { directoryURL }
 
     public func load() -> ProfileBundle {
-        switch loadOutcome() {
-        case let .loaded(bundle), let .firstRun(bundle), let .recovered(bundle, _, _), let .corruptPreserved(bundle, _, _):
-            return bundle
-        }
+        loadOutcome().bundle
     }
 
     public func loadOutcome() -> ProfileLoadOutcome {
+        writesBlockedForCorruptSource = false
+
         if !fileManager.fileExists(atPath: fileURL.path) {
-            return .firstRun(defaultBundle())
+            let defaults = defaultBundle()
+            do {
+                try save(defaults)
+                return .firstRun(defaults, persistenceWarning: nil)
+            } catch {
+                return .firstRun(defaults, persistenceWarning: error.localizedDescription)
+            }
         }
 
         let data: Data
@@ -204,12 +231,21 @@ public final class ProfileStore {
 
         let repaired = repairSelection(bundle)
         if repaired != decoded {
-            try? save(repaired)
+            do {
+                try save(repaired)
+                return .loaded(repaired, persistenceWarning: nil)
+            } catch {
+                return .loaded(repaired, persistenceWarning: error.localizedDescription)
+            }
         }
-        return .loaded(repaired)
+        return .loaded(repaired, persistenceWarning: nil)
     }
 
     public func save(_ bundle: ProfileBundle) throws {
+        if writesBlockedForCorruptSource {
+            throw ProfileStoreError.writeBlockedCorruptSource(fileURL.path)
+        }
+
         for profile in bundle.profiles {
             do {
                 _ = try ProfileValidator.validateStages(profile.dpiStages, activeStage: profile.activeStage)
@@ -224,6 +260,39 @@ public final class ProfileStore {
             try data.write(to: fileURL, options: .atomic)
         } catch let error as ProfileStoreError {
             throw error
+        } catch {
+            throw ProfileStoreError.writeFailed(error.localizedDescription)
+        }
+    }
+
+    /// Retries moving the corrupt primary file aside, then clears the write block.
+    @discardableResult
+    public func retryQuarantineCorruptSource() throws -> URL {
+        let stamp = Self.quarantineTimestamp(from: now())
+        let quarantineURL = directoryURL.appendingPathComponent(
+            "profiles-\(deviceKey)-corrupt-\(stamp).json"
+        )
+        do {
+            if fileManager.fileExists(atPath: quarantineURL.path) {
+                try fileManager.removeItem(at: quarantineURL)
+            }
+            if fileManager.fileExists(atPath: fileURL.path) {
+                try fileManager.moveItem(at: fileURL, to: quarantineURL)
+            }
+            writesBlockedForCorruptSource = false
+            return quarantineURL
+        } catch {
+            throw ProfileStoreError.quarantineFailed(error.localizedDescription)
+        }
+    }
+
+    /// Explicitly removes the corrupt primary file and allows subsequent saves.
+    public func discardCorruptSourceAndAllowWrites() throws {
+        do {
+            if fileManager.fileExists(atPath: fileURL.path) {
+                try fileManager.removeItem(at: fileURL)
+            }
+            writesBlockedForCorruptSource = false
         } catch {
             throw ProfileStoreError.writeFailed(error.localizedDescription)
         }
@@ -255,21 +324,37 @@ public final class ProfileStore {
 
     private func quarantineAndRecover(reason: String) -> ProfileLoadOutcome {
         let defaults = defaultBundle()
+        do {
+            let quarantineURL = try performQuarantineMove()
+            writesBlockedForCorruptSource = false
+            do {
+                try save(defaults)
+                return .recovered(defaults, quarantinedURL: quarantineURL, reason: reason, persistenceWarning: nil)
+            } catch {
+                return .recovered(
+                    defaults,
+                    quarantinedURL: quarantineURL,
+                    reason: reason,
+                    persistenceWarning: error.localizedDescription
+                )
+            }
+        } catch {
+            writesBlockedForCorruptSource = true
+            let combined = "\(reason); quarantine failed: \(error.localizedDescription)"
+            return .corruptPreserved(defaults, sourceURL: fileURL, reason: combined)
+        }
+    }
+
+    private func performQuarantineMove() throws -> URL {
         let stamp = Self.quarantineTimestamp(from: now())
         let quarantineURL = directoryURL.appendingPathComponent(
             "profiles-\(deviceKey)-corrupt-\(stamp).json"
         )
-
-        do {
-            if fileManager.fileExists(atPath: quarantineURL.path) {
-                try fileManager.removeItem(at: quarantineURL)
-            }
-            try fileManager.moveItem(at: fileURL, to: quarantineURL)
-            return .recovered(defaults, quarantinedURL: quarantineURL, reason: reason)
-        } catch {
-            let combined = "\(reason); quarantine failed: \(error.localizedDescription)"
-            return .corruptPreserved(defaults, sourceURL: fileURL, reason: combined)
+        if fileManager.fileExists(atPath: quarantineURL.path) {
+            try fileManager.removeItem(at: quarantineURL)
         }
+        try fileManager.moveItem(at: fileURL, to: quarantineURL)
+        return quarantineURL
     }
 
     private static func quarantineTimestamp(from date: Date) -> String {

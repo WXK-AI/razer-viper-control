@@ -24,31 +24,33 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         store = nil
     }
 
-    func testFirstRunWhenFileMissing() {
+    func testFirstRunWhenFileMissingPersistsDefaults() throws {
         let outcome = store.loadOutcome()
-        guard case let .firstRun(bundle) = outcome else {
+        guard case let .firstRun(bundle, warning) = outcome else {
             return XCTFail("Expected firstRun, got \(outcome)")
         }
+        XCTAssertNil(warning)
         XCTAssertEqual(bundle.profiles.count, 1)
         XCTAssertEqual(bundle.profiles[0].name, "Default")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.storageURL.path))
     }
 
     func testMalformedJSONIsQuarantined() throws {
         try "{not-json".data(using: .utf8)!.write(to: store.storageURL)
 
         let outcome = store.loadOutcome()
-        guard case let .recovered(bundle, quarantinedURL, reason) = outcome else {
+        guard case let .recovered(bundle, quarantinedURL, reason, warning) = outcome else {
             return XCTFail("Expected recovered, got \(outcome)")
         }
+        XCTAssertNil(warning)
         XCTAssertEqual(bundle.profiles.count, 1)
         XCTAssertTrue(reason.contains("malformed"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: quarantinedURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.storageURL.path))
         XCTAssertTrue(quarantinedURL.lastPathComponent.contains("corrupt"))
     }
 
-    func testUnreadableFileIsQuarantined() throws {
+    func testUnreadableFileIsQuarantinedOrPreserved() throws {
         try Data("{}".utf8).write(to: store.storageURL)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o000],
@@ -62,13 +64,18 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         }
 
         let outcome = store.loadOutcome()
-        guard case let .recovered(_, _, reason) = outcome else {
-            return XCTFail("Expected recovered for unreadable file, got \(outcome)")
+        switch outcome {
+        case let .recovered(_, _, reason, _):
+            XCTAssertTrue(reason.contains("unreadable") || reason.contains("malformed"), reason)
+        case let .corruptPreserved(_, _, reason):
+            XCTAssertTrue(
+                reason.contains("unreadable") || reason.contains("malformed") || reason.contains("quarantine failed"),
+                reason
+            )
+            XCTAssertTrue(store.writesBlockedForCorruptSource)
+        default:
+            XCTFail("Expected recovered or corruptPreserved, got \(outcome)")
         }
-        XCTAssertTrue(
-            reason.contains("unreadable") || reason.contains("malformed") || reason.contains("quarantine failed"),
-            "Unexpected reason: \(reason)"
-        )
     }
 
     func testDanglingSelectedProfileIDIsRepairedAndSaved() throws {
@@ -83,9 +90,10 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         try data.write(to: store.storageURL)
 
         let outcome = store.loadOutcome()
-        guard case let .loaded(bundle) = outcome else {
+        guard case let .loaded(bundle, warning) = outcome else {
             return XCTFail("Expected loaded, got \(outcome)")
         }
+        XCTAssertNil(warning)
         XCTAssertEqual(bundle.selectedProfileID, profile.id)
 
         let reloaded = try JSONDecoder().decode(ProfileBundle.self, from: Data(contentsOf: store.storageURL))
@@ -103,7 +111,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         try store.save(bundle)
 
         let outcome = store.loadOutcome()
-        guard case let .loaded(loaded) = outcome else {
+        guard case let .loaded(loaded, _) = outcome else {
             return XCTFail("Expected loaded, got \(outcome)")
         }
         XCTAssertEqual(loaded.selectedProfileID, profile.id)
@@ -135,6 +143,54 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         XCTAssertEqual(before, after)
     }
 
+    func testActualWriteFailureIsReported() throws {
+        let profile = MouseProfile(
+            name: "Valid",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        let bundle = ProfileBundle(selectedProfileID: profile.id, profiles: [profile])
+        try store.save(bundle)
+
+        let appSupport = store.storageDirectoryURL
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
+        }
+
+        XCTAssertThrowsError(try store.save(bundle)) { error in
+            guard case .writeFailed = error as? ProfileStoreError else {
+                return XCTFail("Expected writeFailed, got \(error)")
+            }
+        }
+    }
+
+    func testRepairSaveFailureSurfacesWarningWithoutClaimingCleanPersist() throws {
+        let profile = MouseProfile(
+            name: "Only",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        let dangling = ProfileBundle(selectedProfileID: UUID(), profiles: [profile])
+        try JSONEncoder().encode(dangling).write(to: store.storageURL)
+
+        let appSupport = store.storageDirectoryURL
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
+        }
+
+        let outcome = store.loadOutcome()
+        guard case let .loaded(bundle, warning) = outcome else {
+            return XCTFail("Expected loaded with warning, got \(outcome)")
+        }
+        XCTAssertEqual(bundle.selectedProfileID, profile.id)
+        XCTAssertNotNil(warning)
+        XCTAssertTrue(warning?.contains("Failed to save") == true || warning?.isEmpty == false, warning ?? "")
+    }
+
     func testLegacyAliasMigrationOnLoad() throws {
         let profileID = UUID()
         let profile = MouseProfile(
@@ -148,7 +204,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         try store.save(ProfileBundle(selectedProfileID: profileID, profiles: [profile]))
 
         let outcome = store.loadOutcome()
-        guard case let .loaded(bundle) = outcome else {
+        guard case let .loaded(bundle, _) = outcome else {
             return XCTFail("Expected loaded, got \(outcome)")
         }
         let migrated = try XCTUnwrap(bundle.profiles.first)
@@ -156,7 +212,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         XCTAssertNil(migrated.buttonMappings[.middleClick])
     }
 
-    func testFailedQuarantinePreservesCorruptSourceAndBlocksPersist() throws {
+    func testFailedQuarantineBlocksLaterSavesEvenAfterPermissionsRestored() throws {
         let readOnlyParent = tempDirectory.appendingPathComponent("readonly", isDirectory: true)
         try FileManager.default.createDirectory(at: readOnlyParent, withIntermediateDirectories: true)
         let nestedSupport = readOnlyParent.appendingPathComponent("nested-support", isDirectory: true)
@@ -172,30 +228,63 @@ final class ProfileStoreRecoveryTests: XCTestCase {
 
         let appSupport = nestedSupport.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
-        defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
-        }
 
         let outcome = localStore.loadOutcome()
-        guard case let .corruptPreserved(bundle, sourceURL, reason) = outcome else {
+        guard case let .corruptPreserved(bundle, sourceURL, _) = outcome else {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
             return XCTFail("Expected corruptPreserved, got \(outcome)")
         }
-        XCTAssertEqual(bundle.profiles.count, 1)
-        XCTAssertFalse(outcome.shouldPersistDefaults)
-        XCTAssertTrue(reason.contains("quarantine failed") || reason.contains("malformed"), reason)
+        XCTAssertTrue(localStore.writesBlockedForCorruptSource)
         XCTAssertEqual(try Data(contentsOf: sourceURL), corruptBytes)
 
-        // Simulating AppModel: only persist when shouldPersistDefaults is true.
-        if outcome.shouldPersistDefaults {
-            try localStore.save(bundle)
+        // Restore write permission — durable block must still prevent overwrite.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
+
+        XCTAssertThrowsError(try localStore.save(bundle)) { error in
+            guard case .writeBlockedCorruptSource = error as? ProfileStoreError else {
+                return XCTFail("Expected writeBlockedCorruptSource, got \(error)")
+            }
         }
         XCTAssertEqual(try Data(contentsOf: sourceURL), corruptBytes)
+
+        // Explicit discard clears the block and allows a fresh save.
+        try localStore.discardCorruptSourceAndAllowWrites()
+        XCTAssertFalse(localStore.writesBlockedForCorruptSource)
+        try localStore.save(bundle)
+        XCTAssertNotEqual(try Data(contentsOf: localStore.storageURL), corruptBytes)
+    }
+
+    func testRetryQuarantineClearsWriteBlock() throws {
+        let readOnlyParent = tempDirectory.appendingPathComponent("readonly-retry", isDirectory: true)
+        try FileManager.default.createDirectory(at: readOnlyParent, withIntermediateDirectories: true)
+        let nestedSupport = readOnlyParent.appendingPathComponent("nested-support", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedSupport, withIntermediateDirectories: true)
+
+        let localStore = ProfileStore(
+            deviceKey: "retry",
+            applicationSupportDirectory: nestedSupport,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+        let corruptBytes = Data("{retry-me".utf8)
+        try corruptBytes.write(to: localStore.storageURL)
+
+        let appSupport = nestedSupport.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
+        _ = localStore.loadOutcome()
+        XCTAssertTrue(localStore.writesBlockedForCorruptSource)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
+        let quarantined = try localStore.retryQuarantineCorruptSource()
+        XCTAssertFalse(localStore.writesBlockedForCorruptSource)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: quarantined.path))
+        XCTAssertEqual(try Data(contentsOf: quarantined), corruptBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: localStore.storageURL.path))
     }
 
     func testSuccessfulQuarantineAllowsPersistingDefaults() throws {
         try "{not-json".data(using: .utf8)!.write(to: store.storageURL)
         let outcome = store.loadOutcome()
-        guard case let .recovered(bundle, quarantinedURL, _) = outcome else {
+        guard case let .recovered(bundle, quarantinedURL, _, _) = outcome else {
             return XCTFail("Expected recovered, got \(outcome)")
         }
         XCTAssertTrue(outcome.shouldPersistDefaults)
