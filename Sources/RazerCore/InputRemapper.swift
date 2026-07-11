@@ -56,16 +56,35 @@ public final class InputRemapper: @unchecked Sendable {
     }
 
     public func updateProfile(_ profile: MouseProfile) {
-        let release = commitRecoveryTransition(reason: .profileReplacement, notifyIfEmpty: false) {
-            let mappingsChanged =
-                self.profile.buttonMappings != profile.buttonMappings
-                || self.profile.remapperEnabled != profile.remapperEnabled
-            let targets = mappingsChanged ? buttonSession.releaseAllHeldOutputs() : []
+        let mappingsChanged: Bool
+        let release: HeldOutputRelease
+        lock.lock()
+        mappingsChanged =
+            self.profile.buttonMappings != profile.buttonMappings
+            || self.profile.remapperEnabled != profile.remapperEnabled
+        if mappingsChanged {
+            let targets = buttonSession.releaseAllHeldOutputs()
+            release = makeReleaseLocked(
+                targets: targets,
+                reason: .profileReplacement,
+                notifyIfEmpty: false
+            )
+        } else {
             self.profile = profile
             resetScrollAccumulatorsLocked()
-            return targets
+            release = makeReleaseLocked(
+                targets: [],
+                reason: .profileReplacement,
+                notifyIfEmpty: false
+            )
         }
-        publishHeldOutputRelease(release)
+        lock.unlock()
+
+        publishHeldOutputRelease(release) {
+            guard mappingsChanged else { return }
+            self.profile = profile
+            self.resetScrollAccumulatorsLocked()
+        }
     }
 
     public func pause() {
@@ -198,15 +217,28 @@ public final class InputRemapper: @unchecked Sendable {
         )
     }
 
+    func activeButtonAction(for control: PhysicalControl) -> ButtonAction {
+        lock.lock()
+        defer { lock.unlock() }
+        return InputRemapperEngine.resolvedButtonAction(for: control, in: profile.buttonMappings)
+    }
+
+    /// Invoked after synthetic ups are posted and before deferred finalize work
+    /// (profile apply / tap re-enable). Tests use this to assert publish ordering.
+    var recoveryOrderingProbe: (() -> Void)?
+    /// Invoked after deferred finalize work completes.
+    var recoveryFinalizeProbe: (() -> Void)?
+
     func recoverAfterTapDisable() {
         let release = commitRecoveryTransition(reason: .tapDisable, notifyIfEmpty: true) {
-            let targets = buttonSession.releaseAllHeldOutputs()
-            if let tap = eventTap {
+            // Clear holds now; re-enable the tap only after ups are published.
+            buttonSession.releaseAllHeldOutputs()
+        }
+        publishHeldOutputRelease(release) {
+            if let tap = self.eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
-            return targets
         }
-        publishHeldOutputRelease(release)
     }
 
     // MARK: - Locked recovery transitions
@@ -218,7 +250,8 @@ public final class InputRemapper: @unchecked Sendable {
         let callback: ((HeldOutputRecoveryReason) -> Void)?
     }
 
-    /// Snapshot/clear holds and apply recovery state in one critical section, then publish outside.
+    /// Snapshot/clear holds and apply gating state in one critical section.
+    /// Deferred exposure (new mappings / tap re-enable) happens in `publishHeldOutputRelease`'s finalize.
     private func commitRecoveryTransition(
         reason: HeldOutputRecoveryReason,
         notifyIfEmpty: Bool,
@@ -226,21 +259,36 @@ public final class InputRemapper: @unchecked Sendable {
     ) -> HeldOutputRelease {
         lock.lock()
         let targets = mutate()
+        let release = makeReleaseLocked(
+            targets: targets,
+            reason: reason,
+            notifyIfEmpty: notifyIfEmpty
+        )
+        lock.unlock()
+        return release
+    }
+
+    private func makeReleaseLocked(
+        targets: [MouseButtonTarget],
+        reason: HeldOutputRecoveryReason,
+        notifyIfEmpty: Bool
+    ) -> HeldOutputRelease {
         let shouldNotify = !targets.isEmpty || notifyIfEmpty
         if shouldNotify {
             lastHeldOutputRecovery = reason
         }
-        let callback = callbacks.onHeldOutputsReleased
-        lock.unlock()
         return HeldOutputRelease(
             targets: targets,
             reason: reason,
             shouldNotify: shouldNotify,
-            callback: callback
+            callback: callbacks.onHeldOutputsReleased
         )
     }
 
-    private func publishHeldOutputRelease(_ release: HeldOutputRelease) {
+    private func publishHeldOutputRelease(
+        _ release: HeldOutputRelease,
+        finalize: (() -> Void)? = nil
+    ) {
         for target in release.targets {
             postMouseButton(target, down: false)
         }
@@ -248,6 +296,14 @@ public final class InputRemapper: @unchecked Sendable {
             lock.lock()
             syntheticMouseUpCount += release.targets.count
             lock.unlock()
+        }
+        // Probe sees post-up, pre-finalize state so tests can catch ordering bugs.
+        recoveryOrderingProbe?()
+        if let finalize {
+            lock.lock()
+            finalize()
+            lock.unlock()
+            recoveryFinalizeProbe?()
         }
         if release.shouldNotify {
             release.callback?(release.reason)

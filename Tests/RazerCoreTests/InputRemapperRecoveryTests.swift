@@ -170,4 +170,51 @@ final class InputRemapperRecoveryTests: XCTestCase {
             .postMouse(.left, isDown: true)
         )
     }
+
+    func testProfileReplacementPostsUpsBeforeExposingNewMapping() {
+        let remapper = InputRemapper()
+        remapper.updateProfile(mappedProfile([.leftClick: .mouseButton(.right)]))
+        seedHold(remapper)
+
+        var next = mappedProfile([.leftClick: .mouseButton(.left)])
+        next.name = "Swapped"
+
+        var actionAtProbe: ButtonAction?
+        var upsAtProbe = 0
+        remapper.recoveryOrderingProbe = {
+            upsAtProbe = remapper.releasedSyntheticMouseUpCount()
+            actionAtProbe = remapper.activeButtonAction(for: .leftClick)
+        }
+
+        remapper.updateProfile(next)
+
+        XCTAssertEqual(upsAtProbe, 1, "Synthetic ups must post before the new mapping is visible")
+        XCTAssertEqual(
+            actionAtProbe,
+            .mouseButton(.right),
+            "Old mapping must remain visible until ups are published"
+        )
+        XCTAssertEqual(remapper.activeButtonAction(for: .leftClick), .mouseButton(.left))
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+    }
+
+    func testTapDisablePostsUpsBeforeReenablingTap() {
+        let remapper = InputRemapper()
+        seedHold(remapper)
+
+        var order: [String] = []
+        remapper.recoveryOrderingProbe = {
+            order.append("afterUps")
+            XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+            XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+        }
+        remapper.recoveryFinalizeProbe = {
+            order.append("afterReenable")
+        }
+
+        remapper.recoverAfterTapDisable()
+
+        XCTAssertEqual(order, ["afterUps", "afterReenable"])
+        XCTAssertEqual(remapper.lastRecoveryReason(), .tapDisable)
+    }
 }
