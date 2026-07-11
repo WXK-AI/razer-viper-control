@@ -610,26 +610,25 @@ final class AppModel: ObservableObject {
     func setDiagnosticsCaptureEnabled(_ enabled: Bool) {
         diagnosticsCaptureEnabled = enabled
         if enabled {
-            captureSession.clear()
+            remapDiagnosticSink.clear()
             captureEntries = []
             do {
                 try captureSession.start()
                 remapDiagnosticSink.update(enabled: true, session: captureSession)
             } catch {
                 diagnosticsCaptureEnabled = false
-                remapDiagnosticSink.update(enabled: false, session: captureSession)
+                remapDiagnosticSink.disableAndClear()
                 warningMessage = error.localizedDescription
             }
         } else {
-            remapDiagnosticSink.update(enabled: false, session: captureSession)
+            remapDiagnosticSink.disableAndClear()
             captureSession.stop()
-            captureSession.clear()
             captureEntries = []
         }
     }
 
     func clearDiagnosticsCapture() {
-        captureSession.clear()
+        remapDiagnosticSink.clear()
         captureEntries = []
     }
 

@@ -53,4 +53,70 @@ final class InputCaptureDiagnosticSinkTests: XCTestCase {
         XCTAssertEqual(session.snapshotEntries().count, 50)
         XCTAssertLessThanOrEqual(session.publicationEnqueueCount, 8)
     }
+
+    func testDisableAndClearDropsInFlightRecords() {
+        let session = InputCaptureSession(maxEntries: 500)
+        let sink = InputCaptureDiagnosticSink()
+        sink.update(enabled: true, session: session)
+
+        let writers = DispatchGroup()
+        for _ in 0..<8 {
+            writers.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                for index in 0..<200 {
+                    sink.record(
+                        control: .wheelUp,
+                        disposition: .remapped,
+                        detail: "race-\(index)"
+                    )
+                }
+                writers.leave()
+            }
+        }
+
+        // Disable+clear while writers are still appending.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.001) {
+            sink.disableAndClear()
+        }
+
+        XCTAssertEqual(writers.wait(timeout: .now() + 2), .success)
+
+        // Any record that observed `enabled` must finish before disableAndClear
+        // returns; afterward the buffer stays empty and further records no-op.
+        XCTAssertTrue(session.snapshotEntries().isEmpty)
+        sink.record(control: .wheelUp, disposition: .remapped, detail: "after-disable")
+        XCTAssertTrue(session.snapshotEntries().isEmpty)
+    }
+
+    func testClearSerializesWithConcurrentRecords() {
+        let session = InputCaptureSession(maxEntries: 500)
+        let sink = InputCaptureDiagnosticSink()
+        sink.update(enabled: true, session: session)
+
+        let writers = DispatchGroup()
+        for _ in 0..<4 {
+            writers.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                for index in 0..<150 {
+                    sink.record(
+                        control: .leftClick,
+                        disposition: .consumed,
+                        detail: "pre-clear-\(index)"
+                    )
+                }
+                writers.leave()
+            }
+        }
+
+        for _ in 0..<20 {
+            sink.clear()
+        }
+
+        XCTAssertEqual(writers.wait(timeout: .now() + 2), .success)
+        sink.clear()
+        XCTAssertTrue(
+            session.snapshotEntries().isEmpty,
+            "final clear under the sink lock must drop any record that started before it"
+        )
+    }
 }

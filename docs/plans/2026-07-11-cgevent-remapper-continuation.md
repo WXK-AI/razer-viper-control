@@ -166,6 +166,7 @@
 - [x] Follow-up: `fix: coalesce diagnostics publication and clear races`.
 - [x] Follow-up: `fix: publish diagnostics with one outstanding main block`.
 - [x] Follow-up: remove per-event MainActor `Task` bridge for remapper diagnostics.
+- [x] Follow-up: serialize sink record/clear/disable so in-flight records cannot survive clear.
 
 ### Task 7: Full Regression And Manual Acceptance
 
