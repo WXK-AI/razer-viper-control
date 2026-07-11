@@ -26,7 +26,7 @@ Prove a HID DriverKit system extension can be the sole owner of the Viper V3 Hyp
    1. Set `DEVELOPMENT_TEAM` in Xcode or the environment.
    2. In `project.yml`, uncomment the `RazerViperHIDDriver` embed dependency under `RazerMenuBarApp`.
    3. Regenerate: `bash scripts/generate-xcodeproj.sh`
-   4. Build **`RazerMenuBarAppSpike`** (`-configuration Spike`).  
+   4. Build **`RazerMenuBarAppSpike`** (`-configuration Spike`).
       That configuration **clears** `CODE_SIGN_IDENTITY: "-"` / `CODE_SIGNING_REQUIRED: NO` and wires:
       - `RazerMenuBarApp/RazerMenuBarApp.entitlements`
       - `RazerHIDDriver/RazerHIDDriver.entitlements`

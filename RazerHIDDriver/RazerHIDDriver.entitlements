@@ -3,6 +3,8 @@
 <plist version="1.0">
 <dict>
 	<!-- Minimum spike set for IOUserHIDEventService only. See docs/driverkit-entitlements.md -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
 	<key>com.apple.developer.driverkit</key>
 	<true/>
 	<key>com.apple.developer.driverkit.transport.hid</key>

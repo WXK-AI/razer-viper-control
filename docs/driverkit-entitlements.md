@@ -21,6 +21,7 @@ Request (and ship for the ownership spike) only:
 
 | Entitlement (candidate) | Purpose | Official docs |
 |-------------------------|---------|---------------|
+| `com.apple.security.app-sandbox` | Required by default DriverKit entitlement set | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.app-sandbox) |
 | `com.apple.developer.driverkit` | DriverKit base | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.driverkit) |
 | `com.apple.developer.driverkit.transport.hid` | HID transport matching | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.driverkit.transport.hid) |
 | `com.apple.developer.driverkit.family.hid.eventservice` | HID event service | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.driverkit.family.hid.eventservice) |
