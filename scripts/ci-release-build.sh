@@ -6,21 +6,34 @@ DERIVED="$ROOT/build/DerivedData"
 OUT="$ROOT/build/Release"
 ARCH="${RELEASE_ARCH:-arm64}"
 MARKETING_VERSION="$(awk -F'"' '/MARKETING_VERSION:/ {print $2; exit}' "$ROOT/project.yml")"
-GIT_REVISION="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
 
-if [ -z "${GIT_REVISION}" ] || [ "${GIT_REVISION}" = "unknown" ]; then
+cd "$ROOT"
+
+require_clean_worktree() {
+  local dirty
+  dirty="$(git status --porcelain --untracked-files=normal)"
+  if [ -n "$dirty" ]; then
+    echo "error: release build requires a clean git worktree (commit or stash changes first)" >&2
+    echo "$dirty" >&2
+    exit 1
+  fi
+}
+
+require_clean_worktree
+
+GIT_REVISION="$(git rev-parse HEAD 2>/dev/null || true)"
+if [ -z "${GIT_REVISION}" ]; then
   echo "error: unable to resolve git HEAD for BUILD_REVISION" >&2
   exit 1
 fi
 
-cd "$ROOT"
-
-STAGING="$ROOT/build/.release-staging-$$"
-rm -rf "$STAGING"
-mkdir -p "$STAGING"
+mkdir -p "$ROOT/build"
+STAGING="$(mktemp -d "$ROOT/build/release-staging.XXXXXX")"
 
 cleanup_staging() {
-  rm -rf "$STAGING"
+  if [ -n "${STAGING:-}" ] && [ -d "$STAGING" ]; then
+    rm -rf "$STAGING"
+  fi
 }
 trap cleanup_staging EXIT
 
@@ -81,6 +94,9 @@ fi
 echo "Running unit tests…"
 swift test -c release --arch "$ARCH" --disable-sandbox
 
+# Re-check cleanliness after the build so generated/tracked churn cannot slip through.
+require_clean_worktree
+
 # Marker is written only after every build + test step succeeds.
 cat > "$STAGING/BUILD_REVISION" <<EOF
 git_revision=${GIT_REVISION}
@@ -89,11 +105,30 @@ arch=${ARCH}
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 
-# Atomically replace the public release directory (drops stale DMG/ZIP/CLI/metadata).
-mkdir -p "$ROOT/build"
-rm -rf "$OUT"
-mv "$STAGING" "$OUT"
+# Promote with backup so a failed mv restores the previous valid release tree.
+BACKUP=""
+if [ -e "$OUT" ]; then
+  BACKUP="$(mktemp -d "$ROOT/build/release-backup.XXXXXX")"
+  rmdir "$BACKUP"
+  if ! mv "$OUT" "$BACKUP"; then
+    echo "error: failed to move existing release directory aside" >&2
+    exit 1
+  fi
+fi
+
+if ! mv "$STAGING" "$OUT"; then
+  echo "error: failed to promote staging release directory" >&2
+  if [ -n "$BACKUP" ] && [ -e "$BACKUP" ]; then
+    mv "$BACKUP" "$OUT" || echo "error: also failed to restore previous release from $BACKUP" >&2
+  fi
+  exit 1
+fi
+
+STAGING=""
 trap - EXIT
+if [ -n "$BACKUP" ]; then
+  rm -rf "$BACKUP"
+fi
 
 echo "Release artifacts:"
 ls -la "$OUT"

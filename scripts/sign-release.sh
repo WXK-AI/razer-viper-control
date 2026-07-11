@@ -84,6 +84,14 @@ verify_build_revision() {
     exit 1
   fi
 
+  local dirty
+  dirty="$(git -C "$ROOT" status --porcelain --untracked-files=normal)"
+  if [ -n "$dirty" ]; then
+    echo "error: refusing to reuse a release build with a dirty worktree" >&2
+    echo "$dirty" >&2
+    exit 1
+  fi
+
   echo "Reusing existing build at revision $recorded_rev (${expected_arch}, v${recorded_ver})"
 }
 
