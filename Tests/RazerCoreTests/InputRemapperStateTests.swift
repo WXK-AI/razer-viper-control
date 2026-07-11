@@ -176,4 +176,20 @@ final class InputRemapperStateTests: XCTestCase {
         session.clearAllHolds()
         XCTAssertTrue(session.snapshotHeldMouseTargets().isEmpty)
     }
+
+    func testReleaseAllHeldOutputsClearsStateIdempotently() {
+        var session = InputRemapperEngine.ButtonRemapSession()
+        let map = mappings([
+            .leftClick: .mouseButton(.right),
+            .sideButton1: .mouseButton(.left),
+            .sideButton2: .mouseButton(.left)
+        ])
+        _ = session.handle(control: .leftClick, kind: .down, mappings: map)
+        _ = session.handle(control: .sideButton1, kind: .down, mappings: map)
+        _ = session.handle(control: .sideButton2, kind: .down, mappings: map)
+
+        XCTAssertEqual(Set(session.releaseAllHeldOutputs()), Set([MouseButtonTarget.right, .left]))
+        XCTAssertTrue(session.snapshotHeldMouseTargets().isEmpty)
+        XCTAssertTrue(session.releaseAllHeldOutputs().isEmpty)
+    }
 }

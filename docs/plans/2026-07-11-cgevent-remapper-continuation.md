@@ -98,13 +98,13 @@
 
 **Steps:**
 
-- [ ] Add failing tests proving held synthetic targets are released on pause, stop, tap timeout/user-input disable, profile replacement, and permission loss.
-- [ ] Add one idempotent `releaseAllHeldOutputs()` path that snapshots and clears state before posting synthetic ups.
-- [ ] Invoke it before disabling/removing the tap and before replacing runtime mappings.
-- [ ] Re-enable timeout-disabled taps only after state cleanup and expose recovery state to `AppModel`.
-- [ ] Ensure repeated cleanup cannot post duplicate ups.
-- [ ] Run targeted remapper tests, then `swift test --disable-sandbox`.
-- [ ] Commit: `fix: release remapped inputs during every recovery path`.
+- [x] Add failing tests proving held synthetic targets are released on pause, stop, tap timeout/user-input disable, profile replacement, and permission loss.
+- [x] Add one idempotent `releaseAllHeldOutputs()` path that snapshots and clears state before posting synthetic ups.
+- [x] Invoke it before disabling/removing the tap and before replacing runtime mappings.
+- [x] Re-enable timeout-disabled taps only after state cleanup and expose recovery state to `AppModel`.
+- [x] Ensure repeated cleanup cannot post duplicate ups.
+- [x] Run targeted remapper tests, then `swift test --disable-sandbox`.
+- [x] Commit: `fix: release remapped inputs during every recovery path`.
 
 ### Task 4: Complete Wheel Precision And Action Semantics
 

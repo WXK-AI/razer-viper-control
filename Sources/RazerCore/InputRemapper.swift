@@ -2,6 +2,14 @@ import AppKit
 import CoreGraphics
 import Foundation
 
+public enum HeldOutputRecoveryReason: String, Equatable, Sendable {
+    case pause
+    case stop
+    case tapDisable
+    case profileReplacement
+    case permissionLoss
+}
+
 public final class InputRemapper: @unchecked Sendable {
     public struct Callbacks {
         public var onNextDPIStage: (() -> Void)?
@@ -9,12 +17,16 @@ public final class InputRemapper: @unchecked Sendable {
         public var onNextProfile: (() -> Void)?
         public var onPreviousProfile: (() -> Void)?
         public var onEmergencyPause: (() -> Void)?
+        public var onHeldOutputsReleased: ((HeldOutputRecoveryReason) -> Void)?
 
         public init() {}
     }
 
     public private(set) var isRunning = false
     public private(set) var isPaused = false
+    public private(set) var lastHeldOutputRecovery: HeldOutputRecoveryReason?
+    /// Counts synthetic mouse-ups posted by `releaseAllHeldOutputs` (test observation).
+    public private(set) var testingSyntheticMouseUpCount = 0
     public var callbacks = Callbacks()
 
     private let lock = NSLock()
@@ -43,12 +55,21 @@ public final class InputRemapper: @unchecked Sendable {
 
     public func updateProfile(_ profile: MouseProfile) {
         lock.lock()
+        let mappingsChanged =
+            self.profile.buttonMappings != profile.buttonMappings
+            || self.profile.remapperEnabled != profile.remapperEnabled
+        lock.unlock()
+        if mappingsChanged {
+            releaseAllHeldOutputs(reason: .profileReplacement)
+        }
+        lock.lock()
         self.profile = profile
         resetScrollAccumulatorsLocked()
         lock.unlock()
     }
 
     public func pause() {
+        releaseAllHeldOutputs(reason: .pause)
         lock.lock()
         isPaused = true
         resetScrollAccumulatorsLocked()
@@ -59,6 +80,74 @@ public final class InputRemapper: @unchecked Sendable {
         lock.lock()
         isPaused = false
         lock.unlock()
+    }
+
+    /// Releases any remapped mouse holds after Accessibility/Input Monitoring is lost.
+    public func handlePermissionLoss() {
+        releaseAllHeldOutputs(reason: .permissionLoss)
+        tearDownEventTap()
+    }
+
+    /// Test seam: recovers after a system tap-disable notification.
+    public func recoverAfterTapDisableForTesting() {
+        recoverAfterTapDisable()
+    }
+
+    /// Test seam: installs a remapped hold without requiring a live event tap.
+    public func seedRemappedHoldForTesting(control: PhysicalControl, target: MouseButtonTarget) {
+        var mappings = PhysicalControl.defaultButtonMappings()
+        mappings[control] = .mouseButton(target)
+        lock.lock()
+        _ = buttonSession.handle(control: control, kind: .down, mappings: mappings)
+        lock.unlock()
+    }
+
+    /// Test seam: unique synthetic mouse targets still held.
+    public func heldMouseTargetsForTesting() -> [MouseButtonTarget] {
+        lock.lock()
+        defer { lock.unlock() }
+        return buttonSession.snapshotHeldMouseTargets()
+    }
+
+    /// Snapshot, clear, and post synthetic ups for every held remapped mouse target.
+    /// Idempotent: a second call with no new holds posts nothing.
+    @discardableResult
+    public func releaseAllHeldOutputs(reason: HeldOutputRecoveryReason) -> [MouseButtonTarget] {
+        lock.lock()
+        let targets = buttonSession.releaseAllHeldOutputs()
+        let callback = callbacks.onHeldOutputsReleased
+        if !targets.isEmpty {
+            lastHeldOutputRecovery = reason
+        }
+        lock.unlock()
+
+        for target in targets {
+            postMouseButton(target, down: false)
+            testingSyntheticMouseUpCount += 1
+        }
+        if !targets.isEmpty {
+            callback?(reason)
+        }
+        return targets
+    }
+
+    private func recoverAfterTapDisable() {
+        releaseAllHeldOutputs(reason: .tapDisable)
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+    }
+
+    private func tearDownEventTap() {
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+        }
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+        eventTap = nil
+        runLoopSource = nil
+        isRunning = false
     }
 
     public func start() throws {
@@ -104,16 +193,8 @@ public final class InputRemapper: @unchecked Sendable {
     }
 
     public func stop() {
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        eventTap = nil
-        runLoopSource = nil
-        isRunning = false
-        releaseAllActiveMouseRemaps()
+        releaseAllHeldOutputs(reason: .stop)
+        tearDownEventTap()
     }
 
     private static let eventCallback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -124,9 +205,7 @@ public final class InputRemapper: @unchecked Sendable {
 
     private func handleEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = eventTap {
-                CGEvent.tapEnable(tap: tap, enable: true)
-            }
+            recoverAfterTapDisable()
             return Unmanaged.passUnretained(event)
         }
 
@@ -228,16 +307,6 @@ public final class InputRemapper: @unchecked Sendable {
         case let .fireOneShot(oneShotAction):
             executeOneShotAction(oneShotAction, callbacks: callbacks)
             return nil
-        }
-    }
-
-    private func releaseAllActiveMouseRemaps() {
-        lock.lock()
-        let targets = buttonSession.snapshotHeldMouseTargets()
-        buttonSession.clearAllHolds()
-        lock.unlock()
-        for target in targets {
-            postMouseButton(target, down: false)
         }
     }
 

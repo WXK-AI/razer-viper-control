@@ -189,6 +189,14 @@ public enum InputRemapperEngine {
             mouseTargetRefCounts.removeAll()
         }
 
+        /// Snapshot unique held mouse targets and clear all hold state. Idempotent.
+        @discardableResult
+        public mutating func releaseAllHeldOutputs() -> [MouseButtonTarget] {
+            let targets = snapshotHeldMouseTargets()
+            clearAllHolds()
+            return targets
+        }
+
         public mutating func handle(
             control: PhysicalControl,
             kind: ButtonEventKind,

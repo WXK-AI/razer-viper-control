@@ -212,7 +212,11 @@ final class AppModel: ObservableObject {
     }
 
     func refreshPermissions() {
+        let wasReady = permissions.remapperReady
         permissions = PermissionStatus.current()
+        if wasReady != permissions.remapperReady {
+            syncRemapper()
+        }
     }
 
     func refreshDeviceState() {
@@ -643,6 +647,23 @@ final class AppModel: ObservableObject {
                 self?.statusMessage = "Remapper paused (⌃⌥⌘R)"
             }
         }
+        remapper.callbacks.onHeldOutputsReleased = { [weak self] reason in
+            Task { @MainActor in
+                switch reason {
+                case .pause:
+                    break
+                case .stop:
+                    break
+                case .tapDisable:
+                    self?.statusMessage = "Remapper recovered after tap disable; held buttons released"
+                case .profileReplacement:
+                    break
+                case .permissionLoss:
+                    self?.statusMessage = "Remapper stopped; held buttons released (permissions lost)"
+                    self?.remapperRunning = false
+                }
+            }
+        }
     }
 
     private func advanceDPIStage(by delta: Int) {
@@ -661,8 +682,13 @@ final class AppModel: ObservableObject {
     }
 
     private func syncRemapper() {
-        guard let profile = selectedProfile, profile.remapperEnabled, permissions.remapperReady else {
+        guard let profile = selectedProfile, profile.remapperEnabled else {
             remapper.stop()
+            remapperRunning = false
+            return
+        }
+        guard permissions.remapperReady else {
+            remapper.handlePermissionLoss()
             remapperRunning = false
             return
         }
