@@ -57,14 +57,14 @@ Get the latest release from **[GitHub Releases](https://github.com/WXK-AI/razer-
 
 ### First launch and Gatekeeper
 
-Current GitHub CI builds are **ad-hoc signed** (not notarized). macOS may block the first launch:
+GitHub CI currently publishes **ad-hoc signed** arm64 builds (not notarized). macOS may block the first launch:
 
 - **Right-click** the app → **Open** → **Open** again, or
 - **System Settings → Privacy & Security** → **Open Anyway**
 
 After the first successful launch, double-click works normally.
 
-The official v2 release path is **Developer ID signed and notarized**. Ad-hoc builds cannot activate the HID DriverKit extension required for Razer-only remapping.
+The official release path is **Developer ID signed and notarized** (`scripts/sign-release.sh`). Ad-hoc builds cannot activate the HID DriverKit extension required for Razer-only remapping.
 
 ### Install (zip)
 
@@ -86,18 +86,28 @@ export APPLE_TEAM_ID="XXXXXXXXXX"
 export APPLE_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
 
 bash scripts/sign-release.sh
-# Produces a signed + notarized build/Release/RazerMenuBarApp-macOS.dmg
+# Rebuilds Release artifacts by default, then signs + notarizes
+# build/Release/RazerMenuBarApp-macOS.dmg
+#
+# Optional: bash scripts/sign-release.sh --reuse-existing-build
+# (requires build/Release/BUILD_REVISION to match the current git HEAD)
 ```
 
 The script:
 
-1. Builds a Release `.app`
+1. Builds a Release `.app` (unless `--reuse-existing-build` and revision metadata match)
 2. Signs the app with **Developer ID Application** + hardened runtime
 3. Packages the DMG with drag-to-Applications layout
 4. Signs the DMG
 5. Submits to Apple **notarization** and staples the ticket
 
 Upload that DMG to your own release or share directly — users can drag to Applications and open without right-click workarounds.
+
+Release packaging contracts (DMG path safety, tag/version equality, shellcheck when installed):
+
+```bash
+bash scripts/verify-release-contract.sh
+```
 
 See [`scripts/sign-release.sh`](scripts/sign-release.sh) for the full flow.
 

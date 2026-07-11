@@ -8,6 +8,9 @@
 #   export APPLE_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"  # app-specific password
 #   bash scripts/sign-release.sh
 #
+# By default this rebuilds release artifacts. Pass --reuse-existing-build only when
+# you intentionally want to sign the current build/Release tree (revision must match).
+#
 # Prerequisites:
 #   - Full Xcode installed
 #   - Developer ID Application certificate in Keychain
@@ -19,11 +22,55 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/build/Release"
 APP="$OUT/RazerMenuBarApp.app"
 DMG="$OUT/RazerMenuBarApp-macOS.dmg"
+REUSE_EXISTING=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --reuse-existing-build) REUSE_EXISTING=1 ;;
+    -h|--help)
+      sed -n '2,20p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "error: unknown argument: $arg" >&2
+      echo "usage: bash scripts/sign-release.sh [--reuse-existing-build]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 : "${DEVELOPER_ID:?Set DEVELOPER_ID to your Developer ID Application identity}"
 
-if [ ! -d "$APP" ]; then
-  echo "Building release artifacts first…"
+verify_build_revision() {
+  local meta="$OUT/BUILD_REVISION"
+  local expected
+  expected="$(git -C "$ROOT" rev-parse HEAD)"
+  if [ ! -f "$meta" ]; then
+    echo "error: missing $meta; refuse to reuse an unverifiable build" >&2
+    exit 1
+  fi
+  local recorded
+  recorded="$(awk -F= '/^git_revision=/ {print $2; exit}' "$meta")"
+  if [ -z "$recorded" ] || [ "$recorded" = "unknown" ]; then
+    echo "error: BUILD_REVISION has no usable git_revision" >&2
+    exit 1
+  fi
+  if [ "$recorded" != "$expected" ]; then
+    echo "error: build revision mismatch (build=$recorded HEAD=$expected)" >&2
+    echo "Rebuild without --reuse-existing-build, or check out the matching commit." >&2
+    exit 1
+  fi
+  echo "Reusing existing build at revision $recorded"
+}
+
+if [ "$REUSE_EXISTING" -eq 1 ]; then
+  if [ ! -d "$APP" ]; then
+    echo "error: --reuse-existing-build requires $APP" >&2
+    exit 1
+  fi
+  verify_build_revision
+else
+  echo "Building release artifacts (default; pass --reuse-existing-build to skip)…"
   bash "$ROOT/scripts/ci-release-build.sh"
 fi
 

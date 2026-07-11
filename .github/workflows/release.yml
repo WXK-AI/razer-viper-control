@@ -7,12 +7,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create (e.g. v1.0.0)"
+        description: "Release tag to create (e.g. v1.0.2)"
         required: true
-        default: "v1.0.0"
+        default: "v1.0.2"
 
 permissions:
   contents: write
+
+env:
+  XCODEGEN_VERSION: "2.45.4"
+  RELEASE_ARCH: arm64
 
 jobs:
   release:
@@ -21,20 +25,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Build release artifacts
-        run: bash scripts/ci-release-build.sh
-
-      - name: Package downloads
+      - name: Install pinned XcodeGen
         run: |
-          bash scripts/package-dmg.sh
-          cd build/Release
-          ditto -c -k --sequesterRsrc --keepParent RazerMenuBarApp.app RazerMenuBarApp-macOS.zip
-          zip -j RazerProbeCLI-macOS.zip RazerProbeCLI
-          shasum -a 256 RazerMenuBarApp-macOS.dmg *.zip > SHA256SUMS.txt
-          ls -la
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o /tmp/xcodegen.zip
+          unzip -qo /tmp/xcodegen.zip -d /tmp
+          sudo cp /tmp/xcodegen/bin/xcodegen /usr/local/bin/xcodegen
+          xcodegen --version
+
+      - name: Install ShellCheck
+        run: brew install shellcheck
 
       - name: Resolve release tag
         id: tag
@@ -44,6 +43,28 @@ jobs:
           else
             echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify release contract (pre-build)
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
+        run: bash scripts/verify-release-contract.sh
+
+      - name: Build release artifacts
+        run: bash scripts/ci-release-build.sh
+
+      - name: Verify release contract (artifacts)
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
+        run: bash scripts/verify-release-contract.sh
+
+      - name: Package downloads
+        run: |
+          bash scripts/package-dmg.sh
+          cd build/Release
+          ditto -c -k --sequesterRsrc --keepParent RazerMenuBarApp.app RazerMenuBarApp-macOS.zip
+          zip -j RazerProbeCLI-macOS.zip RazerProbeCLI
+          shasum -a 256 RazerMenuBarApp-macOS.dmg *.zip > SHA256SUMS.txt
+          ls -la
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -63,7 +84,11 @@ jobs:
 
             Alternate: download `RazerMenuBarApp-macOS.zip`, unzip, and move the app to **Applications**.
 
-            1. First launch: right-click the app → **Open** (bypasses Gatekeeper for ad-hoc builds).
+            ### Signing note
+
+            Official releases should be **Developer ID signed and notarized**. Current CI produces an **ad-hoc signed** arm64 build suitable for testing; use `scripts/sign-release.sh` locally for the notarized distribution path.
+
+            1. First launch of an ad-hoc build: right-click the app → **Open** (bypasses Gatekeeper).
             2. Grant **Input Monitoring** and **Accessibility** in System Settings when prompted (or via Settings → Diagnostics).
 
             ## Optional: RazerProbeCLI
@@ -77,4 +102,4 @@ jobs:
 
             Requires **Input Monitoring** for `input-capture`.
 
-            **Platform:** macOS 13+, Apple Silicon (arm64). Intel Macs are not built in CI yet.
+            **Platform:** macOS 13+, Apple Silicon (arm64).

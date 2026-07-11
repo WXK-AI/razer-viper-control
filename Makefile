@@ -1,4 +1,4 @@
-.PHONY: build test cli-list cli-integration xcode xcode-run check-xcode release-dmg
+.PHONY: build test cli-list cli-integration xcode xcode-run check-xcode release-dmg sign-release verify-release
 
 # Prefer default install, then common alternate locations (e.g. external drive).
 XCODE_APP := $(firstword $(wildcard /Applications/Xcode.app) $(wildcard /Volumes/*/Applications/Xcode.app))
@@ -54,3 +54,6 @@ release-dmg: check-xcode
 
 sign-release: check-xcode
 	bash scripts/sign-release.sh
+
+verify-release:
+	bash scripts/verify-release-contract.sh

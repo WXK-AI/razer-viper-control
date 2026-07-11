@@ -7,19 +7,83 @@ OUT="$ROOT/build/Release"
 # Optional args: $1 = path to .app to package, $2 = output DMG path.
 APP="${1:-$OUT/RazerMenuBarApp.app}"
 DMG="${2:-$OUT/RazerMenuBarApp-macOS.dmg}"
-STAGING="$OUT/dmg-staging"
-DMG_RW="$OUT/RazerMenuBarApp-rw.dmg"
+STAGING_NAME="dmg-staging"
+DMG_RW_NAME="RazerMenuBarApp-rw.dmg"
 VOLUME_NAME="Razer Viper Control"
 BACKGROUND="$ROOT/design/dmg-background.png"
 
+validate_dmg_path() {
+  local path="$1"
+  if [ -d "$path" ]; then
+    echo "error: DMG output path exists as a directory: $path" >&2
+    return 1
+  fi
+  case "$path" in
+    *.dmg) ;;
+    *)
+      echo "error: DMG output path must end in .dmg: $path" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Shell-level contract checks (also invoked by verify-release-contract.sh).
+if [ "${1:-}" = "--self-test" ]; then
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/dmg-contract.XXXXXX")"
+  trap 'rm -rf "$tmp"' EXIT
+  mkdir -p "$tmp/not-a-dmg"
+  if validate_dmg_path "$tmp/not-a-dmg" 2>/dev/null; then
+    echo "error: expected directory DMG path to be rejected" >&2
+    exit 1
+  fi
+  if validate_dmg_path "$tmp/output.zip" 2>/dev/null; then
+    echo "error: expected non-.dmg path to be rejected" >&2
+    exit 1
+  fi
+  touch "$tmp/stale.dmg"
+  validate_dmg_path "$tmp/stale.dmg"
+  rm -f -- "$tmp/stale.dmg"
+  if [ -e "$tmp/stale.dmg" ]; then
+    echo "error: expected stale DMG file to be removed with rm -f" >&2
+    exit 1
+  fi
+  echo "package-dmg self-test OK"
+  exit 0
+fi
+
 mkdir -p "$OUT"
+OUT_CANON="$(cd "$OUT" && pwd -P)"
+
+validate_dmg_path "$DMG"
 
 if [ ! -d "$APP" ]; then
   echo "error: app bundle not found at $APP (run scripts/ci-release-build.sh first)" >&2
   exit 1
 fi
 
-rm -rf "$STAGING" "$DMG_RW" "$DMG"
+STAGING="$OUT_CANON/$STAGING_NAME"
+DMG_RW="$OUT_CANON/$DMG_RW_NAME"
+
+# Recursive deletion only for script-owned staging paths under build/Release.
+case "$STAGING" in
+  "$OUT_CANON"/*) ;;
+  *)
+    echo "error: staging path escapes release directory: $STAGING" >&2
+    exit 1
+    ;;
+esac
+case "$DMG_RW" in
+  "$OUT_CANON"/*) ;;
+  *)
+    echo "error: RW DMG path escapes release directory: $DMG_RW" >&2
+    exit 1
+    ;;
+esac
+
+rm -rf "$STAGING"
+rm -f -- "$DMG_RW"
+rm -f -- "$DMG"
+
 mkdir -p "$STAGING/.background"
 cp -R "$APP" "$STAGING/"
 ln -sf /Applications "$STAGING/Applications"
@@ -39,6 +103,10 @@ hdiutil create \
 MOUNT_OUTPUT="$(hdiutil attach -readwrite -noverify -noautoopen "$DMG_RW")"
 DEVICE="$(echo "$MOUNT_OUTPUT" | awk '/Apple_HFS/ {print $1; exit}')"
 VOLUME="$(echo "$MOUNT_OUTPUT" | awk -F'\t' '/Apple_HFS/ {gsub(/^[ \t]+|[ \t]+$/, "", $NF); print $NF; exit}')"
+if [ -z "${DEVICE:-}" ] || [ -z "${VOLUME:-}" ]; then
+  echo "error: failed to mount RW DMG" >&2
+  exit 1
+fi
 
 cleanup() {
   if [ -n "${DEVICE:-}" ]; then
@@ -79,7 +147,7 @@ DEVICE=""
 trap - EXIT
 
 hdiutil convert "$DMG_RW" -format UDZO -imagekey zlib-level=9 -o "$DMG"
-rm -f "$DMG_RW"
+rm -f -- "$DMG_RW"
 rm -rf "$STAGING"
 
 echo "Created $DMG"

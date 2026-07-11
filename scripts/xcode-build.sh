@@ -36,7 +36,7 @@ if [ ! -d "$DEVELOPER_DIR" ]; then
 fi
 
 cd "$ROOT"
-xcodegen generate
+bash "$ROOT/scripts/generate-xcodeproj.sh"
 
 rm -rf "$DERIVED"
 rm -rf "$ROOT/.swiftpm/xcode"
