@@ -23,4 +23,96 @@ final class ControlModelsTests: XCTestCase {
         XCTAssertEqual(ButtonActionValidator.validateOpenURL("https://"), .missingHost)
         XCTAssertNil(ButtonActionValidator.normalizedOpenURL("not-a-url"))
     }
+
+    func testRemapperStatusDisabledWhenProfileRemappingOff() {
+        let status = RemapperRuntimeStatusResolver.resolve(
+            remapperEnabled: false,
+            permissions: .init(inputMonitoringGranted: true, accessibilityGranted: true),
+            isRunning: true,
+            isPaused: false,
+            isRecovering: false,
+            lastError: nil
+        )
+        XCTAssertEqual(status, .disabled)
+        XCTAssertNil(status.recoveryAction)
+    }
+
+    func testRemapperStatusMissingPermissionOutranksRunningState() {
+        let permissions = PermissionStatus(inputMonitoringGranted: false, accessibilityGranted: true)
+        let status = RemapperRuntimeStatusResolver.resolve(
+            remapperEnabled: true,
+            permissions: permissions,
+            isRunning: true,
+            isPaused: false,
+            isRecovering: true,
+            lastError: nil
+        )
+        XCTAssertEqual(status, .missingPermission(permissions))
+        XCTAssertEqual(status.recoveryAction, .openInputMonitoring)
+    }
+
+    func testRemapperStatusPermissionRecoveryActions() {
+        XCTAssertEqual(
+            RemapperRuntimeStatus.missingPermission(
+                .init(inputMonitoringGranted: false, accessibilityGranted: false)
+            ).recoveryAction,
+            .openPrivacySettings
+        )
+        XCTAssertEqual(
+            RemapperRuntimeStatus.missingPermission(
+                .init(inputMonitoringGranted: true, accessibilityGranted: false)
+            ).recoveryAction,
+            .openAccessibility
+        )
+    }
+
+    func testRemapperStatusFailedWhenEnabledButNotRunning() {
+        let status = RemapperRuntimeStatusResolver.resolve(
+            remapperEnabled: true,
+            permissions: .init(inputMonitoringGranted: true, accessibilityGranted: true),
+            isRunning: false,
+            isPaused: false,
+            isRecovering: false,
+            lastError: "tap creation failed"
+        )
+        XCTAssertEqual(status, .failed("tap creation failed"))
+        XCTAssertEqual(status.recoveryAction, .retryStart)
+    }
+
+    func testRemapperStatusRecoveringPausedAndActive() {
+        let ready = PermissionStatus(inputMonitoringGranted: true, accessibilityGranted: true)
+        XCTAssertEqual(
+            RemapperRuntimeStatusResolver.resolve(
+                remapperEnabled: true,
+                permissions: ready,
+                isRunning: true,
+                isPaused: true,
+                isRecovering: true,
+                lastError: nil
+            ),
+            .recovering
+        )
+        XCTAssertEqual(
+            RemapperRuntimeStatusResolver.resolve(
+                remapperEnabled: true,
+                permissions: ready,
+                isRunning: true,
+                isPaused: true,
+                isRecovering: false,
+                lastError: nil
+            ),
+            .paused
+        )
+        XCTAssertEqual(
+            RemapperRuntimeStatusResolver.resolve(
+                remapperEnabled: true,
+                permissions: ready,
+                isRunning: true,
+                isPaused: false,
+                isRecovering: false,
+                lastError: nil
+            ),
+            .active
+        )
+    }
 }

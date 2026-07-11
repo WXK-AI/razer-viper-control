@@ -35,18 +35,50 @@ struct SettingsView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(DeviceDescriptor.productName)
                 .font(.title2.bold())
-            HStack(spacing: 12) {
-                Text(model.isConnected ? "Connected • Battery \(model.batteryPercent)%" : model.statusMessage)
-                if model.remapperRunning {
-                    Text(model.remapperPaused ? "Remapper paused" : "Remapper active")
-                        .foregroundStyle(model.remapperPaused ? .orange : .green)
-                }
+            Text(model.isConnected ? "Connected • Battery \(model.batteryPercent)%" : model.statusMessage)
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            remapperStatusRow
+        }
+    }
+
+    private var remapperStatusRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.remapperStatus.title)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(remapperStatusColor)
+                Text(model.remapperStatus.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .foregroundStyle(.secondary)
-            .font(.callout)
+            Spacer(minLength: 8)
+            if let action = model.remapperStatus.recoveryAction {
+                Button(action.buttonTitle) {
+                    model.performRemapperRecoveryAction(action)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(10)
+        .background(remapperStatusColor.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var remapperStatusColor: Color {
+        switch model.remapperStatus {
+        case .active:
+            return .green
+        case .paused, .recovering:
+            return .orange
+        case .missingPermission, .failed:
+            return .red
+        case .disabled:
+            return .secondary
         }
     }
 
@@ -175,8 +207,11 @@ private struct ProfileTab: View {
     }
 
     private func dpiSection(profile: MouseProfile, draft: ProfileDraft) -> some View {
-        GroupBox("DPI Stages") {
+        GroupBox("DPI Stages (hardware)") {
             VStack(alignment: .leading, spacing: 8) {
+                Text("DPI stages are written to the connected Razer mouse.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Stepper(
                     "Active stage: \(draft.activeStage)",
                     value: draftBinding(draft, keyPath: \.activeStage),
@@ -236,8 +271,11 @@ private struct ProfileTab: View {
     }
 
     private func pollingSection(profile: MouseProfile, draft: ProfileDraft) -> some View {
-        GroupBox("Polling Rate") {
+        GroupBox("Polling Rate (hardware)") {
             VStack(alignment: .leading, spacing: 8) {
+                Text("Polling rate is a device firmware setting for the connected Razer mouse.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Picker("Hz", selection: draftBinding(draft, keyPath: \.pollingRateHz)) {
                     ForEach(DeviceDescriptor.supportedPollingRates, id: \.self) { rate in
                         Text("\(rate) Hz").tag(rate)
@@ -255,15 +293,33 @@ private struct ProfileTab: View {
 
     private func behaviorSection(profile: MouseProfile, draft: ProfileDraft) -> some View {
         GroupBox("Behavior") {
-            Toggle("Auto-reapply profile on launch/reconnect", isOn: draftBinding(draft, keyPath: \.autoReapplyEnabled))
-            Toggle("Enable software remapper", isOn: draftBinding(draft, keyPath: \.remapperEnabled))
-            Toggle("Launch at login", isOn: Binding(
-                get: { model.launchAtLogin },
-                set: { model.setLaunchAtLogin($0) }
-            ))
-            Text("Emergency pause: ⌃⌥⌘R")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Auto-reapply profile on launch/reconnect", isOn: draftBinding(draft, keyPath: \.autoReapplyEnabled))
+                Toggle(
+                    "Enable software remapper",
+                    isOn: Binding(
+                        get: { draft.remapperEnabled },
+                        set: { model.setRemapperEnabled($0, on: draft) }
+                    )
+                )
+                .disabled(!model.permissions.remapperReady && !draft.remapperEnabled)
+                Text("Software button and wheel mappings affect every mouse and trackpad in this login session, not only the connected Razer mouse.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !model.permissions.remapperReady {
+                    Text("Required: \(model.permissions.summary)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Toggle("Launch at login", isOn: Binding(
+                    get: { model.launchAtLogin },
+                    set: { model.setLaunchAtLogin($0) }
+                ))
+                Text("Emergency pause: ⌃⌥⌘R")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -304,7 +360,7 @@ private struct ButtonsTab: View {
         ScrollView {
             if let profile = model.selectedProfile {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Map physical controls to actions. Software remapping requires Input Monitoring and Accessibility.")
+                    Text("Map physical controls to software actions. These remaps are session-wide: they apply to every pointing device while the remapper is active, not only the connected Razer mouse. Requires Input Monitoring and Accessibility.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
 
@@ -468,6 +524,9 @@ private struct WheelTab: View {
                 VStack(alignment: .leading, spacing: 16) {
                     GroupBox("Hardware Wheel (device firmware)") {
                         VStack(alignment: .leading, spacing: 8) {
+                            Text("These settings talk to the connected Razer mouse over HID feature reports.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             capabilityRow("Scroll mode", model.wheelCapability.scrollMode)
                             capabilityRow("Acceleration", model.wheelCapability.acceleration)
                             capabilityRow("Smart reel", model.wheelCapability.smartReel)
@@ -492,6 +551,9 @@ private struct WheelTab: View {
 
                     GroupBox("Software Scroll Tuning") {
                         VStack(alignment: .leading, spacing: 8) {
+                            Text("Software scroll tuning uses the session event tap and affects all mice/trackpads while remapping is enabled.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             Picker("Direction", selection: softwareBinding(profile, keyPath: \.scrollDirection)) {
                                 ForEach(ScrollDirection.allCases, id: \.self) { direction in
                                     Text(direction.displayName).tag(direction)

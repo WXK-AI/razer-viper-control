@@ -136,14 +136,14 @@
 
 **Steps:**
 
-- [ ] Model remapper status as disabled, missing permission, active, paused, recovering, or failed.
-- [ ] Show one compact status row with the recovery action appropriate to that state.
-- [ ] State plainly near the enable control that software button/wheel mappings affect session mouse events, not only the connected Razer mouse.
-- [ ] Keep hardware-only DPI, polling, and supported wheel settings labeled separately from software remapping.
-- [ ] Keep the emergency shortcut visible and prevent enabling remapping while required permissions are absent.
-- [ ] Add focused model/validation tests for status transitions and permission combinations.
-- [ ] Run `swift test --disable-sandbox` and build the app.
-- [ ] Commit: `feat: expose remapper scope permissions and recovery state`.
+- [x] Model remapper status as disabled, missing permission, active, paused, recovering, or failed.
+- [x] Show one compact status row with the recovery action appropriate to that state.
+- [x] State plainly near the enable control that software button/wheel mappings affect session mouse events, not only the connected Razer mouse.
+- [x] Keep hardware-only DPI, polling, and supported wheel settings labeled separately from software remapping.
+- [x] Keep the emergency shortcut visible and prevent enabling remapping while required permissions are absent.
+- [x] Add focused model/validation tests for status transitions and permission combinations.
+- [x] Run `swift test --disable-sandbox` and build the app.
+- [x] Commit: `feat: expose remapper scope permissions and recovery state`.
 
 ### Task 6: Expand Memory-Only Diagnostics
 

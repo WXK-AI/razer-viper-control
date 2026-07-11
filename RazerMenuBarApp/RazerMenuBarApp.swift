@@ -54,8 +54,8 @@ private struct MenuBarContent: View {
             Text(model.statusMessage)
         }
 
-        if model.remapperRunning {
-            Text(model.remapperPaused ? "Remapper: Paused" : "Remapper: Active")
+        if model.selectedProfile?.remapperEnabled == true || model.remapperRunning {
+            Text(model.remapperStatus.title)
         }
 
         Divider()
@@ -64,7 +64,12 @@ private struct MenuBarContent: View {
             model.toggleRemapperPause()
         }
         .disabled(!model.remapperRunning && !(model.selectedProfile?.remapperEnabled ?? false))
-
+        if let action = model.remapperStatus.recoveryAction,
+           action == .openInputMonitoring || action == .openAccessibility || action == .openPrivacySettings || action == .retryStart {
+            Button(action.buttonTitle) {
+                model.performRemapperRecoveryAction(action)
+            }
+        }
         Button("Reset Controls to Default") {
             model.resetSelectedProfileControls()
         }

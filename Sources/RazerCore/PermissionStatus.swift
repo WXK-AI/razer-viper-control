@@ -36,3 +36,118 @@ public struct PermissionStatus: Equatable, Sendable {
         return parts.joined(separator: " • ")
     }
 }
+
+/// Compact remapper runtime state shown in Settings and the menu bar.
+public enum RemapperRuntimeStatus: Equatable, Sendable {
+    case disabled
+    case missingPermission(PermissionStatus)
+    case active
+    case paused
+    case recovering
+    case failed(String)
+
+    public var title: String {
+        switch self {
+        case .disabled:
+            return "Remapper disabled"
+        case .missingPermission:
+            return "Remapper needs permissions"
+        case .active:
+            return "Remapper active"
+        case .paused:
+            return "Remapper paused"
+        case .recovering:
+            return "Remapper recovering"
+        case .failed:
+            return "Remapper failed"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .disabled:
+            return "Software remapping is turned off for the selected profile."
+        case let .missingPermission(permissions):
+            return permissions.summary
+        case .active:
+            return "Session-wide button and wheel remapping is running."
+        case .paused:
+            return "Emergency pause is on (⌃⌥⌘R). Resume when ready."
+        case .recovering:
+            return "Event tap recovered and held buttons were released."
+        case let .failed(message):
+            return message
+        }
+    }
+
+    public var recoveryAction: RemapperRecoveryAction? {
+        switch self {
+        case .disabled, .active:
+            return nil
+        case let .missingPermission(permissions):
+            switch (permissions.inputMonitoringGranted, permissions.accessibilityGranted) {
+            case (false, false):
+                return .openPrivacySettings
+            case (false, true):
+                return .openInputMonitoring
+            case (true, false):
+                return .openAccessibility
+            case (true, true):
+                return nil
+            }
+        case .paused:
+            return .resume
+        case .recovering:
+            return .acknowledgeRecovery
+        case .failed:
+            return .retryStart
+        }
+    }
+}
+
+public enum RemapperRecoveryAction: Equatable, Sendable {
+    case openInputMonitoring
+    case openAccessibility
+    case openPrivacySettings
+    case resume
+    case acknowledgeRecovery
+    case retryStart
+
+    public var buttonTitle: String {
+        switch self {
+        case .openInputMonitoring:
+            return "Open Input Monitoring"
+        case .openAccessibility:
+            return "Open Accessibility"
+        case .openPrivacySettings:
+            return "Open Privacy Settings"
+        case .resume:
+            return "Resume Remapper"
+        case .acknowledgeRecovery:
+            return "Dismiss"
+        case .retryStart:
+            return "Retry"
+        }
+    }
+}
+
+public enum RemapperRuntimeStatusResolver {
+    /// Priority: disabled → missing permission → failed → recovering → paused → active.
+    public static func resolve(
+        remapperEnabled: Bool,
+        permissions: PermissionStatus,
+        isRunning: Bool,
+        isPaused: Bool,
+        isRecovering: Bool,
+        lastError: String?
+    ) -> RemapperRuntimeStatus {
+        guard remapperEnabled else { return .disabled }
+        guard permissions.remapperReady else { return .missingPermission(permissions) }
+        if !isRunning {
+            return .failed(lastError ?? "Remapper failed to start")
+        }
+        if isRecovering { return .recovering }
+        if isPaused { return .paused }
+        return .active
+    }
+}

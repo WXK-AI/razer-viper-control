@@ -28,6 +28,8 @@ final class AppModel: ObservableObject {
     @Published var showSettings = false
     @Published var remapperPaused = false
     @Published var remapperRunning = false
+    @Published var remapperRecovering = false
+    @Published var remapperStartError: String?
     @Published var driverActivationState: DriverActivationState = .unknown
     @Published var driverStatusMessage = "Driver status has not been queried yet."
     @Published var driverLastError: String?
@@ -38,6 +40,17 @@ final class AppModel: ObservableObject {
     @Published var diagnosticsCaptureEnabled = false
     @Published var wheelProbeSummary = "Not probed yet"
     @Published var shortcutCaptureControl: PhysicalControl?
+
+    var remapperStatus: RemapperRuntimeStatus {
+        RemapperRuntimeStatusResolver.resolve(
+            remapperEnabled: selectedProfile?.remapperEnabled ?? false,
+            permissions: permissions,
+            isRunning: remapperRunning,
+            isPaused: remapperPaused,
+            isRecovering: remapperRecovering,
+            lastError: remapperStartError
+        )
+    }
 
     private let session = DeviceSession()
     private let profileStore = ProfileStore()
@@ -551,11 +564,45 @@ final class AppModel: ObservableObject {
             remapper.pause()
         } else {
             remapper.resume()
+            remapperRecovering = false
         }
     }
 
     func toggleRemapperPause() {
         setRemapperPaused(!remapperPaused)
+    }
+
+    func performRemapperRecoveryAction(_ action: RemapperRecoveryAction) {
+        switch action {
+        case .openInputMonitoring:
+            openInputMonitoringSettings()
+        case .openAccessibility:
+            openAccessibilitySettings()
+        case .openPrivacySettings:
+            openInputMonitoringSettings()
+            openAccessibilitySettings()
+        case .resume:
+            setRemapperPaused(false)
+        case .acknowledgeRecovery:
+            remapperRecovering = false
+        case .retryStart:
+            remapperStartError = nil
+            warningMessage = nil
+            syncRemapper()
+        }
+    }
+
+    /// Rejects enabling software remapping when required permissions are missing.
+    @discardableResult
+    func setRemapperEnabled(_ enabled: Bool, on draft: ProfileDraft) -> Bool {
+        if enabled, !permissions.remapperReady {
+            warningMessage = "Grant Input Monitoring and Accessibility before enabling the software remapper. \(permissions.summary)"
+            return false
+        }
+        var updated = draft
+        updated.remapperEnabled = enabled
+        updateDraft(updated)
+        return true
     }
 
     func setDiagnosticsCaptureEnabled(_ enabled: Bool) {
@@ -655,12 +702,14 @@ final class AppModel: ObservableObject {
                 case .stop:
                     break
                 case .tapDisable:
+                    self?.remapperRecovering = true
                     self?.statusMessage = "Remapper recovered after tap disable; held buttons released"
                 case .profileReplacement:
                     break
                 case .permissionLoss:
                     self?.statusMessage = "Remapper stopped; held buttons released (permissions lost)"
                     self?.remapperRunning = false
+                    self?.remapperRecovering = false
                 }
             }
         }
@@ -685,11 +734,15 @@ final class AppModel: ObservableObject {
         guard let profile = selectedProfile, profile.remapperEnabled else {
             remapper.stop()
             remapperRunning = false
+            remapperRecovering = false
+            remapperStartError = nil
             return
         }
         guard permissions.remapperReady else {
             remapper.handlePermissionLoss()
             remapperRunning = false
+            remapperRecovering = false
+            remapperStartError = nil
             return
         }
 
@@ -702,14 +755,17 @@ final class AppModel: ObservableObject {
 
         if remapper.isRunning {
             remapperRunning = true
+            remapperStartError = nil
             return
         }
 
         do {
             try remapper.start()
             remapperRunning = true
+            remapperStartError = nil
         } catch {
             remapperRunning = false
+            remapperStartError = error.localizedDescription
             warningMessage = error.localizedDescription
         }
     }
