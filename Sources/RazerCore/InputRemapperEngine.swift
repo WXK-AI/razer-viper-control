@@ -4,6 +4,7 @@ public enum RemapButtonOutcome: Equatable, Sendable {
     case passThrough
     case consume
     case postMouse(MouseButtonTarget, isDown: Bool)
+    case postMouseDrag(MouseButtonTarget)
     case fireOneShot(ButtonAction)
 }
 
@@ -167,8 +168,10 @@ public enum InputRemapperEngine {
     }
 
     /// Stateful button remapping across down / drag / up, including mid-hold profile changes.
+    /// Mouse targets are reference-counted so many-to-one mappings only release on the last up.
     public struct ButtonRemapSession: Equatable, Sendable {
         private var held: [PhysicalControl: HeldButtonRecord] = [:]
+        private var mouseTargetRefCounts: [MouseButtonTarget: Int] = [:]
 
         public init() {}
 
@@ -176,12 +179,14 @@ public enum InputRemapperEngine {
             held[control] != nil
         }
 
+        /// Unique synthetic mouse targets still held (for recovery release).
         public func snapshotHeldMouseTargets() -> [MouseButtonTarget] {
-            held.values.compactMap(\.mouseTarget)
+            Array(mouseTargetRefCounts.keys)
         }
 
         public mutating func clearAllHolds() {
             held.removeAll()
+            mouseTargetRefCounts.removeAll()
         }
 
         public mutating func handle(
@@ -203,32 +208,50 @@ public enum InputRemapperEngine {
             control: PhysicalControl,
             mappings: [PhysicalControl: ButtonAction]
         ) -> RemapButtonOutcome {
+            // Duplicate downs for an already-held source must not overwrite the record or
+            // inflate mouse-target refcounts (that would leak a synthetic hold past the real up).
+            if let existing = held[control] {
+                return existing.consumedPhysical ? .consume : .passThrough
+            }
+
             let action = resolvedButtonAction(for: control, in: mappings)
             let outcome = buttonOutcome(action: action, isDown: true)
             switch outcome {
             case .passThrough:
                 held[control] = HeldButtonRecord(source: control, consumedPhysical: false)
+                return .passThrough
             case .consume:
                 held[control] = HeldButtonRecord(source: control, consumedPhysical: true)
+                return .consume
             case let .postMouse(target, _):
                 held[control] = HeldButtonRecord(
                     source: control,
                     consumedPhysical: true,
                     mouseTarget: target
                 )
+                let previous = mouseTargetRefCounts[target, default: 0]
+                mouseTargetRefCounts[target] = previous + 1
+                // Already owned by another physical control: do not post a second down.
+                return previous > 0 ? .consume : .postMouse(target, isDown: true)
             case let .fireOneShot(oneShot):
                 held[control] = HeldButtonRecord(
                     source: control,
                     consumedPhysical: true,
                     oneShot: oneShot
                 )
+                return .fireOneShot(oneShot)
+            case .postMouseDrag:
+                // Down path never produces drag outcomes.
+                return .consume
             }
-            return outcome
         }
 
         private func handleDrag(control: PhysicalControl) -> RemapButtonOutcome {
             guard let record = held[control] else {
                 return .passThrough
+            }
+            if let target = record.mouseTarget {
+                return .postMouseDrag(target)
             }
             return record.consumedPhysical ? .consume : .passThrough
         }
@@ -239,6 +262,13 @@ public enum InputRemapperEngine {
                 return .passThrough
             }
             if let target = record.mouseTarget {
+                let remaining = mouseTargetRefCounts[target, default: 1] - 1
+                if remaining > 0 {
+                    mouseTargetRefCounts[target] = remaining
+                    // Another physical control still owns this synthetic button.
+                    return .consume
+                }
+                mouseTargetRefCounts.removeValue(forKey: target)
                 return .postMouse(target, isDown: false)
             }
             return record.consumedPhysical ? .consume : .passThrough

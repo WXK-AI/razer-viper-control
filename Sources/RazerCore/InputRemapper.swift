@@ -222,6 +222,9 @@ public final class InputRemapper: @unchecked Sendable {
         case let .postMouse(target, down):
             postMouseButton(target, down: down, mirroring: event)
             return nil
+        case let .postMouseDrag(target):
+            postMouseDrag(target, mirroring: event)
+            return nil
         case let .fireOneShot(oneShotAction):
             executeOneShotAction(oneShotAction, callbacks: callbacks)
             return nil
@@ -410,16 +413,51 @@ public final class InputRemapper: @unchecked Sendable {
         ) else {
             return
         }
+        applyMirroredMouseMetadata(to: cgEvent, from: sourceEvent, target: target)
+        markSynthetic(cgEvent)
+        cgEvent.post(tap: .cghidEventTap)
+    }
+
+    private func postMouseDrag(_ target: MouseButtonTarget, mirroring sourceEvent: CGEvent) {
+        let (type, button): (CGEventType, CGMouseButton) = switch target {
+        case .left: (.leftMouseDragged, .left)
+        case .right: (.rightMouseDragged, .right)
+        case .middle: (.otherMouseDragged, .center)
+        case .side1: (.otherMouseDragged, CGMouseButton(rawValue: 3)!)
+        case .side2: (.otherMouseDragged, CGMouseButton(rawValue: 4)!)
+        }
+
+        guard let cgEvent = CGEvent(
+            mouseEventSource: syntheticEventSource,
+            mouseType: type,
+            mouseCursorPosition: sourceEvent.location,
+            mouseButton: button
+        ) else {
+            return
+        }
+        applyMirroredMouseMetadata(to: cgEvent, from: sourceEvent, target: target)
+        markSynthetic(cgEvent)
+        cgEvent.post(tap: .cghidEventTap)
+    }
+
+    /// Copies location-independent click/modifier metadata from the source event onto synthetics.
+    private func applyMirroredMouseMetadata(
+        to cgEvent: CGEvent,
+        from sourceEvent: CGEvent?,
+        target: MouseButtonTarget
+    ) {
         if let sourceEvent {
             cgEvent.flags = sourceEvent.flags
+            cgEvent.setIntegerValueField(
+                .mouseEventClickState,
+                value: sourceEvent.getIntegerValueField(.mouseEventClickState)
+            )
         }
         if target == .side1 {
             cgEvent.setIntegerValueField(.mouseEventButtonNumber, value: 3)
         } else if target == .side2 {
             cgEvent.setIntegerValueField(.mouseEventButtonNumber, value: 4)
         }
-        markSynthetic(cgEvent)
-        cgEvent.post(tap: .cghidEventTap)
     }
 
     private func postKeyboardShortcut(_ shortcut: KeyboardShortcut, keyDown: Bool) {

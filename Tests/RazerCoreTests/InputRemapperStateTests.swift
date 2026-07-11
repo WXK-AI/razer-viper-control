@@ -23,7 +23,7 @@ final class InputRemapperStateTests: XCTestCase {
         )
         XCTAssertEqual(
             session.handle(control: .leftClick, kind: .drag, mappings: map),
-            .consume
+            .postMouseDrag(.right)
         )
         // Mapping flip mid-hold must not change the stored right-button release.
         let flipped = mappings([
@@ -37,7 +37,29 @@ final class InputRemapperStateTests: XCTestCase {
         XCTAssertFalse(session.isHolding(.leftClick))
     }
 
-    func testManyToOneTargetsTrackIndependentHolds() {
+    func testDuplicateSourceDownDoesNotLeakTargetOwnership() {
+        var session = InputRemapperEngine.ButtonRemapSession()
+        let map = mappings([.leftClick: .mouseButton(.right)])
+
+        XCTAssertEqual(
+            session.handle(control: .leftClick, kind: .down, mappings: map),
+            .postMouse(.right, isDown: true)
+        )
+        // A second down for the same source must not inflate the target refcount.
+        XCTAssertEqual(
+            session.handle(control: .leftClick, kind: .down, mappings: map),
+            .consume
+        )
+        XCTAssertEqual(session.snapshotHeldMouseTargets(), [.right])
+        XCTAssertEqual(
+            session.handle(control: .leftClick, kind: .up, mappings: map),
+            .postMouse(.right, isDown: false)
+        )
+        XCTAssertFalse(session.isHolding(.leftClick))
+        XCTAssertTrue(session.snapshotHeldMouseTargets().isEmpty)
+    }
+
+    func testManyToOneTargetsOnlyReleaseOnLastOwnerUp() {
         var session = InputRemapperEngine.ButtonRemapSession()
         let map = mappings([
             .sideButton1: .mouseButton(.left),
@@ -48,18 +70,36 @@ final class InputRemapperStateTests: XCTestCase {
             session.handle(control: .sideButton1, kind: .down, mappings: map),
             .postMouse(.left, isDown: true)
         )
+        // Second owner of the same target must not post another down.
         XCTAssertEqual(
             session.handle(control: .sideButton2, kind: .down, mappings: map),
-            .postMouse(.left, isDown: true)
+            .consume
         )
+        // First release keeps synthetic left held for the remaining owner.
         XCTAssertEqual(
             session.handle(control: .sideButton1, kind: .up, mappings: map),
-            .postMouse(.left, isDown: false)
+            .consume
         )
         XCTAssertTrue(session.isHolding(.sideButton2))
+        XCTAssertEqual(session.snapshotHeldMouseTargets(), [.left])
         XCTAssertEqual(
             session.handle(control: .sideButton2, kind: .up, mappings: map),
             .postMouse(.left, isDown: false)
+        )
+        XCTAssertTrue(session.snapshotHeldMouseTargets().isEmpty)
+    }
+
+    func testMouseDragReplacementIsEmittedForRemappedHold() {
+        var session = InputRemapperEngine.ButtonRemapSession()
+        let map = mappings([.leftClick: .mouseButton(.right)])
+        _ = session.handle(control: .leftClick, kind: .down, mappings: map)
+        XCTAssertEqual(
+            session.handle(control: .leftClick, kind: .drag, mappings: map),
+            .postMouseDrag(.right)
+        )
+        XCTAssertEqual(
+            session.handle(control: .leftClick, kind: .drag, mappings: map),
+            .postMouseDrag(.right)
         )
     }
 
@@ -121,16 +161,18 @@ final class InputRemapperStateTests: XCTestCase {
         )
     }
 
-    func testSnapshotHeldMouseTargetsForRelease() {
+    func testSnapshotHeldMouseTargetsIsUniqueForRecovery() {
         var session = InputRemapperEngine.ButtonRemapSession()
         let map = mappings([
             .leftClick: .mouseButton(.right),
-            .sideButton1: .mouseButton(.left)
+            .sideButton1: .mouseButton(.left),
+            .sideButton2: .mouseButton(.left)
         ])
         _ = session.handle(control: .leftClick, kind: .down, mappings: map)
         _ = session.handle(control: .sideButton1, kind: .down, mappings: map)
-        let targets = session.snapshotHeldMouseTargets()
-        XCTAssertEqual(Set(targets), Set([MouseButtonTarget.right, .left]))
+        _ = session.handle(control: .sideButton2, kind: .down, mappings: map)
+        let targets = Set(session.snapshotHeldMouseTargets())
+        XCTAssertEqual(targets, Set([MouseButtonTarget.right, .left]))
         session.clearAllHolds()
         XCTAssertTrue(session.snapshotHeldMouseTargets().isEmpty)
     }
