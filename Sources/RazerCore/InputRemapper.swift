@@ -42,8 +42,10 @@ public final class InputRemapper: @unchecked Sendable {
         pollingRateHz: 1000
     )
     private var buttonSession = InputRemapperEngine.ButtonRemapSession()
-    private var verticalScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
-    private var horizontalScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    private var verticalLineScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    private var verticalPointScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    private var horizontalLineScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    private var horizontalPointScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
     /// Last recovery transition that notified observers (including empty tap-disable).
     private var lastHeldOutputRecovery: HeldOutputRecoveryReason?
     /// Synthetic mouse-ups posted by recovery releases (observed by tests via `@testable`).
@@ -470,8 +472,10 @@ public final class InputRemapper: @unchecked Sendable {
     }
 
     private func resetScrollAccumulatorsLocked() {
-        verticalScrollScaler.reset()
-        horizontalScrollScaler.reset()
+        verticalLineScrollScaler.reset()
+        verticalPointScrollScaler.reset()
+        horizontalLineScrollScaler.reset()
+        horizontalPointScrollScaler.reset()
     }
 
     private static func sanitizedProfile(_ profile: MouseProfile) -> MouseProfile {
@@ -504,7 +508,7 @@ public final class InputRemapper: @unchecked Sendable {
         )
         guard !axis1.isEffectivelyZero else { return Unmanaged.passUnretained(event) }
 
-        let primaryDelta = axis1.line != 0 ? axis1.line : axis1.point
+        let primaryDelta = InputRemapperEngine.primaryScrollDelta(for: axis1)
         let software = profile.wheelSettings.software
         let wheelUp = primaryDelta > 0
         let wheelControl: PhysicalControl = wheelUp ? .wheelUp : .wheelDown
@@ -524,7 +528,8 @@ public final class InputRemapper: @unchecked Sendable {
             if moveHorizontal {
                 scaled = InputRemapperEngine.scalePassthroughScroll(
                     axis1: axis1,
-                    lineScaler: &horizontalScrollScaler,
+                    lineScaler: &horizontalLineScrollScaler,
+                    pointScaler: &horizontalPointScrollScaler,
                     multiplier: multiplier,
                     invert: invert,
                     moveToHorizontalAxis: true
@@ -532,7 +537,8 @@ public final class InputRemapper: @unchecked Sendable {
             } else {
                 scaled = InputRemapperEngine.scalePassthroughScroll(
                     axis1: axis1,
-                    lineScaler: &verticalScrollScaler,
+                    lineScaler: &verticalLineScrollScaler,
+                    pointScaler: &verticalPointScrollScaler,
                     multiplier: multiplier,
                     invert: invert,
                     moveToHorizontalAxis: false

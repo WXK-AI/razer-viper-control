@@ -88,6 +88,14 @@ public enum InputRemapperEngine {
         public static let zero = ScrollAxisValues()
     }
 
+    /// Signed primary delta used to choose wheel-up vs wheel-down actions.
+    /// Prefers line, then point, then fixed-point so fixed-only events keep direction.
+    public static func primaryScrollDelta(for axis: ScrollAxisValues) -> Double {
+        if axis.line != 0 { return Double(axis.line) }
+        if axis.point != 0 { return Double(axis.point) }
+        return axis.fixedPt
+    }
+
     public struct ScrollAxisPair: Equatable, Sendable {
         public var axis1: ScrollAxisValues
         public var axis2: ScrollAxisValues
@@ -101,12 +109,13 @@ public enum InputRemapperEngine {
     public static func scalePassthroughScroll(
         axis1: ScrollAxisValues,
         lineScaler: inout ScrollDeltaScaler,
+        pointScaler: inout ScrollDeltaScaler,
         multiplier: Double,
         invert: Bool,
         moveToHorizontalAxis: Bool
     ) -> ScrollAxisPair {
         let scaledLine = lineScaler.scale(rawDelta: axis1.line, multiplier: multiplier, invert: invert)
-        let scaledPoint = scaleImmediateDelta(axis1.point, multiplier: multiplier, invert: invert)
+        let scaledPoint = pointScaler.scale(rawDelta: axis1.point, multiplier: multiplier, invert: invert)
         let scaledFixed = scaleImmediateFixed(axis1.fixedPt, multiplier: multiplier, invert: invert)
         let scaled = ScrollAxisValues(line: scaledLine, point: scaledPoint, fixedPt: scaledFixed)
 
@@ -114,15 +123,6 @@ public enum InputRemapperEngine {
             return ScrollAxisPair(axis1: .zero, axis2: scaled)
         }
         return ScrollAxisPair(axis1: scaled, axis2: .zero)
-    }
-
-    private static func scaleImmediateDelta(_ raw: Int64, multiplier: Double, invert: Bool) -> Int64 {
-        guard raw != 0 else { return 0 }
-        let safeMultiplier = SoftwareWheelSettings.sanitizedSpeedMultiplier(multiplier)
-        var scaled = Double(raw) * safeMultiplier
-        if invert { scaled *= -1 }
-        guard scaled.isFinite else { return 0 }
-        return Int64(scaled.rounded(.towardZero))
     }
 
     private static func scaleImmediateFixed(_ raw: Double, multiplier: Double, invert: Bool) -> Double {

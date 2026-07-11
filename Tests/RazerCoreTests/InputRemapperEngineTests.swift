@@ -110,27 +110,43 @@ final class InputRemapperEngineTests: XCTestCase {
         )
     }
 
-    func testScalePassthroughScrollScalesPointDeltaImmediately() {
-        var scaler = InputRemapperEngine.ScrollDeltaScaler()
-        let axis1 = InputRemapperEngine.ScrollAxisValues(line: 0, point: 10, fixedPt: 5.0)
-        let scaled = InputRemapperEngine.scalePassthroughScroll(
+    func testScalePassthroughScrollAccumulatesPointDelta() {
+        var lineScaler = InputRemapperEngine.ScrollDeltaScaler()
+        var pointScaler = InputRemapperEngine.ScrollDeltaScaler()
+        let axis1 = InputRemapperEngine.ScrollAxisValues(line: 0, point: 1, fixedPt: 5.0)
+
+        for _ in 0..<3 {
+            let scaled = InputRemapperEngine.scalePassthroughScroll(
+                axis1: axis1,
+                lineScaler: &lineScaler,
+                pointScaler: &pointScaler,
+                multiplier: 0.25,
+                invert: false,
+                moveToHorizontalAxis: false
+            )
+            XCTAssertEqual(scaled.axis1.point, 0)
+            XCTAssertEqual(scaled.axis1.fixedPt, 1.25, accuracy: 0.001)
+        }
+        let emitted = InputRemapperEngine.scalePassthroughScroll(
             axis1: axis1,
-            lineScaler: &scaler,
-            multiplier: 0.5,
+            lineScaler: &lineScaler,
+            pointScaler: &pointScaler,
+            multiplier: 0.25,
             invert: false,
             moveToHorizontalAxis: false
         )
-        XCTAssertEqual(scaled.axis1.line, 0)
-        XCTAssertEqual(scaled.axis1.point, 5)
-        XCTAssertEqual(scaled.axis1.fixedPt, 2.5, accuracy: 0.001)
+        XCTAssertEqual(emitted.axis1.point, 1)
+        XCTAssertEqual(emitted.axis1.fixedPt, 1.25, accuracy: 0.001)
     }
 
     func testScalePassthroughScrollInvertsAllAxes() {
-        var scaler = InputRemapperEngine.ScrollDeltaScaler()
+        var lineScaler = InputRemapperEngine.ScrollDeltaScaler()
+        var pointScaler = InputRemapperEngine.ScrollDeltaScaler()
         let axis1 = InputRemapperEngine.ScrollAxisValues(line: 1, point: 4, fixedPt: 2.0)
         let scaled = InputRemapperEngine.scalePassthroughScroll(
             axis1: axis1,
-            lineScaler: &scaler,
+            lineScaler: &lineScaler,
+            pointScaler: &pointScaler,
             multiplier: 2.0,
             invert: true,
             moveToHorizontalAxis: false
@@ -141,11 +157,13 @@ final class InputRemapperEngineTests: XCTestCase {
     }
 
     func testScalePassthroughScrollMovesAllFieldsToHorizontalAxis() {
-        var scaler = InputRemapperEngine.ScrollDeltaScaler()
+        var lineScaler = InputRemapperEngine.ScrollDeltaScaler()
+        var pointScaler = InputRemapperEngine.ScrollDeltaScaler()
         let axis1 = InputRemapperEngine.ScrollAxisValues(line: 1, point: 6, fixedPt: 3.0)
         let scaled = InputRemapperEngine.scalePassthroughScroll(
             axis1: axis1,
-            lineScaler: &scaler,
+            lineScaler: &lineScaler,
+            pointScaler: &pointScaler,
             multiplier: 1.0,
             invert: false,
             moveToHorizontalAxis: true
@@ -157,19 +175,30 @@ final class InputRemapperEngineTests: XCTestCase {
     }
 
     func testLineScalerStillAccumulatesSubUnityMultipliers() {
-        var scaler = InputRemapperEngine.ScrollDeltaScaler()
+        var lineScaler = InputRemapperEngine.ScrollDeltaScaler()
+        var pointScaler = InputRemapperEngine.ScrollDeltaScaler()
         let axis1 = InputRemapperEngine.ScrollAxisValues(line: 1, point: 0, fixedPt: 0)
         for _ in 0..<3 {
             XCTAssertEqual(
                 InputRemapperEngine.scalePassthroughScroll(
-                    axis1: axis1, lineScaler: &scaler, multiplier: 0.25, invert: false, moveToHorizontalAxis: false
+                    axis1: axis1,
+                    lineScaler: &lineScaler,
+                    pointScaler: &pointScaler,
+                    multiplier: 0.25,
+                    invert: false,
+                    moveToHorizontalAxis: false
                 ).axis1.line,
                 0
             )
         }
         XCTAssertEqual(
             InputRemapperEngine.scalePassthroughScroll(
-                axis1: axis1, lineScaler: &scaler, multiplier: 0.25, invert: false, moveToHorizontalAxis: false
+                axis1: axis1,
+                lineScaler: &lineScaler,
+                pointScaler: &pointScaler,
+                multiplier: 0.25,
+                invert: false,
+                moveToHorizontalAxis: false
             ).axis1.line,
             1
         )
@@ -199,15 +228,18 @@ final class InputRemapperEngineTests: XCTestCase {
     }
 
     func testVerticalResidualDoesNotTransferToHorizontalOutput() {
-        var vertical = InputRemapperEngine.ScrollDeltaScaler()
-        var horizontal = InputRemapperEngine.ScrollDeltaScaler()
+        var verticalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var verticalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalPoint = InputRemapperEngine.ScrollDeltaScaler()
         let tick = InputRemapperEngine.ScrollAxisValues(line: 1, point: 0, fixedPt: 0)
 
         for _ in 0..<3 {
             XCTAssertEqual(
                 InputRemapperEngine.scalePassthroughScroll(
                     axis1: tick,
-                    lineScaler: &vertical,
+                    lineScaler: &verticalLine,
+                    pointScaler: &verticalPoint,
                     multiplier: 0.25,
                     invert: false,
                     moveToHorizontalAxis: false
@@ -218,7 +250,8 @@ final class InputRemapperEngineTests: XCTestCase {
 
         let shifted = InputRemapperEngine.scalePassthroughScroll(
             axis1: tick,
-            lineScaler: &horizontal,
+            lineScaler: &horizontalLine,
+            pointScaler: &horizontalPoint,
             multiplier: 0.25,
             invert: false,
             moveToHorizontalAxis: true
@@ -229,12 +262,55 @@ final class InputRemapperEngineTests: XCTestCase {
         XCTAssertEqual(
             InputRemapperEngine.scalePassthroughScroll(
                 axis1: tick,
-                lineScaler: &vertical,
+                lineScaler: &verticalLine,
+                pointScaler: &verticalPoint,
                 multiplier: 0.25,
                 invert: false,
                 moveToHorizontalAxis: false
             ).axis1.line,
             1
+        )
+    }
+
+    func testPrimaryScrollDeltaPrefersLineThenPointThenFixedPt() {
+        XCTAssertEqual(
+            InputRemapperEngine.primaryScrollDelta(
+                for: .init(line: 2, point: -9, fixedPt: -3)
+            ),
+            2,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            InputRemapperEngine.primaryScrollDelta(
+                for: .init(line: 0, point: -3, fixedPt: 8)
+            ),
+            -3,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            InputRemapperEngine.primaryScrollDelta(
+                for: .init(line: 0, point: 0, fixedPt: 1.25)
+            ),
+            1.25,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            InputRemapperEngine.primaryScrollDelta(
+                for: .init(line: 0, point: 0, fixedPt: -0.5)
+            ),
+            -0.5,
+            accuracy: 0.0001
+        )
+    }
+
+    func testFixedPointOnlyEventsSelectWheelDirectionFromSign() {
+        XCTAssertGreaterThan(
+            InputRemapperEngine.primaryScrollDelta(for: .init(line: 0, point: 0, fixedPt: 0.75)),
+            0
+        )
+        XCTAssertLessThan(
+            InputRemapperEngine.primaryScrollDelta(for: .init(line: 0, point: 0, fixedPt: -0.75)),
+            0
         )
     }
 
