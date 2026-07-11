@@ -2,9 +2,23 @@ import XCTest
 @testable import RazerCore
 
 final class InputRemapperRecoveryTests: XCTestCase {
-    private func seedHold(_ remapper: InputRemapper, control: PhysicalControl = .leftClick, target: MouseButtonTarget = .right) {
-        remapper.seedRemappedHoldForTesting(control: control, target: target)
-        XCTAssertEqual(Set(remapper.heldMouseTargetsForTesting()), [target])
+    private func mappedProfile(
+        _ pairs: [PhysicalControl: ButtonAction] = [.leftClick: .mouseButton(.right)]
+    ) -> MouseProfile {
+        var profile = MouseProfile(name: "Test", dpiStages: [800], activeStage: 1, pollingRateHz: 1000)
+        for (control, action) in pairs {
+            profile.buttonMappings[control] = action
+        }
+        return profile
+    }
+
+    private func seedHold(
+        _ remapper: InputRemapper,
+        control: PhysicalControl = .leftClick,
+        target: MouseButtonTarget = .right
+    ) {
+        remapper.seedRemappedHold(control: control, target: target)
+        XCTAssertEqual(Set(remapper.heldMouseTargets()), [target])
     }
 
     func testReleaseAllHeldOutputsIsIdempotentAndUnique() {
@@ -33,13 +47,13 @@ final class InputRemapperRecoveryTests: XCTestCase {
         seedHold(remapper)
 
         remapper.pause()
-        XCTAssertTrue(remapper.heldMouseTargetsForTesting().isEmpty)
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
-        XCTAssertEqual(remapper.lastHeldOutputRecovery, .pause)
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+        XCTAssertEqual(remapper.lastRecoveryReason(), .pause)
 
         remapper.pause()
-        XCTAssertTrue(remapper.heldMouseTargetsForTesting().isEmpty)
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
     }
 
     func testStopReleasesHeldOutputsBeforeTeardown() {
@@ -47,41 +61,56 @@ final class InputRemapperRecoveryTests: XCTestCase {
         seedHold(remapper, control: .sideButton1, target: .left)
 
         remapper.stop()
-        XCTAssertTrue(remapper.heldMouseTargetsForTesting().isEmpty)
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
-        XCTAssertEqual(remapper.lastHeldOutputRecovery, .stop)
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+        XCTAssertEqual(remapper.lastRecoveryReason(), .stop)
 
         remapper.stop()
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
     }
 
     func testTapDisableReleasesHeldOutputsThenAllowsReenable() {
         let remapper = InputRemapper()
         seedHold(remapper)
 
-        remapper.recoverAfterTapDisableForTesting()
-        XCTAssertTrue(remapper.heldMouseTargetsForTesting().isEmpty)
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
-        XCTAssertEqual(remapper.lastHeldOutputRecovery, .tapDisable)
+        remapper.recoverAfterTapDisable()
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+        XCTAssertEqual(remapper.lastRecoveryReason(), .tapDisable)
 
-        remapper.recoverAfterTapDisableForTesting()
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
+        remapper.recoverAfterTapDisable()
+        // Second recovery still notifies, but posts no additional ups.
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+        XCTAssertEqual(remapper.lastRecoveryReason(), .tapDisable)
+    }
+
+    func testTapDisableNotifiesEvenWhenNoButtonsAreHeld() {
+        let remapper = InputRemapper()
+        var notified: [HeldOutputRecoveryReason] = []
+        remapper.callbacks.onHeldOutputsReleased = { notified.append($0) }
+
+        remapper.recoverAfterTapDisable()
+
+        XCTAssertEqual(notified, [.tapDisable])
+        XCTAssertEqual(remapper.lastRecoveryReason(), .tapDisable)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 0)
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
     }
 
     func testProfileReplacementReleasesHeldOutputs() {
         let remapper = InputRemapper()
         seedHold(remapper)
 
-        var next = MouseProfile(name: "Next", dpiStages: [800], activeStage: 1, pollingRateHz: 1000)
-        next.buttonMappings[.leftClick] = .mouseButton(.left)
+        var next = mappedProfile([.leftClick: .mouseButton(.left)])
+        next.name = "Next"
         remapper.updateProfile(next)
 
-        XCTAssertTrue(remapper.heldMouseTargetsForTesting().isEmpty)
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
-        XCTAssertEqual(remapper.lastHeldOutputRecovery, .profileReplacement)
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+        XCTAssertEqual(remapper.lastRecoveryReason(), .profileReplacement)
 
         remapper.updateProfile(next)
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
     }
 
     func testPermissionLossReleasesHeldOutputs() {
@@ -89,12 +118,56 @@ final class InputRemapperRecoveryTests: XCTestCase {
         seedHold(remapper, control: .rightClick, target: .left)
 
         remapper.handlePermissionLoss()
-        XCTAssertTrue(remapper.heldMouseTargetsForTesting().isEmpty)
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
         XCTAssertFalse(remapper.isRunning)
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
-        XCTAssertEqual(remapper.lastHeldOutputRecovery, .permissionLoss)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+        XCTAssertEqual(remapper.lastRecoveryReason(), .permissionLoss)
 
         remapper.handlePermissionLoss()
-        XCTAssertEqual(remapper.testingSyntheticMouseUpCount, 1)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+    }
+
+    func testPauseTransitionNeverLeavesHoldsWhilePaused() {
+        let remapper = InputRemapper()
+        remapper.updateProfile(mappedProfile())
+
+        var observedPausedWithHolds = false
+        let failureLock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: 400) { _ in
+            remapper.resume()
+            _ = remapper.processMappedButtonDown(.leftClick)
+            remapper.pause()
+            let snapshot = remapper.recoveryStateSnapshot()
+            if snapshot.isPaused && !snapshot.heldTargets.isEmpty {
+                failureLock.lock()
+                observedPausedWithHolds = true
+                failureLock.unlock()
+            }
+        }
+
+        XCTAssertFalse(
+            observedPausedWithHolds,
+            "Pause must clear holds and set isPaused in one critical section"
+        )
+        let final = remapper.recoveryStateSnapshot()
+        XCTAssertTrue(final.isPaused)
+        XCTAssertTrue(final.heldTargets.isEmpty)
+    }
+
+    func testProfileReplacementClearsHoldsBeforeNewMappingTakesEffect() {
+        let remapper = InputRemapper()
+        remapper.updateProfile(mappedProfile([.leftClick: .mouseButton(.right)]))
+        seedHold(remapper)
+
+        var next = mappedProfile([.leftClick: .mouseButton(.left)])
+        next.name = "Swapped"
+        remapper.updateProfile(next)
+
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+        remapper.resume()
+        XCTAssertEqual(
+            remapper.processMappedButtonDown(.leftClick),
+            .postMouse(.left, isDown: true)
+        )
     }
 }
