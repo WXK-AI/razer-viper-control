@@ -48,6 +48,8 @@ public final class InputRemapper: @unchecked Sendable {
     private var lastHeldOutputRecovery: HeldOutputRecoveryReason?
     /// Synthetic mouse-ups posted by recovery releases (observed by tests via `@testable`).
     private var syntheticMouseUpCount = 0
+    /// Blocks mapped downs while profile replacement ups publish and before the new mapping is live.
+    private var suppressMappedDowns = false
 
     public init() {}
 
@@ -64,6 +66,8 @@ public final class InputRemapper: @unchecked Sendable {
             || self.profile.remapperEnabled != profile.remapperEnabled
         if mappingsChanged {
             let targets = buttonSession.releaseAllHeldOutputs()
+            // Keep the old mapping readable, but reject new mapped downs until finalize.
+            suppressMappedDowns = true
             release = makeReleaseLocked(
                 targets: targets,
                 reason: .profileReplacement,
@@ -84,6 +88,7 @@ public final class InputRemapper: @unchecked Sendable {
             guard mappingsChanged else { return }
             self.profile = profile
             self.resetScrollAccumulatorsLocked()
+            self.suppressMappedDowns = false
         }
     }
 
@@ -91,6 +96,7 @@ public final class InputRemapper: @unchecked Sendable {
         let release = commitRecoveryTransition(reason: .pause, notifyIfEmpty: false) {
             let targets = buttonSession.releaseAllHeldOutputs()
             isPaused = true
+            suppressMappedDowns = false
             resetScrollAccumulatorsLocked()
             return targets
         }
@@ -202,12 +208,12 @@ public final class InputRemapper: @unchecked Sendable {
         return (isPaused, buttonSession.snapshotHeldMouseTargets())
     }
 
-    /// Mirrors the live down path (respects pause / remapperEnabled).
+    /// Mirrors the live down path (respects pause / remapperEnabled / profile-transition gate).
     @discardableResult
     func processMappedButtonDown(_ control: PhysicalControl) -> RemapButtonOutcome? {
         lock.lock()
         defer { lock.unlock() }
-        guard !isPaused, profile.remapperEnabled else {
+        guard !isPaused, !suppressMappedDowns, profile.remapperEnabled else {
             return nil
         }
         return buttonSession.handle(
@@ -215,6 +221,12 @@ public final class InputRemapper: @unchecked Sendable {
             kind: .down,
             mappings: profile.buttonMappings
         )
+    }
+
+    func isSuppressingMappedDowns() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return suppressMappedDowns
     }
 
     func activeButtonAction(for control: PhysicalControl) -> ButtonAction {
@@ -320,6 +332,7 @@ public final class InputRemapper: @unchecked Sendable {
         eventTap = nil
         runLoopSource = nil
         isRunning = false
+        suppressMappedDowns = false
     }
 
     private static let eventCallback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -371,10 +384,9 @@ public final class InputRemapper: @unchecked Sendable {
                 return applyButtonOutcome(outcome, event: event, callbacks: callbacks)
             }
 
-            // Re-check pause/enabled under the same lock as hold creation to avoid TOCTOU
-            // with pause()/updateProfile() recovery transitions.
+            // Re-check pause/enabled/transition gate under the same lock as hold creation.
             lock.lock()
-            if isPaused || !profile.remapperEnabled {
+            if isPaused || suppressMappedDowns || !profile.remapperEnabled {
                 lock.unlock()
                 return Unmanaged.passUnretained(event)
             }

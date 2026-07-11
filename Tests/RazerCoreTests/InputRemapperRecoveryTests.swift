@@ -198,6 +198,37 @@ final class InputRemapperRecoveryTests: XCTestCase {
         XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
     }
 
+    func testProfileTransitionRejectsDownsUntilNewMappingIsLive() {
+        let remapper = InputRemapper()
+        remapper.updateProfile(mappedProfile([.leftClick: .mouseButton(.right)]))
+        seedHold(remapper)
+
+        var next = mappedProfile([.leftClick: .mouseButton(.left)])
+        next.name = "Swapped"
+
+        var downDuringTransition: RemapButtonOutcome?
+        var suppressedDuringTransition = false
+        remapper.recoveryOrderingProbe = {
+            suppressedDuringTransition = remapper.isSuppressingMappedDowns()
+            downDuringTransition = remapper.processMappedButtonDown(.leftClick)
+            XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+            XCTAssertEqual(remapper.activeButtonAction(for: .leftClick), .mouseButton(.right))
+        }
+
+        remapper.updateProfile(next)
+
+        XCTAssertTrue(suppressedDuringTransition)
+        XCTAssertNil(
+            downDuringTransition,
+            "Old mapping must not accept downs while replacement ups are publishing"
+        )
+        XCTAssertFalse(remapper.isSuppressingMappedDowns())
+        XCTAssertEqual(
+            remapper.processMappedButtonDown(.leftClick),
+            .postMouse(.left, isDown: true)
+        )
+    }
+
     func testTapDisablePostsUpsBeforeReenablingTap() {
         let remapper = InputRemapper()
         seedHold(remapper)
