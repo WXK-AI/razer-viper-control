@@ -53,8 +53,14 @@ public enum InputRemapperEngine {
 
         public mutating func scale(rawDelta: Int64, multiplier: Double, invert: Bool = false) -> Int64 {
             guard rawDelta != 0 else { return 0 }
-            var scaled = Double(rawDelta) * multiplier
+            let safeMultiplier = SoftwareWheelSettings.sanitizedSpeedMultiplier(multiplier)
+            var scaled = Double(rawDelta) * safeMultiplier
             if invert { scaled *= -1 }
+            guard scaled.isFinite, scaled != 0 else { return 0 }
+            // Drop residual from the opposite direction so reversal stays responsive.
+            if accumulator != 0, (accumulator > 0) != (scaled > 0) {
+                accumulator = 0
+            }
             accumulator += scaled
             let emitted = Int64(accumulator.rounded(.towardZero))
             if emitted != 0 {
@@ -112,15 +118,19 @@ public enum InputRemapperEngine {
 
     private static func scaleImmediateDelta(_ raw: Int64, multiplier: Double, invert: Bool) -> Int64 {
         guard raw != 0 else { return 0 }
-        var scaled = Double(raw) * multiplier
+        let safeMultiplier = SoftwareWheelSettings.sanitizedSpeedMultiplier(multiplier)
+        var scaled = Double(raw) * safeMultiplier
         if invert { scaled *= -1 }
+        guard scaled.isFinite else { return 0 }
         return Int64(scaled.rounded(.towardZero))
     }
 
     private static func scaleImmediateFixed(_ raw: Double, multiplier: Double, invert: Bool) -> Double {
         guard raw != 0 else { return 0 }
-        var scaled = raw * multiplier
+        let safeMultiplier = SoftwareWheelSettings.sanitizedSpeedMultiplier(multiplier)
+        var scaled = raw * safeMultiplier
         if invert { scaled *= -1 }
+        guard scaled.isFinite else { return 0 }
         return scaled
     }
 

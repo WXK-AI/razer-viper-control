@@ -61,9 +61,10 @@ public final class InputRemapper: @unchecked Sendable {
         let mappingsChanged: Bool
         let release: HeldOutputRelease
         lock.lock()
+        let incoming = Self.sanitizedProfile(profile)
         mappingsChanged =
-            self.profile.buttonMappings != profile.buttonMappings
-            || self.profile.remapperEnabled != profile.remapperEnabled
+            self.profile.buttonMappings != incoming.buttonMappings
+            || self.profile.remapperEnabled != incoming.remapperEnabled
         if mappingsChanged {
             let targets = buttonSession.releaseAllHeldOutputs()
             // Keep the old mapping readable, but reject new mapped downs until finalize.
@@ -73,9 +74,9 @@ public final class InputRemapper: @unchecked Sendable {
                 reason: .profileReplacement,
                 notifyIfEmpty: false
             )
+            // Defer profile install until after ups; stash pending profile on self temporarily via finalize capture.
         } else {
-            self.profile = profile
-            resetScrollAccumulatorsLocked()
+            applyProfileLocked(incoming)
             release = makeReleaseLocked(
                 targets: [],
                 reason: .profileReplacement,
@@ -86,8 +87,7 @@ public final class InputRemapper: @unchecked Sendable {
 
         publishHeldOutputRelease(release) {
             guard mappingsChanged else { return }
-            self.profile = profile
-            self.resetScrollAccumulatorsLocked()
+            self.applyProfileLocked(incoming)
             self.suppressMappedDowns = false
         }
     }
@@ -474,6 +474,24 @@ public final class InputRemapper: @unchecked Sendable {
         horizontalScrollScaler.reset()
     }
 
+    private static func sanitizedProfile(_ profile: MouseProfile) -> MouseProfile {
+        var sanitized = profile
+        sanitized.wheelSettings.software.verticalSpeedMultiplier =
+            SoftwareWheelSettings.sanitizedSpeedMultiplier(
+                profile.wheelSettings.software.verticalSpeedMultiplier
+            )
+        return sanitized
+    }
+
+    /// Installs a sanitized profile. Resets scroll residuals only when software wheel settings change.
+    private func applyProfileLocked(_ profile: MouseProfile) {
+        let wheelSoftwareChanged = self.profile.wheelSettings.software != profile.wheelSettings.software
+        self.profile = profile
+        if wheelSoftwareChanged {
+            resetScrollAccumulatorsLocked()
+        }
+    }
+
     private func handleScrollEvent(
         event: CGEvent,
         profile: MouseProfile,
@@ -498,7 +516,7 @@ public final class InputRemapper: @unchecked Sendable {
         if case .passthrough = action {
             let modified = event
             let invert = software.scrollDirection == .inverted
-            let multiplier = software.verticalSpeedMultiplier
+            let multiplier = SoftwareWheelSettings.sanitizedSpeedMultiplier(software.verticalSpeedMultiplier)
             let moveHorizontal = software.horizontalScrollModifier == .shift && event.flags.contains(.maskShift)
 
             lock.lock()

@@ -117,13 +117,13 @@
 
 **Steps:**
 
-- [ ] Add failing tests for positive/negative fractional accumulation, direction reversal, zero deltas, multiplier bounds, vertical events, and Shift-horizontal events.
-- [ ] Reset only the active axis accumulator when settings/profile identity changes; never transfer residual vertical motion to horizontal output.
-- [ ] Define whether one wheel gesture may fire one-shot actions repeatedly per event; retain the current per-event behavior unless tests expose duplicate callback dispatch.
-- [ ] Preserve all available line, point, and fixed-point axis fields consistently when passing scaled scroll events.
-- [ ] Validate finite speed multipliers at profile decoding, draft validation, and remapper update boundaries.
-- [ ] Run `swift test --disable-sandbox --filter InputRemapperEngineTests`.
-- [ ] Commit: `fix: harden wheel precision and axis isolation`.
+- [x] Add failing tests for positive/negative fractional accumulation, direction reversal, zero deltas, multiplier bounds, vertical events, and Shift-horizontal events.
+- [x] Reset only the active axis accumulator when settings/profile identity changes; never transfer residual vertical motion to horizontal output.
+- [x] Define whether one wheel gesture may fire one-shot actions repeatedly per event; retain the current per-event behavior unless tests expose duplicate callback dispatch.
+- [x] Preserve all available line, point, and fixed-point axis fields consistently when passing scaled scroll events.
+- [x] Validate finite speed multipliers at profile decoding, draft validation, and remapper update boundaries.
+- [x] Run `swift test --disable-sandbox --filter InputRemapperEngineTests`.
+- [x] Commit: `fix: harden wheel precision and axis isolation`.
 
 ### Task 5: Make Runtime Status And Limitations Explicit
 

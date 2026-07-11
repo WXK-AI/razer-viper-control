@@ -250,6 +250,9 @@ public final class ProfileStore {
             do {
                 _ = try ProfileValidator.validateStages(profile.dpiStages, activeStage: profile.activeStage)
                 try ProfileValidator.validatePollingRate(profile.pollingRateHz)
+                try ProfileValidator.validateWheelSpeedMultiplier(
+                    profile.wheelSettings.software.verticalSpeedMultiplier
+                )
             } catch let error as RazerValidationError {
                 throw ProfileStoreError.validation(error)
             }

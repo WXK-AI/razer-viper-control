@@ -206,6 +206,15 @@ public enum HorizontalScrollModifier: String, Codable, CaseIterable, Sendable {
 }
 
 public struct SoftwareWheelSettings: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case scrollDirection, verticalSpeedMultiplier, horizontalScrollModifier
+        case wheelUpAction, wheelDownAction
+    }
+
+    public static let minimumSpeedMultiplier: Double = 0.25
+    public static let maximumSpeedMultiplier: Double = 3.0
+    public static let defaultSpeedMultiplier: Double = 1.0
+
     public var scrollDirection: ScrollDirection
     public var verticalSpeedMultiplier: Double
     public var horizontalScrollModifier: HorizontalScrollModifier
@@ -214,19 +223,39 @@ public struct SoftwareWheelSettings: Codable, Equatable, Sendable {
 
     public init(
         scrollDirection: ScrollDirection = .normal,
-        verticalSpeedMultiplier: Double = 1.0,
+        verticalSpeedMultiplier: Double = defaultSpeedMultiplier,
         horizontalScrollModifier: HorizontalScrollModifier = .shift,
         wheelUpAction: ButtonAction? = nil,
         wheelDownAction: ButtonAction? = nil
     ) {
         self.scrollDirection = scrollDirection
-        self.verticalSpeedMultiplier = verticalSpeedMultiplier
+        self.verticalSpeedMultiplier = Self.sanitizedSpeedMultiplier(verticalSpeedMultiplier)
         self.horizontalScrollModifier = horizontalScrollModifier
         self.wheelUpAction = wheelUpAction
         self.wheelDownAction = wheelDownAction
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scrollDirection = try container.decodeIfPresent(ScrollDirection.self, forKey: .scrollDirection) ?? .normal
+        let rawMultiplier = try container.decodeIfPresent(Double.self, forKey: .verticalSpeedMultiplier)
+            ?? Self.defaultSpeedMultiplier
+        verticalSpeedMultiplier = Self.sanitizedSpeedMultiplier(rawMultiplier)
+        horizontalScrollModifier = try container.decodeIfPresent(
+            HorizontalScrollModifier.self,
+            forKey: .horizontalScrollModifier
+        ) ?? .shift
+        wheelUpAction = try container.decodeIfPresent(ButtonAction.self, forKey: .wheelUpAction)
+        wheelDownAction = try container.decodeIfPresent(ButtonAction.self, forKey: .wheelDownAction)
+    }
+
     public static let `default` = SoftwareWheelSettings()
+
+    /// Clamps finite multipliers into the supported range; non-finite values become the default.
+    public static func sanitizedSpeedMultiplier(_ raw: Double) -> Double {
+        guard raw.isFinite else { return defaultSpeedMultiplier }
+        return min(max(raw, minimumSpeedMultiplier), maximumSpeedMultiplier)
+    }
 }
 
 public struct WheelSettings: Codable, Equatable, Sendable {

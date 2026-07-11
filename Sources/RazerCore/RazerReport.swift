@@ -399,6 +399,7 @@ public enum RazerValidationError: Error, LocalizedError, Equatable {
     case invalidDPI(Int)
     case unsupportedPollingRate(Int)
     case tooManyDPIStages(Int)
+    case invalidWheelSpeedMultiplier
 
     public var errorDescription: String? {
         switch self {
@@ -412,6 +413,8 @@ public enum RazerValidationError: Error, LocalizedError, Equatable {
             return "Polling rate \(rate) Hz is not supported. Use 125, 500, or 1000 Hz."
         case let .tooManyDPIStages(count):
             return "Too many DPI stages (\(count)). Maximum is \(DeviceDescriptor.maxDPIStages)."
+        case .invalidWheelSpeedMultiplier:
+            return "Wheel speed multiplier must be a finite value between \(SoftwareWheelSettings.minimumSpeedMultiplier) and \(SoftwareWheelSettings.maximumSpeedMultiplier)."
         }
     }
 }
@@ -443,6 +446,16 @@ public enum ProfileValidator {
     public static func validatePollingRate(_ rate: Int) throws {
         guard DeviceDescriptor.supportedPollingRates.contains(rate) else {
             throw RazerValidationError.unsupportedPollingRate(rate)
+        }
+    }
+
+    public static func validateWheelSpeedMultiplier(_ multiplier: Double) throws {
+        guard multiplier.isFinite else {
+            throw RazerValidationError.invalidWheelSpeedMultiplier
+        }
+        guard (SoftwareWheelSettings.minimumSpeedMultiplier...SoftwareWheelSettings.maximumSpeedMultiplier)
+            .contains(multiplier) else {
+            throw RazerValidationError.invalidWheelSpeedMultiplier
         }
     }
 }
