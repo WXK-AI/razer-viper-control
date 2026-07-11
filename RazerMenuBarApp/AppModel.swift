@@ -579,8 +579,8 @@ final class AppModel: ObservableObject {
         case .openAccessibility:
             openAccessibilitySettings()
         case .openPrivacySettings:
-            openInputMonitoringSettings()
-            openAccessibilitySettings()
+            // One Privacy & Security pane — opening both deep links races and stacks two windows.
+            openPrivacyAndSecuritySettings()
         case .resume:
             setRemapperPaused(false)
         case .acknowledgeRecovery:
@@ -666,6 +666,10 @@ final class AppModel: ObservableObject {
 
     func openAccessibilitySettings() {
         openPrivacySettings("Privacy_Accessibility")
+    }
+
+    func openPrivacyAndSecuritySettings() {
+        openPrivacySettings("Privacy")
     }
 
     private func openPrivacySettings(_ pane: String) {

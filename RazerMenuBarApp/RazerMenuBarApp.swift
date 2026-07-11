@@ -63,7 +63,7 @@ private struct MenuBarContent: View {
         Button(model.remapperPaused ? "Resume Remapper" : "Pause Remapper") {
             model.toggleRemapperPause()
         }
-        .disabled(!model.remapperRunning && !(model.selectedProfile?.remapperEnabled ?? false))
+        .disabled(!model.remapperRunning)
         if let action = model.remapperStatus.recoveryAction,
            action == .openInputMonitoring || action == .openAccessibility || action == .openPrivacySettings || action == .retryStart {
             Button(action.buttonTitle) {
