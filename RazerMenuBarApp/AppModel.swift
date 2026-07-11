@@ -28,6 +28,9 @@ final class AppModel: ObservableObject {
     @Published var showSettings = false
     @Published var remapperPaused = false
     @Published var remapperRunning = false
+    @Published var driverActivationState: DriverActivationState = .unknown
+    @Published var driverStatusMessage = "Driver status has not been queried yet."
+    @Published var driverLastError: String?
     @Published var wheelCapability = WheelHardwareCapability()
     @Published var permissions = PermissionStatus.current()
     @Published var captureSession = InputCaptureSession()
@@ -39,6 +42,7 @@ final class AppModel: ObservableObject {
     private let session = DeviceSession()
     private let profileStore = ProfileStore()
     private let remapper = InputRemapper()
+    private let systemExtensionManager = SystemExtensionManager()
     private let hidQueue = DispatchQueue(label: "com.razermenubar.hid", qos: .utility)
     private var monitorTimer: Timer?
     private var wasConnected = false
@@ -104,11 +108,35 @@ final class AppModel: ObservableObject {
         }
         configureRemapperCallbacks()
         configureCaptureSession()
+        bindSystemExtensionManager()
         refreshProfileSummary()
         refreshMappingWarning()
         reloadDraftFromSelectedProfile()
         startMonitoring()
         syncRemapper()
+    }
+
+    private func bindSystemExtensionManager() {
+        systemExtensionManager.onStateChange = { [weak self] in
+            self?.syncDriverStatusFromManager()
+        }
+        syncDriverStatusFromManager()
+    }
+
+    private func syncDriverStatusFromManager() {
+        driverActivationState = systemExtensionManager.state
+        driverStatusMessage = systemExtensionManager.statusMessage
+        driverLastError = systemExtensionManager.lastErrorDescription
+    }
+
+    func activateDriverExtension() {
+        systemExtensionManager.activate()
+        syncDriverStatusFromManager()
+    }
+
+    func deactivateDriverExtension() {
+        systemExtensionManager.deactivate()
+        syncDriverStatusFromManager()
     }
 
     func dismissPersistenceWarning() {

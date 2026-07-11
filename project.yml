@@ -8,6 +8,29 @@ packages:
   RazerCore:
     path: .
 targets:
+  RazerViperHIDDriver:
+    type: driver-extension
+    platform: macOS
+    sources:
+      - path: RazerHIDDriver
+        excludes:
+          - Info.plist
+          - RazerHIDDriver.entitlements
+    settings:
+      PRODUCT_NAME: RazerViperHIDDriver
+      PRODUCT_BUNDLE_IDENTIFIER: com.razermenubar.RazerViperHIDDriver
+      INFOPLIST_FILE: RazerHIDDriver/Info.plist
+      # Entitlement file is ready at RazerHIDDriver/RazerHIDDriver.entitlements.
+      # Wire CODE_SIGN_ENTITLEMENTS + development team once Apple profiles exist.
+      MARKETING_VERSION: "1.0.2"
+      CURRENT_PROJECT_VERSION: "3"
+      CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+      DRIVERKIT_DEPLOYMENT_TARGET: "22.0"
+      SDKROOT: driverkit
+      SUPPORTED_PLATFORMS: driverkit
+      SUPPORTS_MACCATALYST: NO
+      # Set DEVELOPMENT_TEAM + CODE_SIGN_ENTITLEMENTS when DriverKit profiles exist.
+      CODE_SIGN_STYLE: Automatic
   RazerMenuBarApp:
     type: application
     platform: macOS
@@ -18,6 +41,11 @@ targets:
     dependencies:
       - package: RazerCore
         product: RazerCore
+      # Embed when a DriverKit development profile exists for
+      # com.razermenubar.RazerViperHIDDriver (see docs/testing/driverkit-spike.md):
+      # - target: RazerViperHIDDriver
+      #   embed: true
+      #   codeSign: true
     settings:
       PRODUCT_NAME: RazerMenuBarApp
       PRODUCT_BUNDLE_IDENTIFIER: com.razermenubar.RazerMenuBarApp
@@ -26,13 +54,14 @@ targets:
       INFOPLIST_KEY_LSUIElement: YES
       INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026"
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-      CODE_SIGN_ENTITLEMENTS: RazerMenuBarApp/RazerMenuBarApp.entitlements
       SWIFT_VERSION: "5.9"
       MACOSX_DEPLOYMENT_TARGET: "13.0"
       LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
       ENABLE_DEBUG_DYLIB: NO
       MARKETING_VERSION: "1.0.2"
       CURRENT_PROJECT_VERSION: "3"
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGNING_REQUIRED: NO
 schemes:
   RazerMenuBarApp:
     build:
@@ -40,3 +69,7 @@ schemes:
         RazerMenuBarApp: all
     run:
       config: Debug
+  RazerViperHIDDriver:
+    build:
+      targets:
+        RazerViperHIDDriver: all

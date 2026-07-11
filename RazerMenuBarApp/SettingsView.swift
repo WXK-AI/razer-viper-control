@@ -616,6 +616,28 @@ private struct DiagnosticsTab: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                GroupBox("DriverKit spike") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(model.driverStatusMessage)
+                        Text("State: \(model.driverActivationState.displayName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let error = model.driverLastError {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                        Text("Physical acceptance checklist: docs/testing/driverkit-spike.md")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            Button("Activate Driver") { model.activateDriverExtension() }
+                            Button("Deactivate Driver") { model.deactivateDriverExtension() }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 GroupBox("Feature report probe") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(model.wheelProbeSummary)

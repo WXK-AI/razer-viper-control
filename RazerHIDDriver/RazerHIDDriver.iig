@@ -1,0 +1,31 @@
+// Copyright © 2026. Task 8 spike: exclusive HID ownership for 1532:00B8 (passthrough only).
+#ifndef RazerHIDDriver_h
+#define RazerHIDDriver_h
+
+#include <HIDDriverKit/IOUserHIDEventService.iig>
+
+class RazerHIDDriver: public IOUserHIDEventService
+{
+public:
+    virtual bool init() override;
+
+    virtual void free() override;
+
+    virtual kern_return_t Start(IOService * provider) override;
+
+    virtual kern_return_t Stop(IOService * provider) override;
+
+    virtual bool handleStart(IOService * provider) override;
+
+    virtual void handleStop(IOService * provider) override;
+
+    virtual kern_return_t handleReport(
+        uint64_t timestamp,
+        uint8_t * report,
+        uint32_t reportLength,
+        IOHIDReportType reportType,
+        uint32_t reportID
+    ) override;
+};
+
+#endif /* RazerHIDDriver_h */

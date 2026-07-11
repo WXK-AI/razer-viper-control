@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>DEXT</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<key>RazerViperV3HyperSpeedMouse</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>IOClass</key>
+			<string>AppleUserHIDEventService</string>
+			<key>IOProviderClass</key>
+			<string>IOHIDInterface</string>
+			<key>IOUserClass</key>
+			<string>RazerHIDDriver</string>
+			<key>IOUserServerCFBundleIdentifier</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>VendorID</key>
+			<integer>5426</integer>
+			<key>ProductID</key>
+			<integer>184</integer>
+			<key>PrimaryUsagePage</key>
+			<integer>1</integer>
+			<key>PrimaryUsage</key>
+			<integer>2</integer>
+		</dict>
+	</dict>
+	<key>OSBundleUsageDescription</key>
+	<string>Claims exclusive ownership of the Razer Viper V3 HyperSpeed HID mouse interface for Razer-only remapping.</string>
+</dict>
+</plist>
