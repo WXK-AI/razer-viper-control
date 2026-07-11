@@ -156,7 +156,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         XCTAssertNil(migrated.buttonMappings[.middleClick])
     }
 
-    func testFailedQuarantineStillReturnsRecoveredDefaults() throws {
+    func testFailedQuarantinePreservesCorruptSourceAndBlocksPersist() throws {
         let readOnlyParent = tempDirectory.appendingPathComponent("readonly", isDirectory: true)
         try FileManager.default.createDirectory(at: readOnlyParent, withIntermediateDirectories: true)
         let nestedSupport = readOnlyParent.appendingPathComponent("nested-support", isDirectory: true)
@@ -167,9 +167,9 @@ final class ProfileStoreRecoveryTests: XCTestCase {
             applicationSupportDirectory: nestedSupport,
             now: { Date(timeIntervalSince1970: 1_700_000_000) }
         )
-        try "{broken".data(using: .utf8)!.write(to: localStore.storageURL)
+        let corruptBytes = Data("{broken-source-must-survive".utf8)
+        try corruptBytes.write(to: localStore.storageURL)
 
-        // Lock the RazerMenuBarApp directory so the quarantine move cannot create the destination rename.
         let appSupport = nestedSupport.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
         defer {
@@ -177,10 +177,30 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         }
 
         let outcome = localStore.loadOutcome()
-        guard case let .recovered(bundle, _, reason) = outcome else {
-            return XCTFail("Expected recovered, got \(outcome)")
+        guard case let .corruptPreserved(bundle, sourceURL, reason) = outcome else {
+            return XCTFail("Expected corruptPreserved, got \(outcome)")
         }
         XCTAssertEqual(bundle.profiles.count, 1)
-        XCTAssertTrue(reason.contains("malformed") || reason.contains("quarantine failed"), reason)
+        XCTAssertFalse(outcome.shouldPersistDefaults)
+        XCTAssertTrue(reason.contains("quarantine failed") || reason.contains("malformed"), reason)
+        XCTAssertEqual(try Data(contentsOf: sourceURL), corruptBytes)
+
+        // Simulating AppModel: only persist when shouldPersistDefaults is true.
+        if outcome.shouldPersistDefaults {
+            try localStore.save(bundle)
+        }
+        XCTAssertEqual(try Data(contentsOf: sourceURL), corruptBytes)
+    }
+
+    func testSuccessfulQuarantineAllowsPersistingDefaults() throws {
+        try "{not-json".data(using: .utf8)!.write(to: store.storageURL)
+        let outcome = store.loadOutcome()
+        guard case let .recovered(bundle, quarantinedURL, _) = outcome else {
+            return XCTFail("Expected recovered, got \(outcome)")
+        }
+        XCTAssertTrue(outcome.shouldPersistDefaults)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: quarantinedURL.path))
+        try store.save(bundle)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.storageURL.path))
     }
 }

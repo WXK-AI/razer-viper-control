@@ -42,6 +42,8 @@ final class AppModel: ObservableObject {
     private var saveWorkItem: DispatchWorkItem?
     private let saveDebounceInterval: TimeInterval = 0.4
 
+    private var draftsByProfileID: [UUID: ProfileDraft] = [:]
+
     private struct DeviceRefreshSnapshot {
         let state: DeviceState?
         let probeReport: WheelCapabilityProbe.ProbeReport?
@@ -64,6 +66,11 @@ final class AppModel: ObservableObject {
             quarantinedProfileURL = quarantinedURL
             persistenceWarning = "Saved profiles were unreadable and were reset to defaults. \(reason)"
             try? profileStore.save(bundle)
+        case let .corruptPreserved(defaults, sourceURL, reason):
+            bundle = defaults
+            quarantinedProfileURL = sourceURL
+            persistenceWarning = "Saved profiles are corrupt and could not be quarantined. Defaults are in use in-memory only; the original file was left untouched. \(reason)"
+            // Do not save — writing would overwrite the only remaining corrupt source.
         }
         if bundle.profiles.isEmpty {
             bundle = profileStore.defaultBundle()
@@ -86,7 +93,17 @@ final class AppModel: ObservableObject {
     }
 
     func reloadDraftFromSelectedProfile() {
-        profileDraft = selectedProfile.map(ProfileDraft.init(profile:))
+        guard let profile = selectedProfile else {
+            profileDraft = nil
+            return
+        }
+        if let existing = draftsByProfileID[profile.id] {
+            profileDraft = existing
+        } else {
+            let draft = ProfileDraft(profile: profile)
+            draftsByProfileID[profile.id] = draft
+            profileDraft = draft
+        }
     }
 
     deinit {
@@ -340,8 +357,12 @@ final class AppModel: ObservableObject {
     }
 
     func selectProfile(_ profile: MouseProfile) {
+        if let currentID = selectedProfile?.id, let draft = profileDraft {
+            draftsByProfileID[currentID] = draft
+        }
         bundle.selectedProfileID = profile.id
         reloadDraftFromSelectedProfile()
+        // Required flush fails while the newly selected (or previous retained) draft is invalid.
         _ = flushPendingSave()
         refreshProfileSummary()
         applySelectedProfile()
@@ -350,9 +371,19 @@ final class AppModel: ObservableObject {
 
     func updateProfile(_ profile: MouseProfile) {
         guard let index = bundle.profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        let existingInvalidDraft = draftsByProfileID[profile.id].map { !$0.isValid } ?? false
         bundle.profiles[index] = profile
-        if profile.id == selectedProfile?.id {
-            profileDraft = ProfileDraft(profile: profile)
+        if existingInvalidDraft {
+            // Keep the invalid DPI draft; button/wheel edits must not discard it.
+            if selectedProfile?.id == profile.id {
+                profileDraft = draftsByProfileID[profile.id]
+            }
+        } else {
+            let draft = ProfileDraft(profile: profile)
+            draftsByProfileID[profile.id] = draft
+            if selectedProfile?.id == profile.id {
+                profileDraft = draft
+            }
         }
         persistenceStatus = .dirty
         scheduleSaveBundle()
@@ -366,7 +397,9 @@ final class AppModel: ObservableObject {
 
     /// Updates the editable draft. Canonical profile hardware fields change only while the draft is valid.
     func updateDraft(_ draft: ProfileDraft) {
+        guard let profileID = selectedProfile?.id else { return }
         profileDraft = draft
+        draftsByProfileID[profileID] = draft
         persistenceStatus = .dirty
         guard draft.isValid,
               var profile = selectedProfile,
@@ -386,6 +419,9 @@ final class AppModel: ObservableObject {
     }
 
     func addProfile() {
+        if let currentID = selectedProfile?.id, let draft = profileDraft {
+            draftsByProfileID[currentID] = draft
+        }
         let profile = MouseProfile(
             name: "Profile \(bundle.profiles.count + 1)",
             dpiStages: [800, 1600],
@@ -395,7 +431,9 @@ final class AppModel: ObservableObject {
         )
         bundle.profiles.append(profile)
         bundle.selectedProfileID = profile.id
-        reloadDraftFromSelectedProfile()
+        let draft = ProfileDraft(profile: profile)
+        draftsByProfileID[profile.id] = draft
+        profileDraft = draft
         _ = flushPendingSave()
         refreshProfileSummary()
         syncRemapper()
@@ -403,6 +441,7 @@ final class AppModel: ObservableObject {
 
     func deleteSelectedProfile() {
         guard bundle.profiles.count > 1, let selected = selectedProfile else { return }
+        draftsByProfileID.removeValue(forKey: selected.id)
         bundle.profiles.removeAll { $0.id == selected.id }
         bundle.selectedProfileID = bundle.profiles.first?.id
         reloadDraftFromSelectedProfile()
@@ -573,7 +612,13 @@ final class AppModel: ObservableObject {
     func discardUnsavedChangesAndMarkClean() {
         saveWorkItem?.cancel()
         saveWorkItem = nil
-        reloadDraftFromSelectedProfile()
+        if let profile = selectedProfile {
+            let draft = ProfileDraft(profile: profile)
+            draftsByProfileID[profile.id] = draft
+            profileDraft = draft
+        } else {
+            profileDraft = nil
+        }
         persistenceStatus = .clean
         pendingQuitAfterSaveFailure = false
     }
@@ -591,14 +636,26 @@ final class AppModel: ObservableObject {
     private func flushSaveBundle() -> Bool {
         saveWorkItem?.cancel()
         saveWorkItem = nil
+
+        if let profileID = selectedProfile?.id, let draft = profileDraft {
+            draftsByProfileID[profileID] = draft
+        }
+
+        if let reason = ProfileDraft.requiredFlushBlockReason(drafts: Array(draftsByProfileID.values)) {
+            persistenceStatus = .failed(reason)
+            return false
+        }
+
         if let draft = profileDraft, draft.isValid, var profile = selectedProfile {
             if let committed = try? draft.applying(to: profile) {
                 profile = committed
                 if let index = bundle.profiles.firstIndex(where: { $0.id == profile.id }) {
                     bundle.profiles[index] = profile
                 }
+                draftsByProfileID[profile.id] = draft
             }
         }
+
         do {
             try profileStore.save(bundle)
             persistenceStatus = .clean

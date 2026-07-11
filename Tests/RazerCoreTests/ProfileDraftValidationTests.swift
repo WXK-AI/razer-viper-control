@@ -83,4 +83,11 @@ final class ProfileDraftValidationTests: XCTestCase {
         XCTAssertNotEqual(status, .clean)
         XCTAssertNotEqual(status, .dirty)
     }
+
+    func testRequiredFlushBlockedWhileDraftInvalid() {
+        var draft = baseDraft(stages: ["", "1600"])
+        XCTAssertNotNil(ProfileDraft.requiredFlushBlockReason(drafts: [draft]))
+        draft.stageTexts[0] = "800"
+        XCTAssertNil(ProfileDraft.requiredFlushBlockReason(drafts: [draft]))
+    }
 }

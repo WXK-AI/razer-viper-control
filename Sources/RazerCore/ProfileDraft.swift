@@ -121,6 +121,14 @@ public struct ProfileDraft: Equatable, Sendable {
         }
         return nil
     }
+
+    /// Required flush (quit / explicit save) must fail while any draft is invalid.
+    public static func requiredFlushBlockReason(drafts: [ProfileDraft]) -> String? {
+        if drafts.contains(where: { !$0.isValid }) {
+            return "Profile draft has invalid DPI values. Fix them or discard changes before saving."
+        }
+        return nil
+    }
 }
 
 public enum DraftValidationError: Error, Equatable, LocalizedError {

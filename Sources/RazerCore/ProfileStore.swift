@@ -107,7 +107,20 @@ public struct ProfileBundle: Codable, Equatable, Sendable {
 public enum ProfileLoadOutcome: Equatable, Sendable {
     case loaded(ProfileBundle)
     case firstRun(ProfileBundle)
+    /// Corrupt source was moved aside successfully; defaults may be persisted.
     case recovered(ProfileBundle, quarantinedURL: URL, reason: String)
+    /// Quarantine failed; corrupt source must not be overwritten.
+    case corruptPreserved(ProfileBundle, sourceURL: URL, reason: String)
+
+    /// Whether it is safe to write a default bundle to the primary storage URL.
+    public var shouldPersistDefaults: Bool {
+        switch self {
+        case .firstRun, .recovered:
+            return true
+        case .loaded, .corruptPreserved:
+            return false
+        }
+    }
 }
 
 public enum ProfileStoreError: Error, LocalizedError, Equatable {
@@ -160,7 +173,7 @@ public final class ProfileStore {
 
     public func load() -> ProfileBundle {
         switch loadOutcome() {
-        case let .loaded(bundle), let .firstRun(bundle), let .recovered(bundle, _, _):
+        case let .loaded(bundle), let .firstRun(bundle), let .recovered(bundle, _, _), let .corruptPreserved(bundle, _, _):
             return bundle
         }
     }
@@ -255,7 +268,7 @@ public final class ProfileStore {
             return .recovered(defaults, quarantinedURL: quarantineURL, reason: reason)
         } catch {
             let combined = "\(reason); quarantine failed: \(error.localizedDescription)"
-            return .recovered(defaults, quarantinedURL: fileURL, reason: combined)
+            return .corruptPreserved(defaults, sourceURL: fileURL, reason: combined)
         }
     }
 

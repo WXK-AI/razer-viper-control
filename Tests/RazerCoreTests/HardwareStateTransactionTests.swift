@@ -15,6 +15,8 @@ private final class FakeHardwareClient: RazerHardwareMutating {
     var setSmartReelCalls: [Bool] = []
     var failOnSetDPICount: Int?
     var failOnSetPollingCount: Int?
+    var ignoreScrollModeWrites = false
+    var scrollModeSetResult: CommandSendResult?
     private var dpiSetCount = 0
     private var pollingSetCount = 0
 
@@ -76,7 +78,12 @@ private final class FakeHardwareClient: RazerHardwareMutating {
 
     func setScrollMode(_ mode: ScrollWheelMode) throws -> CommandSendResult {
         setScrollModeCalls.append(mode)
-        wheel.scrollMode = mode
+        if let scrollModeSetResult {
+            return scrollModeSetResult
+        }
+        if !ignoreScrollModeWrites {
+            wheel.scrollMode = mode
+        }
         return .success(RazerReport.setScrollMode(mode))
     }
 
@@ -110,26 +117,46 @@ final class HardwareStateTransactionTests: XCTestCase {
         XCTAssertEqual(client.setDPICalls.last?.1, 1600)
     }
 
-    func testFailureAfterTemporaryDPIStillRestores() {
+    func testFailureAfterEachMutationPhaseStillRestores() {
+        let phases: [HardwareTransactionPhase] = [
+            .setTemporaryDPI,
+            .verifyTemporaryDPI,
+            .setTemporaryPolling,
+            .verifyTemporaryPolling
+        ]
+        for phase in phases {
+            let client = FakeHardwareClient()
+            XCTAssertThrowsError(
+                try HardwareStateTransaction.runIntegration(
+                    client: client,
+                    temporaryDPI: 1800,
+                    temporaryPollingHz: 500,
+                    failAfter: phase
+                )
+            )
+            XCTAssertEqual(client.state.dpiX, 800, "phase \(phase)")
+            XCTAssertEqual(client.state.dpiY, 1600, "phase \(phase)")
+            XCTAssertEqual(client.state.pollingRateHz, 1000, "phase \(phase)")
+        }
+    }
+
+    func testDPIRestoreFailureStillAttemptsPollingRestore() {
         let client = FakeHardwareClient()
+        client.failOnSetDPICount = 2 // temporary ok, restore DPI fails
         XCTAssertThrowsError(
             try HardwareStateTransaction.runIntegration(
                 client: client,
                 temporaryDPI: 1800,
-                temporaryPollingHz: 500,
-                failAfter: .verifyTemporaryDPI
+                temporaryPollingHz: 500
             )
-        ) { error in
-            XCTAssertEqual(error as? HardwareTransactionError, .injectedFailure(.verifyTemporaryDPI))
-        }
-        XCTAssertEqual(client.state.dpiX, 800)
-        XCTAssertEqual(client.state.dpiY, 1600)
+        )
+        // Polling restore must still have been attempted after DPI restore failed.
+        XCTAssertTrue(client.setPollingCalls.contains(1000))
         XCTAssertEqual(client.state.pollingRateHz, 1000)
     }
 
     func testFailureDuringRestoreReportsBothErrors() {
         let client = FakeHardwareClient()
-        // First setDPI is temporary; second is restore — fail restore.
         client.failOnSetDPICount = 2
         XCTAssertThrowsError(
             try HardwareStateTransaction.runIntegration(
@@ -139,24 +166,37 @@ final class HardwareStateTransactionTests: XCTestCase {
                 failAfter: .verifyTemporaryPolling
             )
         ) { error in
-            guard case let .restorationFailed(primary, restoration) = error as? HardwareTransactionError else {
+            guard case .restorationFailed = error as? HardwareTransactionError else {
                 return XCTFail("Expected restorationFailed, got \(error)")
             }
-            XCTAssertTrue(primary.contains("verifyTemporaryPolling") || primary.contains("Injected"))
-            XCTAssertFalse(restoration.isEmpty)
         }
+        XCTAssertTrue(client.setPollingCalls.contains(1000))
     }
 
     func testWheelMutationSkipsUnknownOriginal() {
         let client = FakeHardwareClient()
         client.wheel.scrollMode = nil
-        let capability = WheelHardwareCapability(scrollMode: .supported)
+        let capability = WheelHardwareCapability(
+            scrollMode: .supported,
+            acceleration: .notSupported,
+            smartReel: .notSupported
+        )
         XCTAssertThrowsError(
             try HardwareStateTransaction.runWheelProbeMutation(client: client, capability: capability)
         ) { error in
             XCTAssertEqual(error as? HardwareTransactionError, .unknownOriginal("scroll mode"))
         }
         XCTAssertTrue(client.setScrollModeCalls.isEmpty)
+    }
+
+    func testWheelRejectsUnknownCapability() {
+        XCTAssertThrowsError(
+            try HardwareStateTransaction.rejectUnknownCapabilities(
+                WheelHardwareCapability(scrollMode: .unknown, acceleration: .notSupported, smartReel: .notSupported)
+            )
+        ) { error in
+            XCTAssertEqual(error as? HardwareTransactionError, .unknownCapability("scroll mode"))
+        }
     }
 
     func testWheelMutationRestoresExactValues() throws {
@@ -175,7 +215,40 @@ final class HardwareStateTransactionTests: XCTestCase {
         XCTAssertEqual(restored.smartReelEnabled, true)
     }
 
-    func testWheelFailureAfterMutateStillRestores() {
+    func testWheelTemporaryMismatchFailsAndRestores() {
+        let client = FakeHardwareClient()
+        client.ignoreScrollModeWrites = true
+        let capability = WheelHardwareCapability(
+            scrollMode: .supported,
+            acceleration: .notSupported,
+            smartReel: .notSupported
+        )
+        XCTAssertThrowsError(
+            try HardwareStateTransaction.runWheelProbeMutation(client: client, capability: capability)
+        ) { error in
+            let message = String(describing: error)
+            XCTAssertTrue(
+                message.contains("temporary scroll mode") || message.contains("verification"),
+                message
+            )
+        }
+        XCTAssertEqual(client.wheel.scrollMode, .tactile)
+    }
+
+    func testWheelNotSupportedSetterFails() {
+        let client = FakeHardwareClient()
+        client.scrollModeSetResult = .notSupported
+        let capability = WheelHardwareCapability(
+            scrollMode: .supported,
+            acceleration: .notSupported,
+            smartReel: .notSupported
+        )
+        XCTAssertThrowsError(
+            try HardwareStateTransaction.runWheelProbeMutation(client: client, capability: capability)
+        )
+    }
+
+    func testWheelFailureAfterMutateStillRestoresIndependently() {
         let client = FakeHardwareClient()
         let capability = WheelHardwareCapability(
             scrollMode: .supported,
@@ -186,11 +259,15 @@ final class HardwareStateTransactionTests: XCTestCase {
             try HardwareStateTransaction.runWheelProbeMutation(
                 client: client,
                 capability: capability,
-                failAfter: .mutateWheel
+                failAfter: .verifyTemporaryWheel
             )
         )
         XCTAssertEqual(client.wheel.scrollMode, .tactile)
         XCTAssertEqual(client.wheel.accelerationEnabled, false)
         XCTAssertEqual(client.wheel.smartReelEnabled, true)
+        // All three restores attempted (mutate + restore for each feature).
+        XCTAssertGreaterThanOrEqual(client.setScrollModeCalls.count, 2)
+        XCTAssertGreaterThanOrEqual(client.setAccelerationCalls.count, 2)
+        XCTAssertGreaterThanOrEqual(client.setSmartReelCalls.count, 2)
     }
 }

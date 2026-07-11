@@ -146,6 +146,8 @@ struct RazerProbeCLI {
             print(report.summary)
 
             let capability = report.capability
+            try HardwareStateTransaction.rejectUnknownCapabilities(capability)
+
             guard capability.scrollMode == .supported ||
                     capability.acceleration == .supported ||
                     capability.smartReel == .supported else {

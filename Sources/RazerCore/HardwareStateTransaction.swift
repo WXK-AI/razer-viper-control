@@ -13,7 +13,7 @@ public protocol RazerHardwareMutating: AnyObject {
 
 extension RazerCommandClient: RazerHardwareMutating {}
 
-public enum HardwareTransactionPhase: String, Equatable, Sendable {
+public enum HardwareTransactionPhase: String, Equatable, Sendable, CaseIterable {
     case captureOriginal
     case setTemporaryDPI
     case verifyTemporaryDPI
@@ -24,12 +24,14 @@ public enum HardwareTransactionPhase: String, Equatable, Sendable {
     case verifyRestored
     case captureWheelOriginal
     case mutateWheel
+    case verifyTemporaryWheel
     case restoreWheel
     case verifyWheelRestored
 }
 
 public enum HardwareTransactionError: Error, Equatable, LocalizedError {
     case unknownOriginal(String)
+    case unknownCapability(String)
     case verificationFailed(String)
     case restorationFailed(primary: String, restoration: String)
     case injectedFailure(HardwareTransactionPhase)
@@ -38,6 +40,8 @@ public enum HardwareTransactionError: Error, Equatable, LocalizedError {
         switch self {
         case let .unknownOriginal(feature):
             return "Cannot mutate \(feature) because the original value is unknown."
+        case let .unknownCapability(feature):
+            return "Cannot mutate \(feature) because capability probe returned unknown."
         case let .verificationFailed(details):
             return "Hardware verification failed: \(details)"
         case let .restorationFailed(primary, restoration):
@@ -83,8 +87,7 @@ public enum HardwareStateTransaction {
         }
     }
 
-    /// Runs a temporary DPI/polling mutation with guaranteed restoration.
-    /// `failAfter` injects a failure after the named phase completes (for tests).
+    /// Runs a temporary DPI/polling mutation with guaranteed independent restoration.
     public static func runIntegration(
         client: RazerHardwareMutating,
         temporaryDPI: Int,
@@ -131,19 +134,37 @@ public enum HardwareStateTransaction {
             primaryError = error
         }
 
-        let restored: HardwareStateSnapshot
+        var restorationErrors: [String] = []
+
         do {
             try client.setDPI(x: original.dpiX, y: original.dpiY)
             try maybeFail(after: .restoreDPI, failAfter)
+        } catch {
+            restorationErrors.append("DPI restore: \(error.localizedDescription)")
+        }
+
+        do {
             try client.setPollingRate(hz: original.pollingRateHz)
             try maybeFail(after: .restorePolling, failAfter)
+        } catch {
+            restorationErrors.append("polling restore: \(error.localizedDescription)")
+        }
 
-            let restoredState = try client.readState()
-            restored = HardwareStateSnapshot(
-                dpiX: restoredState.dpiX,
-                dpiY: restoredState.dpiY,
-                pollingRateHz: restoredState.pollingRateHz
-            )
+        let restoredState: DeviceState
+        do {
+            restoredState = try client.readState()
+        } catch {
+            restorationErrors.append("restored readback: \(error.localizedDescription)")
+            throw finalizeErrors(primary: primaryError, restoration: restorationErrors)
+        }
+
+        let restored = HardwareStateSnapshot(
+            dpiX: restoredState.dpiX,
+            dpiY: restoredState.dpiY,
+            pollingRateHz: restoredState.pollingRateHz
+        )
+
+        do {
             guard restored.dpiX == original.dpiX,
                   restored.dpiY == original.dpiY,
                   restored.pollingRateHz == original.pollingRateHz else {
@@ -153,17 +174,11 @@ public enum HardwareStateTransaction {
             }
             try maybeFail(after: .verifyRestored, failAfter)
         } catch {
-            if let primaryError {
-                throw HardwareTransactionError.restorationFailed(
-                    primary: primaryError.localizedDescription,
-                    restoration: error.localizedDescription
-                )
-            }
-            throw error
+            restorationErrors.append(error.localizedDescription)
         }
 
-        if let primaryError {
-            throw primaryError
+        if !restorationErrors.isEmpty || primaryError != nil {
+            throw finalizeErrors(primary: primaryError, restoration: restorationErrors)
         }
 
         return IntegrationResult(
@@ -174,12 +189,14 @@ public enum HardwareStateTransaction {
         )
     }
 
-    /// Mutates supported wheel features and restores exact originals. Skips any feature whose original is unknown.
+    /// Mutates supported wheel features, verifies temporary values, and restores originals independently.
     public static func runWheelProbeMutation(
         client: RazerHardwareMutating,
         capability: WheelHardwareCapability,
         failAfter: HardwareTransactionPhase? = nil
     ) throws -> HardwareWheelSettings {
+        try rejectUnknownCapabilities(capability)
+
         let originalReadback = client.readWheelHardwareState(capability: capability)
         try maybeFail(after: .captureWheelOriginal, failAfter)
         let original = originalReadback.settings
@@ -194,37 +211,106 @@ public enum HardwareStateTransaction {
             throw HardwareTransactionError.unknownOriginal("smart reel")
         }
 
+        var expectedTemporary = original
         var primaryError: Error?
         do {
             if capability.scrollMode == .supported, let mode = original.scrollMode {
                 let alternate: ScrollWheelMode = mode == .tactile ? .freeSpin : .tactile
-                _ = try client.setScrollMode(alternate)
+                switch try client.setScrollMode(alternate) {
+                case .success:
+                    expectedTemporary.scrollMode = alternate
+                case .notSupported:
+                    throw HardwareTransactionError.verificationFailed("set scroll mode returned notSupported")
+                }
             }
             if capability.acceleration == .supported, let enabled = original.accelerationEnabled {
-                _ = try client.setScrollAcceleration(!enabled)
+                let target = !enabled
+                switch try client.setScrollAcceleration(target) {
+                case .success:
+                    expectedTemporary.accelerationEnabled = target
+                case .notSupported:
+                    throw HardwareTransactionError.verificationFailed("set acceleration returned notSupported")
+                }
             }
             if capability.smartReel == .supported, let enabled = original.smartReelEnabled {
-                _ = try client.setScrollSmartReel(!enabled)
+                let target = !enabled
+                switch try client.setScrollSmartReel(target) {
+                case .success:
+                    expectedTemporary.smartReelEnabled = target
+                case .notSupported:
+                    throw HardwareTransactionError.verificationFailed("set smart reel returned notSupported")
+                }
             }
             try maybeFail(after: .mutateWheel, failAfter)
+
+            let temporary = client.readWheelHardwareState(capability: capability).settings
+            if capability.scrollMode == .supported {
+                guard temporary.scrollMode == expectedTemporary.scrollMode else {
+                    throw HardwareTransactionError.verificationFailed("temporary scroll mode mismatch")
+                }
+            }
+            if capability.acceleration == .supported {
+                guard temporary.accelerationEnabled == expectedTemporary.accelerationEnabled else {
+                    throw HardwareTransactionError.verificationFailed("temporary acceleration mismatch")
+                }
+            }
+            if capability.smartReel == .supported {
+                guard temporary.smartReelEnabled == expectedTemporary.smartReelEnabled else {
+                    throw HardwareTransactionError.verificationFailed("temporary smart reel mismatch")
+                }
+            }
+            try maybeFail(after: .verifyTemporaryWheel, failAfter)
         } catch {
             primaryError = error
         }
 
-        let restored: HardwareWheelSettings
-        do {
-            if let mode = original.scrollMode {
-                _ = try client.setScrollMode(mode)
-            }
-            if let enabled = original.accelerationEnabled {
-                _ = try client.setScrollAcceleration(enabled)
-            }
-            if let enabled = original.smartReelEnabled {
-                _ = try client.setScrollSmartReel(enabled)
-            }
-            try maybeFail(after: .restoreWheel, failAfter)
+        var restorationErrors: [String] = []
 
-            restored = client.readWheelHardwareState(capability: capability).settings
+        if let mode = original.scrollMode {
+            do {
+                switch try client.setScrollMode(mode) {
+                case .success:
+                    break
+                case .notSupported:
+                    throw HardwareTransactionError.verificationFailed("restore scroll mode returned notSupported")
+                }
+            } catch {
+                restorationErrors.append("scroll mode restore: \(error.localizedDescription)")
+            }
+        }
+        if let enabled = original.accelerationEnabled {
+            do {
+                switch try client.setScrollAcceleration(enabled) {
+                case .success:
+                    break
+                case .notSupported:
+                    throw HardwareTransactionError.verificationFailed("restore acceleration returned notSupported")
+                }
+            } catch {
+                restorationErrors.append("acceleration restore: \(error.localizedDescription)")
+            }
+        }
+        if let enabled = original.smartReelEnabled {
+            do {
+                switch try client.setScrollSmartReel(enabled) {
+                case .success:
+                    break
+                case .notSupported:
+                    throw HardwareTransactionError.verificationFailed("restore smart reel returned notSupported")
+                }
+            } catch {
+                restorationErrors.append("smart reel restore: \(error.localizedDescription)")
+            }
+        }
+
+        do {
+            try maybeFail(after: .restoreWheel, failAfter)
+        } catch {
+            restorationErrors.append(error.localizedDescription)
+        }
+
+        let restored = client.readWheelHardwareState(capability: capability).settings
+        do {
             if capability.scrollMode == .supported {
                 guard restored.scrollMode == original.scrollMode else {
                     throw HardwareTransactionError.verificationFailed("scroll mode not restored")
@@ -242,19 +328,39 @@ public enum HardwareStateTransaction {
             }
             try maybeFail(after: .verifyWheelRestored, failAfter)
         } catch {
-            if let primaryError {
-                throw HardwareTransactionError.restorationFailed(
-                    primary: primaryError.localizedDescription,
-                    restoration: error.localizedDescription
-                )
-            }
-            throw error
+            restorationErrors.append(error.localizedDescription)
         }
 
-        if let primaryError {
-            throw primaryError
+        if !restorationErrors.isEmpty || primaryError != nil {
+            throw finalizeErrors(primary: primaryError, restoration: restorationErrors)
         }
         return restored
+    }
+
+    public static func rejectUnknownCapabilities(_ capability: WheelHardwareCapability) throws {
+        if capability.scrollMode == .unknown {
+            throw HardwareTransactionError.unknownCapability("scroll mode")
+        }
+        if capability.acceleration == .unknown {
+            throw HardwareTransactionError.unknownCapability("scroll acceleration")
+        }
+        if capability.smartReel == .unknown {
+            throw HardwareTransactionError.unknownCapability("smart reel")
+        }
+    }
+
+    private static func finalizeErrors(primary: Error?, restoration: [String]) -> Error {
+        if restoration.isEmpty, let primary {
+            return primary
+        }
+        let restorationMessage = restoration.isEmpty ? "none" : restoration.joined(separator: "; ")
+        if let primary {
+            return HardwareTransactionError.restorationFailed(
+                primary: primary.localizedDescription,
+                restoration: restorationMessage
+            )
+        }
+        return HardwareTransactionError.verificationFailed(restorationMessage)
     }
 
     private static func maybeFail(after phase: HardwareTransactionPhase, _ failAfter: HardwareTransactionPhase?) throws {
