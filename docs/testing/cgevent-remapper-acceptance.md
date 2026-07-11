@@ -1,7 +1,9 @@
 # CGEvent Remapper — Manual Acceptance
 
-**Status:** automated regression verified in-repo; physical matrix for operator fill-in.  
-**Scope:** session-wide software remapping via `CGEvent` (not Razer-only).  
+**Status:** automated regression verified in-repo; physical matrix **not yet run** — operator fill-in and sign-off still required before closing the continuation plan.
+
+**Scope:** session-wide software remapping via `CGEvent` (not Razer-only).
+
 **Not in scope:** DriverKit exclusive ownership — see [`driverkit-spike.md`](driverkit-spike.md) and [GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2).
 
 Use this checklist before treating a remapper change as release-ready. Automated tests cover engine state, recovery, scroll precision, and diagnostics coalescing; they do **not** replace physical pointer verification.
@@ -27,14 +29,14 @@ git diff --check
 git status --short
 ```
 
-Record (filled for the Task 7 verification pass on 2026-07-12, git `2d30b4b` + this doc commit):
+Record (automated portion, 2026-07-12; re-run `git diff --check` after any doc edit):
 
 | Check | Result | Notes |
 |-------|--------|-------|
 | `swift test --disable-sandbox` | Pass | 158/158 |
 | `xcodebuild` Debug `RazerMenuBarApp` | Pass | `-derivedDataPath build/ReviewDerivedData`; also `make xcode` Debug build |
-| `git diff --check` | Pass | Clean |
-| Worktree clean of unrelated/generated noise | Pass | Only acceptance docs staged; `*.xcodeproj` / `build/` ignored |
+| `git diff --check` | Pass | Must stay clean on the committed tree (no trailing whitespace) |
+| Worktree clean of unrelated/generated noise | Pass | Acceptance docs only; `*.xcodeproj` / `build/` ignored |
 
 ## Manual matrix
 
@@ -53,7 +55,7 @@ Fill **Pass / Fail / Skip** and a short note. Failures that leave a button held,
 | A7 | Wheel click | Wheel click → middle or remap | Middle/alias behavior matches mapping; no duplicate click storm | | |
 | A8 | Disabled control | Map a button to disabled/consume | No OS click; no stuck synthetic output | | |
 | A9 | One-shot on down | Button → shortcut / next DPI / next profile | Fires once on down; not on up; no held synthetic key/button | | |
-| A10 | Profile change while held | Hold remapped button, switch profile | Up still follows down-time disposition; no orphan held output | | |
+| A10 | Profile change while held | Hold remapped mouse button, switch profile (mappings change) | Remapper releases held synthetic outputs immediately (`.profileReplacement`); no orphan held button; later presses use the new profile | | |
 
 ### B. Wheel
 
@@ -126,3 +128,5 @@ Manual blockers (if any):
 | Operator | | | Accept / Accept with notes / Reject |
 
 Reject if any of A2–A5, A10, B4–B5, C1, C3, or E4 fail, or if session-wide scope is undocumented in the UI (D3).
+
+The continuation plan stays **pending** until this sign-off row is filled after a physical run.
