@@ -7,9 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "New release tag (e.g. v1.0.3). Published tags are immutable — an existing tag is allowed only when it already points at this workflow commit."
+        description: "New release tag matching MARKETING_VERSION (e.g. v1.0.2). Published tags are immutable unless they already point at this workflow commit."
         required: true
-        default: "v1.0.3"
+        # No default: forces an intentional tag that matches project.yml MARKETING_VERSION.
+
 
 permissions:
   contents: write
