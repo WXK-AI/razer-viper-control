@@ -6,6 +6,7 @@ enum DriverActivationState: String, Equatable {
     case unknown
     case submitting
     case needsUserApproval
+    case pendingReboot
     case activating
     case activated
     case deactivating
@@ -17,6 +18,7 @@ enum DriverActivationState: String, Equatable {
         case .unknown: return "Unknown"
         case .submitting: return "Submitting"
         case .needsUserApproval: return "Needs approval in System Settings"
+        case .pendingReboot: return "Pending reboot"
         case .activating: return "Activating"
         case .activated: return "Activated"
         case .deactivating: return "Deactivating"
@@ -51,6 +53,8 @@ final class SystemExtensionManager: NSObject, ObservableObject {
             statusMessage = "Driver extension is activated. Physical ownership proofs are still required before remapping."
         case .needsUserApproval:
             statusMessage = "Approve the system extension in System Settings → Privacy & Security, then retry."
+        case .pendingReboot:
+            statusMessage = "System extension change will complete after reboot."
         case .failed:
             statusMessage = lastErrorDescription ?? "Driver activation failed."
         case .deactivated:
@@ -121,9 +125,8 @@ extension SystemExtensionManager: OSSystemExtensionRequestDelegate {
                     self.state = .activated
                 }
             case .willCompleteAfterReboot:
-                self.state = .needsUserApproval
-                self.statusMessage = "System extension change will complete after reboot."
-                self.onStateChange?()
+                self.state = .pendingReboot
+                self.publishChange()
                 return
             @unknown default:
                 self.state = .failed

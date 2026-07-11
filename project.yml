@@ -4,6 +4,11 @@ options:
   projectFormat: xcode15
   deploymentTarget:
     macOS: "13.0"
+configs:
+  Debug: debug
+  Release: release
+  # Signed DriverKit spike: no ad-hoc identity; requires DEVELOPMENT_TEAM + profiles.
+  Spike: debug
 packages:
   RazerCore:
     path: .
@@ -16,21 +21,33 @@ targets:
         excludes:
           - Info.plist
           - RazerHIDDriver.entitlements
+    dependencies:
+      - sdk: DriverKit.framework
+      - sdk: HIDDriverKit.framework
     settings:
-      PRODUCT_NAME: RazerViperHIDDriver
-      PRODUCT_BUNDLE_IDENTIFIER: com.razermenubar.RazerViperHIDDriver
-      INFOPLIST_FILE: RazerHIDDriver/Info.plist
-      # Entitlement file is ready at RazerHIDDriver/RazerHIDDriver.entitlements.
-      # Wire CODE_SIGN_ENTITLEMENTS + development team once Apple profiles exist.
-      MARKETING_VERSION: "1.0.2"
-      CURRENT_PROJECT_VERSION: "3"
-      CLANG_CXX_LANGUAGE_STANDARD: "c++17"
-      DRIVERKIT_DEPLOYMENT_TARGET: "22.0"
-      SDKROOT: driverkit
-      SUPPORTED_PLATFORMS: driverkit
-      SUPPORTS_MACCATALYST: NO
-      # Set DEVELOPMENT_TEAM + CODE_SIGN_ENTITLEMENTS when DriverKit profiles exist.
-      CODE_SIGN_STYLE: Automatic
+      base:
+        PRODUCT_NAME: RazerViperHIDDriver
+        PRODUCT_BUNDLE_IDENTIFIER: com.razermenubar.RazerViperHIDDriver
+        INFOPLIST_FILE: RazerHIDDriver/Info.plist
+        MARKETING_VERSION: "1.0.2"
+        CURRENT_PROJECT_VERSION: "3"
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        DRIVERKIT_DEPLOYMENT_TARGET: "22.0"
+        SDKROOT: driverkit
+        SUPPORTED_PLATFORMS: driverkit
+        SUPPORTS_MACCATALYST: NO
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Automatic
+        Release:
+          CODE_SIGN_STYLE: Automatic
+        Spike:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_ENTITLEMENTS: RazerHIDDriver/RazerHIDDriver.entitlements
+          # Explicitly clear ad-hoc overrides; team must be set in Xcode or DEVELOPMENT_TEAM.
+          CODE_SIGN_IDENTITY: ""
+          CODE_SIGNING_REQUIRED: YES
+          CODE_SIGNING_ALLOWED: YES
   RazerMenuBarApp:
     type: application
     platform: macOS
@@ -41,27 +58,40 @@ targets:
     dependencies:
       - package: RazerCore
         product: RazerCore
-      # Embed when a DriverKit development profile exists for
-      # com.razermenubar.RazerViperHIDDriver (see docs/testing/driverkit-spike.md):
+      # For Spike physical testing, uncomment the embed dependency below, set
+      # DEVELOPMENT_TEAM, regenerate, then build the RazerMenuBarAppSpike scheme
+      # (-configuration Spike). Do not leave CODE_SIGN_IDENTITY="-" in Spike.
       # - target: RazerViperHIDDriver
       #   embed: true
       #   codeSign: true
     settings:
-      PRODUCT_NAME: RazerMenuBarApp
-      PRODUCT_BUNDLE_IDENTIFIER: com.razermenubar.RazerMenuBarApp
-      GENERATE_INFOPLIST_FILE: YES
-      INFOPLIST_KEY_CFBundleDisplayName: Razer Viper Control
-      INFOPLIST_KEY_LSUIElement: YES
-      INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026"
-      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-      SWIFT_VERSION: "5.9"
-      MACOSX_DEPLOYMENT_TARGET: "13.0"
-      LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
-      ENABLE_DEBUG_DYLIB: NO
-      MARKETING_VERSION: "1.0.2"
-      CURRENT_PROJECT_VERSION: "3"
-      CODE_SIGN_IDENTITY: "-"
-      CODE_SIGNING_REQUIRED: NO
+      base:
+        PRODUCT_NAME: RazerMenuBarApp
+        PRODUCT_BUNDLE_IDENTIFIER: com.razermenubar.RazerMenuBarApp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Razer Viper Control
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        ENABLE_DEBUG_DYLIB: NO
+        MARKETING_VERSION: "1.0.2"
+        CURRENT_PROJECT_VERSION: "3"
+      configs:
+        Debug:
+          CODE_SIGN_IDENTITY: "-"
+          CODE_SIGNING_REQUIRED: NO
+        Release:
+          CODE_SIGN_IDENTITY: "-"
+          CODE_SIGNING_REQUIRED: NO
+        Spike:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_ENTITLEMENTS: RazerMenuBarApp/RazerMenuBarApp.entitlements
+          CODE_SIGN_IDENTITY: ""
+          CODE_SIGNING_REQUIRED: YES
+          CODE_SIGNING_ALLOWED: YES
 schemes:
   RazerMenuBarApp:
     build:
@@ -73,3 +103,11 @@ schemes:
     build:
       targets:
         RazerViperHIDDriver: all
+  RazerMenuBarAppSpike:
+    build:
+      targets:
+        RazerMenuBarApp: all
+        RazerViperHIDDriver: all
+      config: Spike
+    run:
+      config: Spike

@@ -4,6 +4,8 @@
 
 #include <HIDDriverKit/IOUserHIDEventService.iig>
 
+/// Pure passthrough spike: inherit report handling from IOUserHIDEventService.
+/// Do not override handleReport/handleStop until remapping or logging is required.
 class RazerHIDDriver: public IOUserHIDEventService
 {
 public:
@@ -16,16 +18,6 @@ public:
     virtual kern_return_t Stop(IOService * provider) override;
 
     virtual bool handleStart(IOService * provider) override;
-
-    virtual void handleStop(IOService * provider) override;
-
-    virtual kern_return_t handleReport(
-        uint64_t timestamp,
-        uint8_t * report,
-        uint32_t reportLength,
-        IOHIDReportType reportType,
-        uint32_t reportID
-    ) override;
 };
 
 #endif /* RazerHIDDriver_h */

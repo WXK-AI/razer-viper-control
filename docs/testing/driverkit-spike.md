@@ -12,22 +12,26 @@ Prove a HID DriverKit system extension can be the sole owner of the Viper V3 Hyp
 | Piece | Location |
 |-------|----------|
 | Driver target | `RazerHIDDriver/` + `project.yml` `RazerViperHIDDriver` |
-| Matching | `VendorID=0x1532` (5426), `ProductID=0x00B8` (184), mouse `PrimaryUsagePage=1` / `PrimaryUsage=2` |
-| Passthrough | `RazerHIDDriver::handleReport` → `super::handleReport` |
+| Matching | `VendorID=0x1532` (5426), `ProductID=0x00B8` (184), mouse usage 1/2; `IOUserServerName` = bundle ID |
+| Passthrough | Inherited `IOUserHIDEventService` report handling (no `handleReport` override) |
 | Host activation | `RazerMenuBarApp/SystemExtensionManager.swift` |
-| Entitlements | Candidate keys in host + driver plists; see `docs/driverkit-entitlements.md` |
+| Entitlements | Minimum spike set only (event service + system-extension.install) |
+| Signed config | `Spike` configuration + `RazerMenuBarAppSpike` scheme |
 
 ## Prerequisites
 
 1. Apple DriverKit entitlement group approved **or** DriverKit developer mode enabled for local spike only.
-2. Host + driver App IDs / profiles selectable in Xcode.
-3. Wire `CODE_SIGN_ENTITLEMENTS` in Xcode to:
-   - `RazerMenuBarApp/RazerMenuBarApp.entitlements`
-   - `RazerHIDDriver/RazerHIDDriver.entitlements`  
-   (candidate keys; see `docs/driverkit-entitlements.md`).
-4. Uncomment the `RazerViperHIDDriver` embed dependency in `project.yml`, set `DEVELOPMENT_TEAM`, regenerate with `bash scripts/generate-xcodeproj.sh`, and confirm a DriverKit App Development profile exists for `com.razermenubar.RazerViperHIDDriver`.
-5. Physical Razer Viper V3 HyperSpeed (`1532:00B8`) plus a trackpad and a second USB/Bluetooth mouse.
-6. Build/run a development- or Developer ID–signed app that embeds the dext (ad-hoc cannot activate for end users).
+2. Host + driver App IDs / profiles selectable in Xcode (`com.razermenubar.RazerMenuBarApp`, `com.razermenubar.RazerViperHIDDriver`).
+3. For a **signed spike build** (required for activation):
+   1. Set `DEVELOPMENT_TEAM` in Xcode or the environment.
+   2. In `project.yml`, uncomment the `RazerViperHIDDriver` embed dependency under `RazerMenuBarApp`.
+   3. Regenerate: `bash scripts/generate-xcodeproj.sh`
+   4. Build **`RazerMenuBarAppSpike`** (`-configuration Spike`).  
+      That configuration **clears** `CODE_SIGN_IDENTITY: "-"` / `CODE_SIGNING_REQUIRED: NO` and wires:
+      - `RazerMenuBarApp/RazerMenuBarApp.entitlements`
+      - `RazerHIDDriver/RazerHIDDriver.entitlements`
+   5. Do **not** use the Debug/Release ad-hoc settings for activation testing.
+4. Physical Razer Viper V3 HyperSpeed (`1532:00B8`) plus a trackpad and a second USB/Bluetooth mouse.
 
 ## Acceptance matrix
 
@@ -72,8 +76,8 @@ If any row fails: **stop**, revise matching/architecture, and do **not** restore
 
 ## Operator steps
 
-1. `make xcode` and run `RazerMenuBarApp` signed for system-extension development.
-2. Diagnostics → **DriverKit spike** → Activate Driver.
-3. Approve the extension in System Settings if prompted.
+1. Complete the signed-spike prerequisites above.
+2. Run `RazerMenuBarAppSpike`, open Diagnostics → **DriverKit spike** → Activate Driver.
+3. If state is **Needs approval**, use System Settings → Privacy & Security. If state is **Pending reboot**, reboot — do not treat reboot-required as approval-required.
 4. Exercise the acceptance matrix; paste evidence into this file.
 5. Only after all rows are PASS, commit an update marking status **PASS** and proceed to Task 9.

@@ -15,37 +15,33 @@ Team ID and signing identity are supplied at build time via CI secrets / local K
 
 ## Required Entitlements
 
-### Driver extension (`RazerViperHIDDriver`)
+### Driver extension (`RazerViperHIDDriver`) — minimum spike set
 
-Request an entitlement group containing at least:
+Request (and ship for the ownership spike) only:
 
 | Entitlement (candidate) | Purpose | Official docs |
 |-------------------------|---------|---------------|
 | `com.apple.developer.driverkit` | DriverKit base | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.driverkit) |
 | `com.apple.developer.driverkit.transport.hid` | HID transport matching | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.driverkit.transport.hid) |
 | `com.apple.developer.driverkit.family.hid.eventservice` | HID event service | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.driverkit.family.hid.eventservice) |
-| `com.apple.developer.driverkit.family.hid.device` | HID device family service | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.driverkit.family.hid.device) |
-| `com.apple.developer.hid.virtual.device` | Virtual HID device output (candidate virtual-HID key) | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.hid.virtual.device) |
+
+### Deferred until implemented
+
+Do **not** request or embed these until the corresponding code exists (Apple aborts activation on entitlement/implementation mismatch):
+
+| Entitlement (candidate) | Add when |
+|-------------------------|----------|
+| `com.apple.developer.driverkit.family.hid.device` | HID device family service is implemented |
+| `com.apple.developer.hid.virtual.device` | Virtual HID output is implemented |
+| `com.apple.developer.driverkit.userclient-access` (host) | Driver exposes an `IOUserClient` |
 
 Request guidance: [Requesting Entitlements for DriverKit Development](https://developer.apple.com/documentation/driverkit/requesting-entitlements-for-driverkit-development).
 
-Which of `family.hid.device` vs `hid.virtual.device` (or both) land in the approved group depends on the final event-service design and Apple’s response. Record the approved set here after approval.
-
-### Host app (`RazerMenuBarApp`)
+### Host app (`RazerMenuBarApp`) — minimum spike set
 
 | Entitlement (candidate) | Purpose | Official docs |
 |-------------------------|---------|---------------|
 | `com.apple.developer.system-extension.install` | Activate / deactivate the embedded DriverKit extension | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.system-extension.install) |
-| `com.apple.developer.driverkit.userclient-access` | Restricted user-client access; value = array containing `com.razermenubar.RazerViperHIDDriver` | [docs](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.driverkit.userclient-access) |
-
-Example host entitlement value (candidate, unconfirmed):
-
-```xml
-<key>com.apple.developer.driverkit.userclient-access</key>
-<array>
-  <string>com.razermenubar.RazerViperHIDDriver</string>
-</array>
-```
 
 ## App IDs And Profiles
 
@@ -71,7 +67,7 @@ Renewal dates: fill in after profiles are issued (typically one year from creati
 | Developer ID Application certificate | Pending verification | Required for notarized DMG |
 | DriverKit entitlement group request | **Not submitted** | Submit via Apple Developer → Certificates, Identifiers & Profiles; keys above are candidates only |
 | System extension install entitlement on host App ID | **Not enabled** | Enable after App ID exists |
-| `userclient-access` for driver bundle ID | **Not enabled** | Candidate key listed above |
+| `userclient-access` for driver bundle ID | **Deferred** | Add only when an IOUserClient exists |
 | Development provisioning profiles selectable in Xcode | **Blocked** | Depends on entitlement approval |
 | Distribution / notarization CI secrets | **Not configured** | Certificate, keychain password, profiles, Apple ID / app-specific password / Team ID |
 
@@ -82,7 +78,7 @@ Until the DriverKit entitlement group is approved, local work may use DriverKit 
 1. Confirm Team ID and Developer ID Application certificate in Keychain.
 2. Register App IDs for host and driver if missing.
 3. Request the DriverKit entitlement group listed above for the driver App ID (candidate keys; Apple may rename or subset).
-4. Enable `com.apple.developer.system-extension.install` and `com.apple.developer.driverkit.userclient-access` on the host App ID.
+4. Enable `com.apple.developer.system-extension.install` on the host App ID. Add `userclient-access` only when the driver exposes an IOUserClient.
 5. Create development and Developer ID profiles; install locally and confirm Xcode can select them.
 6. Update the Approval Status table with request date, approval date, **exact approved entitlement keys**, profile names, and renewal dates.
 7. Configure GitHub Actions encrypted secrets for release signing and notarization (Task 16).

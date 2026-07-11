@@ -2,12 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Candidate host keys — unconfirmed until Apple approval. See docs/driverkit-entitlements.md -->
+	<!-- Minimum spike set: activation only. Add userclient-access when an IOUserClient exists. -->
 	<key>com.apple.developer.system-extension.install</key>
 	<true/>
-	<key>com.apple.developer.driverkit.userclient-access</key>
-	<array>
-		<string>com.razermenubar.RazerViperHIDDriver</string>
-	</array>
 </dict>
 </plist>
