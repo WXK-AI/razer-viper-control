@@ -118,4 +118,36 @@ final class HardwareApplyPolicyTests: XCTestCase {
             XCTAssertFalse(gate.isCurrent(token))
         }
     }
+
+    func testHardwareChangesPendingWhenLastAppliedDiffers() {
+        let profile = baseProfile()
+        let applied = HardwareProfileSettings(profile: profile)
+        var edited = profile
+        edited.pollingRateHz = 500
+        XCTAssertTrue(
+            HardwarePendingDetector.hasPendingChanges(profile: edited, lastApplied: applied)
+        )
+    }
+
+    func testHardwareChangesNotPendingWhenEqualToLastApplied() {
+        let profile = baseProfile()
+        let applied = HardwareProfileSettings(profile: profile)
+        XCTAssertFalse(
+            HardwarePendingDetector.hasPendingChanges(profile: profile, lastApplied: applied)
+        )
+    }
+
+    func testHardwareChangesNotPendingWithoutProfileOrBaseline() {
+        XCTAssertFalse(HardwarePendingDetector.hasPendingChanges(profile: nil, lastApplied: nil))
+        XCTAssertFalse(
+            HardwarePendingDetector.hasPendingChanges(profile: baseProfile(), lastApplied: nil)
+        )
+    }
+
+    func testHardwareApplyReasonsAreDistinct() {
+        let reasons: [HardwareApplyReason] = [
+            .explicitApply, .profileSelection, .dpiCycle, .reconnect
+        ]
+        XCTAssertEqual(Set(reasons.map(\.rawValue)).count, 4)
+    }
 }

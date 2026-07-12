@@ -196,11 +196,16 @@ private struct ProfileTab: View {
                 }
 
                 HStack {
-                    Button("Apply Now") { model.applySelectedProfile() }
+                    Button("Apply Now") { model.applySelectedProfile(reason: .explicitApply) }
                         .keyboardShortcut(.defaultAction)
                         .disabled(!(model.profileDraft?.isValid ?? false))
                     Button("Refresh") { model.refreshDeviceState() }
                     Button("Reset Controls") { model.resetSelectedProfileControls() }
+                }
+                if model.hardwareChangesPending {
+                    Text("Hardware changes pending")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
         }

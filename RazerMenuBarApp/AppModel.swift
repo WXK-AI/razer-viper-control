@@ -52,11 +52,20 @@ final class AppModel: ObservableObject {
         )
     }
 
+    var hardwareChangesPending: Bool {
+        HardwarePendingDetector.hasPendingChanges(
+            profile: selectedProfile,
+            lastApplied: lastAppliedHardwareSettings
+        )
+    }
+
     private let session = DeviceSession()
     private let profileStore = ProfileStore()
     private let remapper = InputRemapper()
     private let systemExtensionManager = SystemExtensionManager()
     private let hidQueue = DispatchQueue(label: "com.razermenubar.hid", qos: .utility)
+    private let hardwareApplyGate = LatestHardwareApplyGate()
+    private var lastAppliedHardwareSettings: HardwareProfileSettings?
     /// Event-tap-safe diagnostic bridge; avoids per-event MainActor `Task` hops.
     private let remapDiagnosticSink = InputCaptureDiagnosticSink()
     private var monitorTimer: Timer?
@@ -243,6 +252,7 @@ final class AppModel: ObservableObject {
         let selectedProfile = selectedProfile
         let shouldAutoApply = selectedProfile?.autoReapplyEnabled ?? false
         let autoApplySnapshot = autoApplyState
+        let applyGate = hardwareApplyGate
 
         hidQueue.async { [weak self] in
             guard let self else { return }
@@ -251,7 +261,8 @@ final class AppModel: ObservableObject {
                 wasConnectedBefore: wasConnectedBefore,
                 selectedProfile: selectedProfile,
                 shouldAutoApply: shouldAutoApply,
-                autoApplySnapshot: autoApplySnapshot
+                autoApplySnapshot: autoApplySnapshot,
+                applyGate: applyGate
             )
 
             Task { @MainActor in
@@ -267,7 +278,8 @@ final class AppModel: ObservableObject {
         wasConnectedBefore: Bool,
         selectedProfile: MouseProfile?,
         shouldAutoApply: Bool,
-        autoApplySnapshot: AutoApplyCoordinator.State
+        autoApplySnapshot: AutoApplyCoordinator.State,
+        applyGate: LatestHardwareApplyGate
     ) -> DeviceRefreshSnapshot {
         do {
             return try readRefreshSnapshot(
@@ -275,7 +287,8 @@ final class AppModel: ObservableObject {
                 selectedProfile: selectedProfile,
                 shouldAutoApply: shouldAutoApply,
                 autoApplySnapshot: autoApplySnapshot,
-                forceReconnect: false
+                forceReconnect: false,
+                applyGate: applyGate
             )
         } catch let error as RazerCommandError {
             if error.shouldInvalidateSession {
@@ -286,7 +299,8 @@ final class AppModel: ObservableObject {
                         selectedProfile: selectedProfile,
                         shouldAutoApply: shouldAutoApply,
                         autoApplySnapshot: autoApplySnapshot,
-                        forceReconnect: true
+                        forceReconnect: true,
+                        applyGate: applyGate
                     )
                 } catch let retryError as RazerCommandError {
                     session.disconnect()
@@ -341,7 +355,8 @@ final class AppModel: ObservableObject {
         selectedProfile: MouseProfile?,
         shouldAutoApply: Bool,
         autoApplySnapshot: AutoApplyCoordinator.State,
-        forceReconnect: Bool
+        forceReconnect: Bool,
+        applyGate: LatestHardwareApplyGate
     ) throws -> DeviceRefreshSnapshot {
         let client = forceReconnect ? try session.reconnect() : try session.connect()
         let state = try client.readState()
@@ -361,6 +376,20 @@ final class AppModel: ObservableObject {
             hasProfile: selectedProfile != nil
         ),
            let profile = selectedProfile {
+            // Issue only when reconnect auto-apply actually runs so periodic refresh
+            // does not cancel in-flight explicit applies.
+            let token = applyGate.issue()
+            guard applyGate.isCurrent(token) else {
+                return DeviceRefreshSnapshot(
+                    state: state,
+                    probeReport: probeReport,
+                    becameConnected: becameConnected,
+                    commandError: nil,
+                    disconnected: false,
+                    applyWarning: nil,
+                    profileAppliedSuccessfully: false
+                )
+            }
             do {
                 try session.apply(
                     profile: profile,
@@ -403,6 +432,9 @@ final class AppModel: ObservableObject {
             }
             if snapshot.profileAppliedSuccessfully {
                 AutoApplyCoordinator.onApplySuccess(&autoApplyState)
+                if let profile = selectedProfile {
+                    lastAppliedHardwareSettings = HardwareProfileSettings(profile: profile)
+                }
             } else if snapshot.applyWarning != nil {
                 AutoApplyCoordinator.onApplyFailure(&autoApplyState)
             }
@@ -430,15 +462,22 @@ final class AppModel: ObservableObject {
         syncRemapper()
     }
 
-    func applySelectedProfile() {
+    func applySelectedProfile(reason: HardwareApplyReason = .explicitApply) {
+        _ = reason
         guard let profile = selectedProfile else { return }
         let capability = wheelCapability
+        let token = hardwareApplyGate.issue()
+        let gate = hardwareApplyGate
+        let settings = HardwareProfileSettings(profile: profile)
         hidQueue.async { [weak self] in
             guard let self else { return }
+            guard gate.isCurrent(token) else { return }
             do {
                 let client = try self.session.connect()
+                guard gate.isCurrent(token) else { return }
                 try self.session.apply(profile: profile, to: client, wheelCapability: capability)
                 Task { @MainActor in
+                    self.lastAppliedHardwareSettings = settings
                     self.activeDPI = profile.activeDPI
                     self.pollingRateHz = profile.pollingRateHz
                     self.statusMessage = "Applied profile \(profile.name)"
@@ -468,7 +507,7 @@ final class AppModel: ObservableObject {
         // Required flush fails while the newly selected (or previous retained) draft is invalid.
         _ = flushPendingSave()
         refreshProfileSummary()
-        applySelectedProfile()
+        applySelectedProfile(reason: .profileSelection)
         syncRemapper()
     }
 
@@ -493,7 +532,6 @@ final class AppModel: ObservableObject {
         refreshProfileSummary()
         refreshMappingWarning()
         if bundle.selectedProfileID == profile.id {
-            applySelectedProfile()
             syncRemapper()
         }
     }
@@ -516,7 +554,6 @@ final class AppModel: ObservableObject {
         refreshProfileSummary()
         refreshMappingWarning()
         if bundle.selectedProfileID == profile.id {
-            applySelectedProfile()
             syncRemapper()
         }
     }
@@ -740,6 +777,7 @@ final class AppModel: ObservableObject {
         guard next != profile.activeStage else { return }
         profile.activeStage = next
         updateProfile(profile)
+        applySelectedProfile(reason: .dpiCycle)
     }
 
     private func advanceProfile(by delta: Int) {
