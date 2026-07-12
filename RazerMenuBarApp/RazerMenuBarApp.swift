@@ -54,7 +54,7 @@ private struct MenuBarContent: View {
             Text(model.statusMessage)
         }
 
-        if model.selectedProfile?.remapperEnabled == true || model.remapperRunning {
+        if model.selectedProfile?.remapperEnabled == true || model.remapperRunning || model.remapperArmed {
             Text(model.remapperStatus.title)
         }
 
@@ -65,7 +65,11 @@ private struct MenuBarContent: View {
         }
         .disabled(!model.remapperRunning)
         if let action = model.remapperStatus.recoveryAction,
-           action == .openInputMonitoring || action == .openAccessibility || action == .openPrivacySettings || action == .retryStart {
+           action == .openInputMonitoring
+            || action == .openAccessibility
+            || action == .openPrivacySettings
+            || action == .retryStart
+            || action == .armRemapper {
             Button(action.buttonTitle) {
                 model.performRemapperRecoveryAction(action)
             }

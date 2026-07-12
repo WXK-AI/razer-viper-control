@@ -27,6 +27,7 @@ final class ControlModelsTests: XCTestCase {
     func testRemapperStatusDisabledWhenProfileRemappingOff() {
         let status = RemapperRuntimeStatusResolver.resolve(
             remapperEnabled: false,
+            remapperArmed: true,
             permissions: .init(inputMonitoringGranted: true, accessibilityGranted: true),
             isRunning: true,
             isPaused: false,
@@ -37,10 +38,40 @@ final class ControlModelsTests: XCTestCase {
         XCTAssertNil(status.recoveryAction)
     }
 
+    func testRemapperStatusAwaitingConsentWhenEnabledButUnarmed() {
+        let status = RemapperRuntimeStatusResolver.resolve(
+            remapperEnabled: true,
+            remapperArmed: false,
+            permissions: .init(inputMonitoringGranted: true, accessibilityGranted: true),
+            isRunning: false,
+            isPaused: false,
+            isRecovering: false,
+            lastError: nil
+        )
+        XCTAssertEqual(status, .awaitingConsent)
+        XCTAssertEqual(status.recoveryAction, .armRemapper)
+    }
+
+    func testRemapperStatusAwaitingConsentOutranksPermissionsAndRunningState() {
+        let permissions = PermissionStatus(inputMonitoringGranted: false, accessibilityGranted: true)
+        let status = RemapperRuntimeStatusResolver.resolve(
+            remapperEnabled: true,
+            remapperArmed: false,
+            permissions: permissions,
+            isRunning: true,
+            isPaused: false,
+            isRecovering: true,
+            lastError: nil
+        )
+        XCTAssertEqual(status, .awaitingConsent)
+        XCTAssertEqual(status.recoveryAction, .armRemapper)
+    }
+
     func testRemapperStatusMissingPermissionOutranksRunningState() {
         let permissions = PermissionStatus(inputMonitoringGranted: false, accessibilityGranted: true)
         let status = RemapperRuntimeStatusResolver.resolve(
             remapperEnabled: true,
+            remapperArmed: true,
             permissions: permissions,
             isRunning: true,
             isPaused: false,
@@ -69,6 +100,7 @@ final class ControlModelsTests: XCTestCase {
     func testRemapperStatusFailedWhenEnabledButNotRunning() {
         let status = RemapperRuntimeStatusResolver.resolve(
             remapperEnabled: true,
+            remapperArmed: true,
             permissions: .init(inputMonitoringGranted: true, accessibilityGranted: true),
             isRunning: false,
             isPaused: false,
@@ -84,6 +116,7 @@ final class ControlModelsTests: XCTestCase {
         XCTAssertEqual(
             RemapperRuntimeStatusResolver.resolve(
                 remapperEnabled: true,
+                remapperArmed: true,
                 permissions: ready,
                 isRunning: true,
                 isPaused: true,
@@ -95,6 +128,7 @@ final class ControlModelsTests: XCTestCase {
         XCTAssertEqual(
             RemapperRuntimeStatusResolver.resolve(
                 remapperEnabled: true,
+                remapperArmed: true,
                 permissions: ready,
                 isRunning: true,
                 isPaused: true,
@@ -106,6 +140,7 @@ final class ControlModelsTests: XCTestCase {
         XCTAssertEqual(
             RemapperRuntimeStatusResolver.resolve(
                 remapperEnabled: true,
+                remapperArmed: true,
                 permissions: ready,
                 isRunning: true,
                 isPaused: false,
@@ -114,5 +149,19 @@ final class ControlModelsTests: XCTestCase {
             ),
             .active
         )
+    }
+
+    func testPauseDoesNotBypassAwaitingConsent() {
+        let status = RemapperRuntimeStatusResolver.resolve(
+            remapperEnabled: true,
+            remapperArmed: false,
+            permissions: .init(inputMonitoringGranted: true, accessibilityGranted: true),
+            isRunning: false,
+            isPaused: false,
+            isRecovering: false,
+            lastError: nil
+        )
+        XCTAssertEqual(status, .awaitingConsent)
+        XCTAssertNotEqual(status.recoveryAction, .resume)
     }
 }

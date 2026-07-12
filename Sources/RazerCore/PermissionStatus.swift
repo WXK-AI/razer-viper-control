@@ -40,6 +40,7 @@ public struct PermissionStatus: Equatable, Sendable {
 /// Compact remapper runtime state shown in Settings and the menu bar.
 public enum RemapperRuntimeStatus: Equatable, Sendable {
     case disabled
+    case awaitingConsent
     case missingPermission(PermissionStatus)
     case active
     case paused
@@ -50,6 +51,8 @@ public enum RemapperRuntimeStatus: Equatable, Sendable {
         switch self {
         case .disabled:
             return "Remapper disabled"
+        case .awaitingConsent:
+            return "Remapper awaiting consent"
         case .missingPermission:
             return "Remapper needs permissions"
         case .active:
@@ -67,6 +70,8 @@ public enum RemapperRuntimeStatus: Equatable, Sendable {
         switch self {
         case .disabled:
             return "Software remapping is turned off for the selected profile."
+        case .awaitingConsent:
+            return "Software remapping affects every mouse and trackpad in this login session. Arm this process to start."
         case let .missingPermission(permissions):
             return permissions.summary
         case .active:
@@ -84,6 +89,8 @@ public enum RemapperRuntimeStatus: Equatable, Sendable {
         switch self {
         case .disabled, .active:
             return nil
+        case .awaitingConsent:
+            return .armRemapper
         case let .missingPermission(permissions):
             switch (permissions.inputMonitoringGranted, permissions.accessibilityGranted) {
             case (false, false):
@@ -109,6 +116,7 @@ public enum RemapperRecoveryAction: Equatable, Sendable {
     case openInputMonitoring
     case openAccessibility
     case openPrivacySettings
+    case armRemapper
     case resume
     case acknowledgeRecovery
     case retryStart
@@ -121,6 +129,8 @@ public enum RemapperRecoveryAction: Equatable, Sendable {
             return "Open Accessibility"
         case .openPrivacySettings:
             return "Open Privacy Settings"
+        case .armRemapper:
+            return "Arm Remapper"
         case .resume:
             return "Resume Remapper"
         case .acknowledgeRecovery:
@@ -132,9 +142,10 @@ public enum RemapperRecoveryAction: Equatable, Sendable {
 }
 
 public enum RemapperRuntimeStatusResolver {
-    /// Priority: disabled → missing permission → failed → recovering → paused → active.
+    /// Priority: disabled → awaitingConsent → missing permission → failed → recovering → paused → active.
     public static func resolve(
         remapperEnabled: Bool,
+        remapperArmed: Bool,
         permissions: PermissionStatus,
         isRunning: Bool,
         isPaused: Bool,
@@ -142,6 +153,7 @@ public enum RemapperRuntimeStatusResolver {
         lastError: String?
     ) -> RemapperRuntimeStatus {
         guard remapperEnabled else { return .disabled }
+        guard remapperArmed else { return .awaitingConsent }
         guard permissions.remapperReady else { return .missingPermission(permissions) }
         if !isRunning {
             return .failed(lastError ?? "Remapper failed to start")

@@ -73,7 +73,7 @@ struct SettingsView: View {
         switch model.remapperStatus {
         case .active:
             return .green
-        case .paused, .recovering:
+        case .paused, .recovering, .awaitingConsent:
             return .orange
         case .missingPermission, .failed:
             return .red
@@ -308,10 +308,15 @@ private struct ProfileTab: View {
                     )
                 )
                 .disabled(!model.permissions.remapperReady && !draft.remapperEnabled)
-                Text("Software button and wheel mappings affect every mouse and trackpad in this login session, not only the connected Razer mouse.")
+                Text("Software remapping affects every mouse and trackpad in this login session.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if draft.remapperEnabled && !model.remapperArmed {
+                    Text("Remapper preference is on, but this process is not armed yet.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 if !model.permissions.remapperReady {
                     Text("Required: \(model.permissions.summary)")
                         .font(.caption)
@@ -325,6 +330,25 @@ private struct ProfileTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+        .alert(
+            "Enable software remapper?",
+            isPresented: Binding(
+                get: { model.confirmArmRemapper },
+                set: { newValue in
+                    if !newValue { model.cancelArmRemapperConfirmation() }
+                    else { model.confirmArmRemapper = true }
+                }
+            )
+        ) {
+            Button("Arm Remapper", role: .none) {
+                model.armRemapperForSession()
+            }
+            Button("Cancel", role: .cancel) {
+                model.cancelArmRemapperConfirmation()
+            }
+        } message: {
+            Text("Software remapping affects every mouse and trackpad in this login session.")
         }
     }
 

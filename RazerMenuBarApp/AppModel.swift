@@ -44,6 +44,7 @@ final class AppModel: ObservableObject {
     var remapperStatus: RemapperRuntimeStatus {
         RemapperRuntimeStatusResolver.resolve(
             remapperEnabled: selectedProfile?.remapperEnabled ?? false,
+            remapperArmed: remapperArmed,
             permissions: permissions,
             isRunning: remapperRunning,
             isPaused: remapperPaused,
@@ -76,6 +77,11 @@ final class AppModel: ObservableObject {
     private let saveDebounceInterval: TimeInterval = 0.4
 
     private var draftsByProfileID: [UUID: ProfileDraft] = [:]
+
+    /// Session-only consent to run the remapper; never persisted. Resets on every launch.
+    @Published var remapperArmed = false
+    @Published var confirmArmRemapper = false
+    private var pendingRemapperEnableDraft: ProfileDraft?
 
     private struct DeviceRefreshSnapshot {
         let state: DeviceState?
@@ -656,6 +662,8 @@ final class AppModel: ObservableObject {
         case .openPrivacySettings:
             // One Privacy & Security pane — opening both deep links races and stacks two windows.
             openPrivacyAndSecuritySettings()
+        case .armRemapper:
+            armRemapperForSession()
         case .resume:
             setRemapperPaused(false)
         case .acknowledgeRecovery:
@@ -668,16 +676,46 @@ final class AppModel: ObservableObject {
     }
 
     /// Rejects enabling software remapping when required permissions are missing.
+    /// Enabling requires an explicit confirmation that arms this process only.
     @discardableResult
     func setRemapperEnabled(_ enabled: Bool, on draft: ProfileDraft) -> Bool {
-        if enabled, !permissions.remapperReady {
-            warningMessage = "Grant Input Monitoring and Accessibility before enabling the software remapper. \(permissions.summary)"
+        if enabled {
+            if !permissions.remapperReady {
+                warningMessage = "Grant Input Monitoring and Accessibility before enabling the software remapper. \(permissions.summary)"
+                return false
+            }
+            pendingRemapperEnableDraft = draft
+            confirmArmRemapper = true
             return false
         }
+        remapperArmed = false
         var updated = draft
-        updated.remapperEnabled = enabled
+        updated.remapperEnabled = false
         updateDraft(updated)
         return true
+    }
+
+    /// Arms the remapper for this process after explicit consent.
+    func armRemapperForSession() {
+        if !permissions.remapperReady {
+            warningMessage = "Grant Input Monitoring and Accessibility before arming the software remapper. \(permissions.summary)"
+            return
+        }
+        if let draft = pendingRemapperEnableDraft {
+            var updated = draft
+            updated.remapperEnabled = true
+            updateDraft(updated)
+            pendingRemapperEnableDraft = nil
+        }
+        remapperArmed = true
+        remapperPaused = false
+        confirmArmRemapper = false
+        syncRemapper()
+    }
+
+    func cancelArmRemapperConfirmation() {
+        pendingRemapperEnableDraft = nil
+        confirmArmRemapper = false
     }
 
     func setDiagnosticsCaptureEnabled(_ enabled: Bool) {
@@ -824,7 +862,7 @@ final class AppModel: ObservableObject {
     }
 
     private func syncRemapper() {
-        guard let profile = selectedProfile, profile.remapperEnabled else {
+        guard let profile = selectedProfile, profile.remapperEnabled, remapperArmed else {
             remapper.stop()
             remapperRunning = false
             remapperRecovering = false

@@ -30,7 +30,7 @@ public struct ProfileDraft: Equatable, Sendable {
         activeStage: Int,
         pollingRateHz: Int,
         autoReapplyEnabled: Bool = true,
-        remapperEnabled: Bool = true
+        remapperEnabled: Bool = false
     ) {
         self.name = name
         self.stageTexts = stageTexts

@@ -26,7 +26,7 @@ public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
         autoReapplyEnabled: Bool = true,
         buttonMappings: [PhysicalControl: ButtonAction] = PhysicalControl.defaultButtonMappings(),
         wheelSettings: WheelSettings = .default,
-        remapperEnabled: Bool = true
+        remapperEnabled: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -50,7 +50,7 @@ public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
         buttonMappings = try container.decodeIfPresent([PhysicalControl: ButtonAction].self, forKey: .buttonMappings)
             ?? PhysicalControl.defaultButtonMappings()
         wheelSettings = try container.decodeIfPresent(WheelSettings.self, forKey: .wheelSettings) ?? .default
-        remapperEnabled = try container.decodeIfPresent(Bool.self, forKey: .remapperEnabled) ?? true
+        remapperEnabled = try container.decodeIfPresent(Bool.self, forKey: .remapperEnabled) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -75,7 +75,7 @@ public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
     public mutating func resetControlsToDefaults() {
         buttonMappings = PhysicalControl.defaultButtonMappings()
         wheelSettings = .default
-        remapperEnabled = true
+        remapperEnabled = false
     }
 
     /// Folds legacy `.middleClick` mappings into `.wheelClick` and removes the alias key.

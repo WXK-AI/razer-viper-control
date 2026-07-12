@@ -106,8 +106,10 @@ final class MouseProfileMigrationTests: XCTestCase {
 
     func testResetControlsToDefaultsOmitsMiddleClick() {
         var profile = sampleProfile(buttonMappings: [.middleClick: .mouseButton(.right)])
+        profile.remapperEnabled = true
         profile.resetControlsToDefaults()
         XCTAssertNil(profile.buttonMappings[.middleClick])
         XCTAssertEqual(profile.buttonMappings[.wheelClick], .passthrough)
+        XCTAssertFalse(profile.remapperEnabled)
     }
 }

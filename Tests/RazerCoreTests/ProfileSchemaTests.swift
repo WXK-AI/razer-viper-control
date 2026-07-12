@@ -16,12 +16,34 @@ final class ProfileSchemaTests: XCTestCase {
 
         let profile = try JSONDecoder().decode(MouseProfile.self, from: json)
         XCTAssertEqual(profile.name, "Legacy")
-        XCTAssertTrue(profile.remapperEnabled)
+        XCTAssertFalse(profile.remapperEnabled)
         XCTAssertEqual(profile.buttonMappings.count, PhysicalControl.assignableControls.count)
         XCTAssertEqual(profile.buttonMappings[.leftClick], .passthrough)
         XCTAssertEqual(profile.buttonMappings[.wheelClick], .passthrough)
         XCTAssertNil(profile.buttonMappings[.middleClick])
         XCTAssertEqual(profile.wheelSettings, .default)
+    }
+
+    func testNewProfileDefaultsRemapperOff() {
+        let profile = MouseProfile(
+            name: "New",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        XCTAssertFalse(profile.remapperEnabled)
+    }
+
+    func testResetControlsDefaultsRemapperOff() {
+        var profile = MouseProfile(
+            name: "On",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000,
+            remapperEnabled: true
+        )
+        profile.resetControlsToDefaults()
+        XCTAssertFalse(profile.remapperEnabled)
     }
 
     func testMappingWarningWhenBothPrimaryClicksUnsafe() {
