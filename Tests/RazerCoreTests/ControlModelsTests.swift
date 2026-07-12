@@ -164,4 +164,21 @@ final class ControlModelsTests: XCTestCase {
         XCTAssertEqual(status, .awaitingConsent)
         XCTAssertNotEqual(status.recoveryAction, .resume)
     }
+
+    func testCircuitOpenShowsRearmStatusEvenAfterSessionDisarm() {
+        let status = RemapperRuntimeStatusResolver.resolve(
+            remapperEnabled: true,
+            remapperArmed: false,
+            permissions: .init(inputMonitoringGranted: true, accessibilityGranted: true),
+            isRunning: false,
+            isPaused: true,
+            isRecovering: false,
+            lastError: nil,
+            circuitOpen: true
+        )
+
+        XCTAssertEqual(status, .circuitOpen)
+        XCTAssertEqual(status.detail, "Remapper paused after repeated event-tap timeouts.")
+        XCTAssertEqual(status.recoveryAction, .armRemapper)
+    }
 }

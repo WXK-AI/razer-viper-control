@@ -29,6 +29,7 @@ final class AppModel: ObservableObject {
     @Published var remapperPaused = false
     @Published var remapperRunning = false
     @Published var remapperRecovering = false
+    @Published var remapperCircuitOpen = false
     @Published var remapperStartError: String?
     @Published var driverActivationState: DriverActivationState = .unknown
     @Published var driverStatusMessage = "Driver status has not been queried yet."
@@ -49,7 +50,8 @@ final class AppModel: ObservableObject {
             isRunning: remapperRunning,
             isPaused: remapperPaused,
             isRecovering: remapperRecovering,
-            lastError: remapperStartError
+            lastError: remapperStartError,
+            circuitOpen: remapperCircuitOpen
         )
     }
 
@@ -707,6 +709,8 @@ final class AppModel: ObservableObject {
             updateDraft(updated)
             pendingRemapperEnableDraft = nil
         }
+        remapper.resetTapDisableCircuit()
+        remapperCircuitOpen = false
         remapperArmed = true
         remapperPaused = false
         confirmArmRemapper = false
@@ -830,6 +834,14 @@ final class AppModel: ObservableObject {
                 case .tapDisable:
                     self?.remapperRecovering = true
                     self?.statusMessage = "Remapper recovered after tap disable; held buttons released"
+                case .tapDisableCircuitOpen:
+                    self?.remapperArmed = false
+                    self?.remapperPaused = true
+                    self?.remapperRunning = false
+                    self?.remapperRecovering = false
+                    self?.remapperCircuitOpen = true
+                    self?.warningMessage = "Remapper paused after repeated event-tap timeouts."
+                    self?.statusMessage = "Remapper paused after repeated event-tap timeouts."
                 case .profileReplacement:
                     break
                 case .permissionLoss:

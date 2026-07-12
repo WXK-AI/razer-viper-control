@@ -73,7 +73,7 @@ struct SettingsView: View {
         switch model.remapperStatus {
         case .active:
             return .green
-        case .paused, .recovering, .awaitingConsent:
+        case .paused, .recovering, .awaitingConsent, .circuitOpen:
             return .orange
         case .missingPermission, .failed:
             return .red

@@ -41,6 +41,7 @@ public struct PermissionStatus: Equatable, Sendable {
 public enum RemapperRuntimeStatus: Equatable, Sendable {
     case disabled
     case awaitingConsent
+    case circuitOpen
     case missingPermission(PermissionStatus)
     case active
     case paused
@@ -53,6 +54,8 @@ public enum RemapperRuntimeStatus: Equatable, Sendable {
             return "Remapper disabled"
         case .awaitingConsent:
             return "Remapper awaiting consent"
+        case .circuitOpen:
+            return "Remapper paused"
         case .missingPermission:
             return "Remapper needs permissions"
         case .active:
@@ -72,6 +75,8 @@ public enum RemapperRuntimeStatus: Equatable, Sendable {
             return "Software remapping is turned off for the selected profile."
         case .awaitingConsent:
             return "Software remapping affects every mouse and trackpad in this login session. Arm this process to start."
+        case .circuitOpen:
+            return "Remapper paused after repeated event-tap timeouts."
         case let .missingPermission(permissions):
             return permissions.summary
         case .active:
@@ -89,7 +94,7 @@ public enum RemapperRuntimeStatus: Equatable, Sendable {
         switch self {
         case .disabled, .active:
             return nil
-        case .awaitingConsent:
+        case .awaitingConsent, .circuitOpen:
             return .armRemapper
         case let .missingPermission(permissions):
             switch (permissions.inputMonitoringGranted, permissions.accessibilityGranted) {
@@ -142,7 +147,7 @@ public enum RemapperRecoveryAction: Equatable, Sendable {
 }
 
 public enum RemapperRuntimeStatusResolver {
-    /// Priority: disabled → awaitingConsent → missing permission → failed → recovering → paused → active.
+    /// Priority: disabled → circuit open → awaitingConsent → missing permission → failed → recovering → paused → active.
     public static func resolve(
         remapperEnabled: Bool,
         remapperArmed: Bool,
@@ -150,9 +155,11 @@ public enum RemapperRuntimeStatusResolver {
         isRunning: Bool,
         isPaused: Bool,
         isRecovering: Bool,
-        lastError: String?
+        lastError: String?,
+        circuitOpen: Bool = false
     ) -> RemapperRuntimeStatus {
         guard remapperEnabled else { return .disabled }
+        if circuitOpen { return .circuitOpen }
         guard remapperArmed else { return .awaitingConsent }
         guard permissions.remapperReady else { return .missingPermission(permissions) }
         if !isRunning {

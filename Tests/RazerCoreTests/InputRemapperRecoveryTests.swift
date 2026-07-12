@@ -6,6 +6,7 @@ final class InputRemapperRecoveryTests: XCTestCase {
         _ pairs: [PhysicalControl: ButtonAction] = [.leftClick: .mouseButton(.right)]
     ) -> MouseProfile {
         var profile = MouseProfile(name: "Test", dpiStages: [800], activeStage: 1, pollingRateHz: 1000)
+        profile.remapperEnabled = true
         for (control, action) in pairs {
             profile.buttonMappings[control] = action
         }
@@ -247,5 +248,44 @@ final class InputRemapperRecoveryTests: XCTestCase {
 
         XCTAssertEqual(order, ["afterUps", "afterReenable"])
         XCTAssertEqual(remapper.lastRecoveryReason(), .tapDisable)
+    }
+
+    func testThirdRapidTapDisableTripsCircuitReleasesHoldsAndDoesNotReenable() {
+        let remapper = InputRemapper()
+        var time: TimeInterval = 0
+        remapper.monotonicTime = { time }
+
+        remapper.recoverAfterTapDisable()
+        time = 1
+        remapper.recoverAfterTapDisable()
+        seedHold(remapper)
+
+        var finalized = false
+        remapper.recoveryFinalizeProbe = { finalized = true }
+        time = 2
+        remapper.recoverAfterTapDisable()
+
+        XCTAssertTrue(remapper.isCircuitOpen)
+        XCTAssertTrue(remapper.isPaused)
+        XCTAssertFalse(remapper.isRunning)
+        XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+        XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 1)
+        XCTAssertEqual(remapper.lastRecoveryReason(), .tapDisableCircuitOpen)
+        XCTAssertFalse(finalized, "A tripped circuit must not re-enable the event tap")
+    }
+
+    func testOpenAppActionSchedulesWorkspaceOperation() {
+        let remapper = InputRemapper()
+        var scheduled: [DeferredWorkspaceAction] = []
+        remapper.scheduleWorkspaceAction = { action in
+            scheduled.append(action)
+        }
+
+        remapper.executeOneShotAction(.openApp("/Applications/Test.app"), callbacks: .init())
+
+        XCTAssertEqual(
+            scheduled,
+            [.openApp(URL(fileURLWithPath: "/Applications/Test.app").standardizedFileURL)]
+        )
     }
 }

@@ -6,8 +6,14 @@ public enum HeldOutputRecoveryReason: String, Equatable, Sendable {
     case pause
     case stop
     case tapDisable
+    case tapDisableCircuitOpen
     case profileReplacement
     case permissionLoss
+}
+
+enum DeferredWorkspaceAction: Equatable {
+    case openApp(URL)
+    case openURL(URL)
 }
 
 public final class InputRemapper: @unchecked Sendable {
@@ -28,6 +34,17 @@ public final class InputRemapper: @unchecked Sendable {
     public private(set) var isRunning = false
     public private(set) var isPaused = false
     public var callbacks = Callbacks()
+    var monotonicTime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    var scheduleWorkspaceAction: (DeferredWorkspaceAction) -> Void = { action in
+        DispatchQueue.main.async {
+            switch action {
+            case let .openApp(url):
+                NSWorkspace.shared.openApplication(at: url, configuration: .init())
+            case let .openURL(url):
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
 
     private let lock = NSLock()
     private var eventTap: CFMachPort?
@@ -54,6 +71,7 @@ public final class InputRemapper: @unchecked Sendable {
     private var syntheticMouseUpCount = 0
     /// Blocks mapped downs while profile replacement ups publish and before the new mapping is live.
     private var suppressMappedDowns = false
+    private var tapDisableCircuitBreaker = TapDisableCircuitBreaker()
 
     public init() {}
 
@@ -109,7 +127,9 @@ public final class InputRemapper: @unchecked Sendable {
 
     public func resume() {
         lock.lock()
-        isPaused = false
+        if !tapDisableCircuitBreaker.isOpen {
+            isPaused = false
+        }
         lock.unlock()
     }
 
@@ -205,6 +225,19 @@ public final class InputRemapper: @unchecked Sendable {
         return syntheticMouseUpCount
     }
 
+    public var isCircuitOpen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return tapDisableCircuitBreaker.isOpen
+    }
+
+    /// Clears a tripped circuit only after the user explicitly re-arms remapping.
+    public func resetTapDisableCircuit() {
+        lock.lock()
+        tapDisableCircuitBreaker.reset()
+        lock.unlock()
+    }
+
     /// Atomic snapshot used to detect pause/hold transition races.
     func recoveryStateSnapshot() -> (isPaused: Bool, heldTargets: [MouseButtonTarget]) {
         lock.lock()
@@ -246,14 +279,37 @@ public final class InputRemapper: @unchecked Sendable {
     var recoveryFinalizeProbe: (() -> Void)?
 
     func recoverAfterTapDisable() {
-        let release = commitRecoveryTransition(reason: .tapDisable, notifyIfEmpty: true) {
+        let release: HeldOutputRelease
+        let shouldReenable: Bool
+        lock.lock()
+        switch tapDisableCircuitBreaker.recordDisable(at: monotonicTime()) {
+        case .allowRecovery:
             // Clear holds now; re-enable the tap only after ups are published.
-            buttonSession.releaseAllHeldOutputs()
+            release = makeReleaseLocked(
+                targets: buttonSession.releaseAllHeldOutputs(),
+                reason: .tapDisable,
+                notifyIfEmpty: true
+            )
+            shouldReenable = true
+        case .trip:
+            let targets = buttonSession.releaseAllHeldOutputs()
+            isPaused = true
+            tearDownEventTapLocked()
+            release = makeReleaseLocked(
+                targets: targets,
+                reason: .tapDisableCircuitOpen,
+                notifyIfEmpty: true
+            )
+            shouldReenable = false
         }
-        publishHeldOutputRelease(release) {
-            if let tap = self.eventTap {
+        lock.unlock()
+        if shouldReenable {
+            publishHeldOutputRelease(release) {
+                guard let tap = self.eventTap else { return }
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
+        } else {
+            publishHeldOutputRelease(release)
         }
     }
 
@@ -468,7 +524,7 @@ public final class InputRemapper: @unchecked Sendable {
         }
     }
 
-    private func executeOneShotAction(_ action: ButtonAction, callbacks: Callbacks) {
+    func executeOneShotAction(_ action: ButtonAction, callbacks: Callbacks) {
         switch action {
         case let .keyboardShortcut(shortcut):
             postKeyboardShortcut(shortcut, keyDown: true)
@@ -482,11 +538,12 @@ public final class InputRemapper: @unchecked Sendable {
         case .previousProfile:
             callbacks.onPreviousProfile?()
         case let .openApp(path):
-            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration())
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            scheduleWorkspaceAction(.openApp(url))
         case let .openURL(urlString):
             if let normalized = ButtonActionValidator.normalizedOpenURL(urlString),
                let url = URL(string: normalized) {
-                NSWorkspace.shared.open(url)
+                scheduleWorkspaceAction(.openURL(url))
             }
         case .passthrough, .disabled, .mouseButton:
             break
