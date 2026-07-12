@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import IOKit.hid
 
@@ -141,6 +142,7 @@ public enum ProfileLoadOutcome: Equatable, Sendable {
 
 public enum ProfileStoreError: Error, LocalizedError, Equatable {
     case validation(RazerValidationError)
+    case safetyValidation(ProfileSafetyValidationError)
     case writeFailed(String)
     case quarantineFailed(String)
     case writeBlockedCorruptSource(String)
@@ -148,6 +150,8 @@ public enum ProfileStoreError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case let .validation(error):
+            return error.localizedDescription
+        case let .safetyValidation(error):
             return error.localizedDescription
         case let .writeFailed(details):
             return "Failed to save profiles: \(details)"
@@ -184,7 +188,11 @@ public final class ProfileStore {
         let support = applicationSupportDirectory
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let folder = support.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
-        try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? fileManager.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         directoryURL = folder
         fileURL = folder.appendingPathComponent("profiles-\(deviceKey).json")
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -200,7 +208,7 @@ public final class ProfileStore {
     public func loadOutcome() -> ProfileLoadOutcome {
         writesBlockedForCorruptSource = false
 
-        if !fileManager.fileExists(atPath: fileURL.path) {
+        if !sourcePathExists() {
             let defaults = defaultBundle()
             do {
                 try save(defaults)
@@ -212,9 +220,10 @@ public final class ProfileStore {
 
         let data: Data
         do {
+            try ProfileSafetyValidator.inspectSourceFile(at: fileURL, fileManager: fileManager)
             data = try Data(contentsOf: fileURL)
         } catch {
-            return quarantineAndRecover(reason: "unreadable profile file: \(error.localizedDescription)")
+            return quarantineAndRecover(reason: "unsafe or unreadable profile file: \(error.localizedDescription)")
         }
 
         let decoded: ProfileBundle
@@ -229,16 +238,31 @@ public final class ProfileStore {
             bundle.profiles[index].migrateButton2Alias()
         }
 
-        let repaired = repairSelection(bundle)
+        let validated: (bundle: ProfileBundle, repairWarnings: [String])
+        do {
+            validated = try ProfileSafetyValidator.validateAndRepair(bundle, fileManager: fileManager)
+        } catch {
+            return quarantineAndRecover(reason: "unsafe profile content: \(error.localizedDescription)")
+        }
+        let repaired = validated.bundle
         if repaired != decoded {
             do {
                 try save(repaired)
-                return .loaded(repaired, persistenceWarning: nil)
+                return .loaded(
+                    repaired,
+                    persistenceWarning: validated.repairWarnings.isEmpty
+                        ? nil
+                        : validated.repairWarnings.joined(separator: " ")
+                )
             } catch {
-                return .loaded(repaired, persistenceWarning: error.localizedDescription)
+                let warnings = (validated.repairWarnings + [error.localizedDescription]).joined(separator: " ")
+                return .loaded(repaired, persistenceWarning: warnings)
             }
         }
-        return .loaded(repaired, persistenceWarning: nil)
+        return .loaded(
+            repaired,
+            persistenceWarning: validated.repairWarnings.isEmpty ? nil : validated.repairWarnings.joined(separator: " ")
+        )
     }
 
     public func save(_ bundle: ProfileBundle) throws {
@@ -246,21 +270,20 @@ public final class ProfileStore {
             throw ProfileStoreError.writeBlockedCorruptSource(fileURL.path)
         }
 
-        for profile in bundle.profiles {
-            do {
-                _ = try ProfileValidator.validateStages(profile.dpiStages, activeStage: profile.activeStage)
-                try ProfileValidator.validatePollingRate(profile.pollingRateHz)
-                try ProfileValidator.validateWheelSpeedMultiplier(
-                    profile.wheelSettings.software.verticalSpeedMultiplier
-                )
-            } catch let error as RazerValidationError {
-                throw ProfileStoreError.validation(error)
+        let validated: (bundle: ProfileBundle, repairWarnings: [String])
+        do {
+            validated = try ProfileSafetyValidator.validateAndRepair(bundle, fileManager: fileManager)
+        } catch let error as ProfileSafetyValidationError {
+            if case let .invalidHardware(validationError) = error {
+                throw ProfileStoreError.validation(validationError)
             }
+            throw ProfileStoreError.safetyValidation(error)
         }
 
         do {
-            let data = try encoder.encode(bundle)
+            let data = try encoder.encode(validated.bundle)
             try data.write(to: fileURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         } catch let error as ProfileStoreError {
             throw error
         } catch {
@@ -272,12 +295,13 @@ public final class ProfileStore {
     @discardableResult
     public func retryQuarantineCorruptSource() throws -> URL {
         do {
-            let quarantineURL = try uniqueQuarantineURL()
-            if fileManager.fileExists(atPath: fileURL.path) {
-                try fileManager.moveItem(at: fileURL, to: quarantineURL)
+            if sourcePathExists() {
+                let quarantineURL = try performQuarantineMove()
+                writesBlockedForCorruptSource = false
+                return quarantineURL
             }
             writesBlockedForCorruptSource = false
-            return quarantineURL
+            return try uniqueQuarantineURL()
         } catch let error as ProfileStoreError {
             throw error
         } catch {
@@ -288,7 +312,7 @@ public final class ProfileStore {
     /// Explicitly removes the corrupt primary file and allows subsequent saves.
     public func discardCorruptSourceAndAllowWrites() throws {
         do {
-            if fileManager.fileExists(atPath: fileURL.path) {
+            if sourcePathExists() {
                 try fileManager.removeItem(at: fileURL)
             }
             writesBlockedForCorruptSource = false
@@ -306,19 +330,6 @@ public final class ProfileStore {
             autoReapplyEnabled: true
         )
         return ProfileBundle(selectedProfileID: profile.id, profiles: [profile])
-    }
-
-    private func repairSelection(_ bundle: ProfileBundle) -> ProfileBundle {
-        var repaired = bundle
-        if repaired.profiles.isEmpty {
-            return defaultBundle()
-        }
-        if let selected = repaired.selectedProfileID,
-           repaired.profiles.contains(where: { $0.id == selected }) {
-            return repaired
-        }
-        repaired.selectedProfileID = repaired.profiles[0].id
-        return repaired
     }
 
     private func quarantineAndRecover(reason: String) -> ProfileLoadOutcome {
@@ -346,8 +357,20 @@ public final class ProfileStore {
 
     private func performQuarantineMove() throws -> URL {
         let quarantineURL = try uniqueQuarantineURL()
+        var status = stat()
+        if lstat(fileURL.path, &status) == 0, (status.st_mode & S_IFMT) == S_IFLNK {
+            guard rename(fileURL.path, quarantineURL.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            return quarantineURL
+        }
         try fileManager.moveItem(at: fileURL, to: quarantineURL)
         return quarantineURL
+    }
+
+    private func sourcePathExists() -> Bool {
+        var status = stat()
+        return lstat(fileURL.path, &status) == 0
     }
 
     /// Picks a quarantine path that does not already exist. Never deletes prior artifacts.

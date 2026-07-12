@@ -50,6 +50,33 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         XCTAssertTrue(quarantinedURL.lastPathComponent.contains("corrupt"))
     }
 
+    func testOversizedFileIsQuarantinedBeforeDecode() throws {
+        try Data(repeating: 0, count: ProfileSafetyLimits.maximumFileBytes + 1).write(to: store.storageURL)
+
+        let outcome = store.loadOutcome()
+        guard case let .recovered(_, quarantinedURL, reason, _) = outcome else {
+            return XCTFail("Expected recovered, got \(outcome)")
+        }
+        XCTAssertTrue(reason.contains("maximum"), reason)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: quarantinedURL.path))
+    }
+
+    func testSymlinkIsQuarantinedWithoutFollowingTarget() throws {
+        let target = tempDirectory.appendingPathComponent("symlink-target.json")
+        let targetBytes = Data("{target-must-remain".utf8)
+        try targetBytes.write(to: target)
+        try FileManager.default.createSymbolicLink(at: store.storageURL, withDestinationURL: target)
+
+        let outcome = store.loadOutcome()
+        guard case let .recovered(_, quarantinedURL, reason, _) = outcome else {
+            return XCTFail("Expected recovered, got \(outcome)")
+        }
+        XCTAssertTrue(reason.contains("symbolic link"), reason)
+        XCTAssertEqual(try Data(contentsOf: target), targetBytes)
+        let values = try quarantinedURL.resourceValues(forKeys: [.isSymbolicLinkKey])
+        XCTAssertTrue(values.isSymbolicLink == true)
+    }
+
     func testUnreadableFileIsQuarantinedOrPreserved() throws {
         try Data("{}".utf8).write(to: store.storageURL)
         try FileManager.default.setAttributes(
