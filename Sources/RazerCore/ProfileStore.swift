@@ -132,7 +132,10 @@ public enum ProfileLoadOutcome: Equatable, Sendable {
     /// Whether it is safe to write a default bundle to the primary storage URL immediately after load.
     public var shouldPersistDefaults: Bool {
         switch self {
-        case .firstRun, .recovered:
+        case let .firstRun(_, warning):
+            // A persistenceWarning on firstRun means the support directory or initial save is unsafe.
+            return warning == nil
+        case .recovered:
             return true
         case .loaded, .corruptPreserved:
             return false
@@ -146,6 +149,7 @@ public enum ProfileStoreError: Error, LocalizedError, Equatable {
     case writeFailed(String)
     case quarantineFailed(String)
     case writeBlockedCorruptSource(String)
+    case unsafeSupportDirectory(ProfileSafetyValidationError)
 
     public var errorDescription: String? {
         switch self {
@@ -159,6 +163,8 @@ public enum ProfileStoreError: Error, LocalizedError, Equatable {
             return "Failed to quarantine corrupt profiles: \(details)"
         case let .writeBlockedCorruptSource(path):
             return "Profile saves are blocked until the corrupt file is quarantined or discarded: \(path)"
+        case let .unsafeSupportDirectory(error):
+            return error.localizedDescription
         }
     }
 }
@@ -171,15 +177,30 @@ public final class ProfileStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let now: () -> Date
+    private let supportDirectoryError: ProfileSafetyValidationError?
 
     /// When true, `save` refuses to write the primary path so a corrupt source cannot be overwritten.
     public private(set) var writesBlockedForCorruptSource = false
+
+    /// When true, support-directory validation failed and no profile files may be created.
+    public var writesBlockedForUnsafeSupportDirectory: Bool { supportDirectoryError != nil }
+
+    /// Combined write gate used by the app UI and recovery paths.
+    public var areWritesBlocked: Bool {
+        writesBlockedForCorruptSource || writesBlockedForUnsafeSupportDirectory
+    }
 
     public init(
         deviceKey: String = DeviceDescriptor.deviceKey,
         applicationSupportDirectory: URL? = nil,
         fileManager: FileManager = .default,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        currentUID: @escaping () -> uid_t = { getuid() },
+        chmodDirectory: @escaping (String, mode_t) throws -> Void = { path, mode in
+            if chmod(path, mode) != 0 {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EPERM)
+            }
+        }
     ) {
         self.deviceKey = deviceKey
         self.fileManager = fileManager
@@ -188,16 +209,23 @@ public final class ProfileStore {
         let support = applicationSupportDirectory
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let folder = support.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
-        try? fileManager.createDirectory(
-            at: folder,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        // createDirectory attributes apply only on create; harden existing dirs too.
-        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         directoryURL = folder
         fileURL = folder.appendingPathComponent("profiles-\(deviceKey).json")
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+        do {
+            try ProfileSafetyValidator.prepareSupportDirectory(
+                at: folder,
+                fileManager: fileManager,
+                currentUID: currentUID,
+                chmodDirectory: chmodDirectory
+            )
+            supportDirectoryError = nil
+        } catch let error as ProfileSafetyValidationError {
+            supportDirectoryError = error
+        } catch {
+            supportDirectoryError = .supportDirectoryPermissionFailure(error.localizedDescription)
+        }
     }
 
     public var storageURL: URL { fileURL }
@@ -208,6 +236,14 @@ public final class ProfileStore {
     }
 
     public func loadOutcome() -> ProfileLoadOutcome {
+        if let supportDirectoryError {
+            // Fail closed: never create profile files on an unsafe support directory.
+            return .firstRun(
+                defaultBundle(),
+                persistenceWarning: supportDirectoryError.localizedDescription
+            )
+        }
+
         writesBlockedForCorruptSource = false
 
         if !sourcePathExists() {
@@ -267,6 +303,9 @@ public final class ProfileStore {
     }
 
     public func save(_ bundle: ProfileBundle) throws {
+        if let supportDirectoryError {
+            throw ProfileStoreError.unsafeSupportDirectory(supportDirectoryError)
+        }
         if writesBlockedForCorruptSource {
             throw ProfileStoreError.writeBlockedCorruptSource(fileURL.path)
         }

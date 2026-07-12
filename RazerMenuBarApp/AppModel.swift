@@ -21,7 +21,7 @@ final class AppModel: ObservableObject {
     @Published var mappingWarning: String?
 
     var writesBlockedForCorruptSource: Bool {
-        profileStore.writesBlockedForCorruptSource
+        profileStore.areWritesBlocked
     }
     @Published var bundle: ProfileBundle
     @Published var launchAtLogin = false

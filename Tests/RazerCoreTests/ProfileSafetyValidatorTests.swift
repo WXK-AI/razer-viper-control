@@ -153,9 +153,114 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support.path)
 
         let store = ProfileStore(applicationSupportDirectory: temporaryDirectory)
+        XCTAssertFalse(store.writesBlockedForUnsafeSupportDirectory)
         try store.save(bundle())
 
         let attributes = try FileManager.default.attributesOfItem(atPath: store.storageDirectoryURL.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    }
+
+    func testSymlinkedSupportDirectoryIsRejectedWithoutTouchingTarget() throws {
+        let target = temporaryDirectory.appendingPathComponent("real-support", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+        let marker = target.appendingPathComponent("marker.txt")
+        try Data("keep".utf8).write(to: marker)
+
+        let link = temporaryDirectory.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let store = ProfileStore(applicationSupportDirectory: temporaryDirectory)
+        XCTAssertTrue(store.writesBlockedForUnsafeSupportDirectory)
+
+        let outcome = store.loadOutcome()
+        guard case let .firstRun(_, warning) = outcome else {
+            return XCTFail("Expected firstRun, got \(outcome)")
+        }
+        XCTAssertEqual(warning, ProfileSafetyValidationError.supportDirectorySymlink.localizedDescription)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+
+        XCTAssertThrowsError(try store.save(bundle())) { error in
+            XCTAssertEqual(
+                error as? ProfileStoreError,
+                .unsafeSupportDirectory(.supportDirectorySymlink)
+            )
+        }
+
+        let targetMode = try FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(targetMode?.intValue, 0o755)
+        XCTAssertEqual(try Data(contentsOf: marker), Data("keep".utf8))
+    }
+
+    func testRegularFileAtSupportDirectoryPathIsRejected() throws {
+        let file = temporaryDirectory.appendingPathComponent("RazerMenuBarApp")
+        try Data("not-a-directory".utf8).write(to: file)
+
+        let store = ProfileStore(applicationSupportDirectory: temporaryDirectory)
+        XCTAssertTrue(store.writesBlockedForUnsafeSupportDirectory)
+        XCTAssertThrowsError(try store.save(bundle())) { error in
+            XCTAssertEqual(
+                error as? ProfileStoreError,
+                .unsafeSupportDirectory(.supportDirectoryNotDirectory)
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+        let outcome = store.loadOutcome()
+        guard case .firstRun = outcome else {
+            return XCTFail("Expected firstRun, got \(outcome)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+    }
+
+    func testWrongOwnerSupportDirectoryFailsViaInjectableUID() throws {
+        let support = temporaryDirectory.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+
+        let store = ProfileStore(
+            applicationSupportDirectory: temporaryDirectory,
+            currentUID: { getuid() &+ 1 }
+        )
+        XCTAssertTrue(store.writesBlockedForUnsafeSupportDirectory)
+        XCTAssertThrowsError(try store.save(bundle())) { error in
+            guard case let ProfileStoreError.unsafeSupportDirectory(inner) = error,
+                  case .supportDirectoryWrongOwner = inner else {
+                return XCTFail("Expected supportDirectoryWrongOwner, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+    }
+
+    func testChmodFailureBlocksLoadAndSaveWithoutCreatingProfileFile() throws {
+        let store = ProfileStore(
+            applicationSupportDirectory: temporaryDirectory,
+            chmodDirectory: { _, _ in
+                throw POSIXError(.EPERM)
+            }
+        )
+        XCTAssertTrue(store.writesBlockedForUnsafeSupportDirectory)
+
+        let outcome = store.loadOutcome()
+        guard case let .firstRun(_, warning) = outcome else {
+            return XCTFail("Expected firstRun, got \(outcome)")
+        }
+        XCTAssertNotNil(warning)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+
+        XCTAssertThrowsError(try store.save(bundle())) { error in
+            guard case ProfileStoreError.unsafeSupportDirectory = error else {
+                return XCTFail("Expected unsafeSupportDirectory, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+    }
+
+    func testPrepareSupportDirectoryHardensExisting0755() throws {
+        let support = temporaryDirectory.appendingPathComponent("owned-support", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support.path)
+
+        try ProfileSafetyValidator.prepareSupportDirectory(at: support)
+        let attributes = try FileManager.default.attributesOfItem(atPath: support.path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
     }
 

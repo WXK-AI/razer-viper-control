@@ -27,6 +27,10 @@ public enum ProfileSafetyValidationError: Error, LocalizedError, Equatable {
     case urlTooLong(actual: Int)
     case invalidAppPath
     case appPathTooLong(actual: Int)
+    case supportDirectorySymlink
+    case supportDirectoryNotDirectory
+    case supportDirectoryWrongOwner(expected: UInt32, actual: UInt32)
+    case supportDirectoryPermissionFailure(String)
 
     public var errorDescription: String? {
         switch self {
@@ -60,11 +64,91 @@ public enum ProfileSafetyValidationError: Error, LocalizedError, Equatable {
             return "Profile application path must be a standardized absolute application bundle (.app)."
         case let .appPathTooLong(actual):
             return "Profile application path is \(actual) UTF-8 bytes; maximum is \(ProfileSafetyLimits.maximumAppPathUTF8Bytes)."
+        case .supportDirectorySymlink:
+            return "Profile support directory must not be a symbolic link."
+        case .supportDirectoryNotDirectory:
+            return "Profile support path must be a directory."
+        case let .supportDirectoryWrongOwner(expected, actual):
+            return "Profile support directory owner \(actual) does not match current user \(expected)."
+        case let .supportDirectoryPermissionFailure(details):
+            return "Profile support directory could not be hardened to owner-only permissions: \(details)"
         }
     }
 }
 
 public enum ProfileSafetyValidator {
+    public static let ownerOnlyDirectoryMode: mode_t = 0o700
+
+    /// Creates (if needed) and hardens a profile support directory to owner-only mode.
+    /// Rejects symlinks and non-directories without mutating symlink targets.
+    public static func prepareSupportDirectory(
+        at url: URL,
+        fileManager: FileManager = .default,
+        currentUID: () -> uid_t = { getuid() },
+        chmodDirectory: (String, mode_t) throws -> Void = { path, mode in
+            if chmod(path, mode) != 0 {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EPERM)
+            }
+        }
+    ) throws {
+        let path = url.path
+        var status = stat()
+        let exists = lstat(path, &status) == 0
+
+        if exists {
+            try validateExistingSupportDirectoryStatus(status, currentUID: currentUID())
+        } else {
+            do {
+                try fileManager.createDirectory(
+                    at: url,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: Int(ownerOnlyDirectoryMode)]
+                )
+            } catch {
+                throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(error.localizedDescription)
+            }
+            guard lstat(path, &status) == 0 else {
+                throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("directory missing after create")
+            }
+            try validateExistingSupportDirectoryStatus(status, currentUID: currentUID())
+        }
+
+        do {
+            try chmodDirectory(path, ownerOnlyDirectoryMode)
+        } catch {
+            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(error.localizedDescription)
+        }
+
+        guard lstat(path, &status) == 0 else {
+            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("directory missing after chmod")
+        }
+        try validateExistingSupportDirectoryStatus(status, currentUID: currentUID())
+        let mode = status.st_mode & 0o777
+        guard mode == ownerOnlyDirectoryMode else {
+            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(
+                "expected mode \(String(ownerOnlyDirectoryMode, radix: 8)), got \(String(mode, radix: 8))"
+            )
+        }
+    }
+
+    private static func validateExistingSupportDirectoryStatus(
+        _ status: stat,
+        currentUID: uid_t
+    ) throws {
+        guard (status.st_mode & S_IFMT) != S_IFLNK else {
+            throw ProfileSafetyValidationError.supportDirectorySymlink
+        }
+        guard (status.st_mode & S_IFMT) == S_IFDIR else {
+            throw ProfileSafetyValidationError.supportDirectoryNotDirectory
+        }
+        guard status.st_uid == currentUID else {
+            throw ProfileSafetyValidationError.supportDirectoryWrongOwner(
+                expected: currentUID,
+                actual: status.st_uid
+            )
+        }
+    }
+
     /// Intentional deviation from the plan's "invalid selection → quarantine" wording:
     /// dangling `selectedProfileID` values are repaired to the first profile instead of
     /// quarantining an otherwise valid file. Empty profile lists still fail closed.
