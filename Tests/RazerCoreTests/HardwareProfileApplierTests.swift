@@ -259,11 +259,118 @@ final class HardwareProfileApplierTests: XCTestCase {
         XCTAssertEqual(mutator.setAccelerationCalls, 0)
         XCTAssertEqual(mutator.setSmartReelCalls, 0)
     }
+
+    func testPlanSkipsSupportedWheelWhenReadbackMissing() {
+        let plan = HardwareProfileApplier.plan(
+            current: state(),
+            target: profile(wheel: .init(
+                scrollMode: .freeSpin,
+                accelerationEnabled: true,
+                smartReelEnabled: true
+            )),
+            wheelCurrent: .init(), // supported capability but failed/unknown readback → nils
+            capability: .init(
+                scrollMode: .supported,
+                acceleration: .supported,
+                smartReel: .supported
+            )
+        )
+        XCTAssertFalse(plan.setScrollMode)
+        XCTAssertFalse(plan.setAcceleration)
+        XCTAssertFalse(plan.setSmartReel)
+        XCTAssertTrue(plan.isEmpty)
+    }
+
+    func testSupportedWheelWithFailedReadbackProducesZeroWrites() throws {
+        let mutator = RecordingHardwareMutator()
+        mutator.state = state(dpi: 800, activeStage: 1, stages: [800, 1600], polling: 1000)
+        mutator.wheel = .init() // nils = failed readback
+        mutator.simulateFailedWheelReadback = true
+        let target = profile(
+            dpiStages: [800, 1600],
+            activeStage: 1,
+            polling: 1000,
+            wheel: .init(scrollMode: .freeSpin, accelerationEnabled: true, smartReelEnabled: true)
+        )
+        let didApply = try HardwareProfileApplier.apply(
+            target: target,
+            using: mutator,
+            capability: .init(
+                scrollMode: .supported,
+                acceleration: .supported,
+                smartReel: .supported
+            )
+        )
+        XCTAssertTrue(didApply)
+        XCTAssertEqual(mutator.setScrollModeCalls, 0)
+        XCTAssertEqual(mutator.setAccelerationCalls, 0)
+        XCTAssertEqual(mutator.setSmartReelCalls, 0)
+        XCTAssertEqual(mutator.setDPIStagesCalls, 0)
+        XCTAssertEqual(mutator.setDPICalls, 0)
+        XCTAssertEqual(mutator.setPollingCalls, 0)
+    }
+
+    func testApplyAbortsAfterReadbackWhenSuperseded() throws {
+        let gate = LatestHardwareApplyGate()
+        let token = gate.issue()
+        let mutator = RecordingHardwareMutator()
+        mutator.state = state(dpi: 800, activeStage: 1, stages: [800, 1600], polling: 1000)
+        mutator.wheel = .init(scrollMode: .tactile, accelerationEnabled: false, smartReelEnabled: false)
+        mutator.onAfterReadState = {
+            _ = gate.issue()
+        }
+        let target = profile(
+            dpiStages: [800, 1600],
+            activeStage: 1,
+            polling: 500,
+            wheel: .init(scrollMode: .freeSpin, accelerationEnabled: false, smartReelEnabled: false)
+        )
+        let didApply = try HardwareProfileApplier.apply(
+            target: target,
+            using: mutator,
+            capability: .init(
+                scrollMode: .supported,
+                acceleration: .supported,
+                smartReel: .supported
+            ),
+            isStillCurrent: { gate.isCurrent(token) }
+        )
+        XCTAssertFalse(didApply)
+        XCTAssertEqual(mutator.setDPIStagesCalls, 0)
+        XCTAssertEqual(mutator.setDPICalls, 0)
+        XCTAssertEqual(mutator.setPollingCalls, 0)
+        XCTAssertEqual(mutator.setScrollModeCalls, 0)
+        XCTAssertEqual(mutator.setAccelerationCalls, 0)
+        XCTAssertEqual(mutator.setSmartReelCalls, 0)
+    }
+
+    func testApplyAbortsAfterWheelReadbackWhenSuperseded() throws {
+        let gate = LatestHardwareApplyGate()
+        let token = gate.issue()
+        let mutator = RecordingHardwareMutator()
+        mutator.state = state(dpi: 800, activeStage: 1, stages: [800, 1600], polling: 1000)
+        mutator.wheel = .init(scrollMode: .tactile, accelerationEnabled: false, smartReelEnabled: false)
+        mutator.onAfterWheelReadback = {
+            _ = gate.issue()
+        }
+        let target = profile(polling: 500)
+        let didApply = try HardwareProfileApplier.apply(
+            target: target,
+            using: mutator,
+            capability: .init(),
+            isStillCurrent: { gate.isCurrent(token) }
+        )
+        XCTAssertFalse(didApply)
+        XCTAssertEqual(mutator.setPollingCalls, 0)
+    }
 }
 
 private final class RecordingHardwareMutator: HardwareProfileApplying {
     var state = DeviceState()
     var wheel = HardwareWheelSettings()
+    var simulateFailedWheelReadback = false
+    var onAfterReadState: (() -> Void)?
+    var onAfterWheelReadback: (() -> Void)?
     var setDPIStagesCalls = 0
     var setDPICalls = 0
     var setPollingCalls = 0
@@ -271,9 +378,16 @@ private final class RecordingHardwareMutator: HardwareProfileApplying {
     var setAccelerationCalls = 0
     var setSmartReelCalls = 0
 
-    func readState() throws -> DeviceState { state }
+    func readState() throws -> DeviceState {
+        defer { onAfterReadState?() }
+        return state
+    }
 
     func readWheelHardwareState(capability: WheelHardwareCapability) -> HardwareWheelSettings {
+        defer { onAfterWheelReadback?() }
+        if simulateFailedWheelReadback {
+            return HardwareWheelSettings()
+        }
         var settings = HardwareWheelSettings()
         if capability.scrollMode == .supported { settings.scrollMode = wheel.scrollMode }
         if capability.acceleration == .supported { settings.accelerationEnabled = wheel.accelerationEnabled }

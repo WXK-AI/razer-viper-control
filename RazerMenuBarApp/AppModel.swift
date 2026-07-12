@@ -85,6 +85,8 @@ final class AppModel: ObservableObject {
         let disconnected: Bool
         let applyWarning: String?
         let profileAppliedSuccessfully: Bool
+        /// Exact hardware snapshot that was written; never derived from a later selection.
+        let appliedHardwareSettings: HardwareProfileSettings?
     }
 
     init() {
@@ -253,6 +255,8 @@ final class AppModel: ObservableObject {
         let shouldAutoApply = selectedProfile?.autoReapplyEnabled ?? false
         let autoApplySnapshot = autoApplyState
         let applyGate = hardwareApplyGate
+        // Observe only — never issue() here, or reconnect would supersede a newer Apply.
+        let generationAtSchedule = applyGate.currentGeneration()
 
         hidQueue.async { [weak self] in
             guard let self else { return }
@@ -262,7 +266,8 @@ final class AppModel: ObservableObject {
                 selectedProfile: selectedProfile,
                 shouldAutoApply: shouldAutoApply,
                 autoApplySnapshot: autoApplySnapshot,
-                applyGate: applyGate
+                applyGate: applyGate,
+                generationAtSchedule: generationAtSchedule
             )
 
             Task { @MainActor in
@@ -279,7 +284,8 @@ final class AppModel: ObservableObject {
         selectedProfile: MouseProfile?,
         shouldAutoApply: Bool,
         autoApplySnapshot: AutoApplyCoordinator.State,
-        applyGate: LatestHardwareApplyGate
+        applyGate: LatestHardwareApplyGate,
+        generationAtSchedule: UInt64
     ) -> DeviceRefreshSnapshot {
         do {
             return try readRefreshSnapshot(
@@ -288,7 +294,8 @@ final class AppModel: ObservableObject {
                 shouldAutoApply: shouldAutoApply,
                 autoApplySnapshot: autoApplySnapshot,
                 forceReconnect: false,
-                applyGate: applyGate
+                applyGate: applyGate,
+                generationAtSchedule: generationAtSchedule
             )
         } catch let error as RazerCommandError {
             if error.shouldInvalidateSession {
@@ -300,7 +307,8 @@ final class AppModel: ObservableObject {
                         shouldAutoApply: shouldAutoApply,
                         autoApplySnapshot: autoApplySnapshot,
                         forceReconnect: true,
-                        applyGate: applyGate
+                        applyGate: applyGate,
+                        generationAtSchedule: generationAtSchedule
                     )
                 } catch let retryError as RazerCommandError {
                     session.disconnect()
@@ -311,7 +319,8 @@ final class AppModel: ObservableObject {
                         commandError: retryError,
                         disconnected: true,
                         applyWarning: nil,
-                        profileAppliedSuccessfully: false
+                        profileAppliedSuccessfully: false,
+                        appliedHardwareSettings: nil
                     )
                 } catch {
                     session.disconnect()
@@ -322,7 +331,8 @@ final class AppModel: ObservableObject {
                         commandError: nil,
                         disconnected: true,
                         applyWarning: nil,
-                        profileAppliedSuccessfully: false
+                        profileAppliedSuccessfully: false,
+                        appliedHardwareSettings: nil
                     )
                 }
             }
@@ -334,7 +344,8 @@ final class AppModel: ObservableObject {
                 commandError: error,
                 disconnected: true,
                 applyWarning: nil,
-                profileAppliedSuccessfully: false
+                profileAppliedSuccessfully: false,
+                appliedHardwareSettings: nil
             )
         } catch {
             session.disconnect()
@@ -345,7 +356,8 @@ final class AppModel: ObservableObject {
                 commandError: nil,
                 disconnected: true,
                 applyWarning: nil,
-                profileAppliedSuccessfully: false
+                profileAppliedSuccessfully: false,
+                appliedHardwareSettings: nil
             )
         }
     }
@@ -356,7 +368,8 @@ final class AppModel: ObservableObject {
         shouldAutoApply: Bool,
         autoApplySnapshot: AutoApplyCoordinator.State,
         forceReconnect: Bool,
-        applyGate: LatestHardwareApplyGate
+        applyGate: LatestHardwareApplyGate,
+        generationAtSchedule: UInt64
     ) throws -> DeviceRefreshSnapshot {
         let client = forceReconnect ? try session.reconnect() : try session.connect()
         let state = try client.readState()
@@ -370,16 +383,15 @@ final class AppModel: ObservableObject {
 
         var applyWarning: String?
         var profileAppliedSuccessfully = false
+        var appliedHardwareSettings: HardwareProfileSettings?
         if AutoApplyCoordinator.shouldAttemptApply(
             state: applyState,
             autoReapplyEnabled: shouldAutoApply,
             hasProfile: selectedProfile != nil
         ),
            let profile = selectedProfile {
-            // Issue only when reconnect auto-apply actually runs so periodic refresh
-            // does not cancel in-flight explicit applies.
-            let token = applyGate.issue()
-            guard applyGate.isCurrent(token) else {
+            // Skip if a newer explicit/DPI/selection apply claimed the gate since scheduling.
+            guard applyGate.isCurrent(generationAtSchedule) else {
                 return DeviceRefreshSnapshot(
                     state: state,
                     probeReport: probeReport,
@@ -387,16 +399,22 @@ final class AppModel: ObservableObject {
                     commandError: nil,
                     disconnected: false,
                     applyWarning: nil,
-                    profileAppliedSuccessfully: false
+                    profileAppliedSuccessfully: false,
+                    appliedHardwareSettings: nil
                 )
             }
+            let settings = HardwareProfileSettings(profile: profile)
             do {
-                try session.apply(
+                let didApply = try session.apply(
                     profile: profile,
                     to: client,
-                    wheelCapability: probeReport?.capability ?? .init()
+                    wheelCapability: probeReport?.capability ?? .init(),
+                    isStillCurrent: { applyGate.isCurrent(generationAtSchedule) }
                 )
-                profileAppliedSuccessfully = true
+                if didApply {
+                    profileAppliedSuccessfully = true
+                    appliedHardwareSettings = settings
+                }
             } catch {
                 applyWarning = error.localizedDescription
             }
@@ -409,7 +427,8 @@ final class AppModel: ObservableObject {
             commandError: nil,
             disconnected: false,
             applyWarning: applyWarning,
-            profileAppliedSuccessfully: profileAppliedSuccessfully
+            profileAppliedSuccessfully: profileAppliedSuccessfully,
+            appliedHardwareSettings: appliedHardwareSettings
         )
     }
 
@@ -432,8 +451,8 @@ final class AppModel: ObservableObject {
             }
             if snapshot.profileAppliedSuccessfully {
                 AutoApplyCoordinator.onApplySuccess(&autoApplyState)
-                if let profile = selectedProfile {
-                    lastAppliedHardwareSettings = HardwareProfileSettings(profile: profile)
+                if let applied = snapshot.appliedHardwareSettings {
+                    lastAppliedHardwareSettings = applied
                 }
             } else if snapshot.applyWarning != nil {
                 AutoApplyCoordinator.onApplyFailure(&autoApplyState)
@@ -475,7 +494,13 @@ final class AppModel: ObservableObject {
             do {
                 let client = try self.session.connect()
                 guard gate.isCurrent(token) else { return }
-                try self.session.apply(profile: profile, to: client, wheelCapability: capability)
+                let didApply = try self.session.apply(
+                    profile: profile,
+                    to: client,
+                    wheelCapability: capability,
+                    isStillCurrent: { gate.isCurrent(token) }
+                )
+                guard didApply else { return }
                 Task { @MainActor in
                     self.lastAppliedHardwareSettings = settings
                     self.activeDPI = profile.activeDPI

@@ -429,12 +429,18 @@ public final class DeviceSession {
         return try connect()
     }
 
-    public func apply(profile: MouseProfile, to client: RazerCommandClient, wheelCapability: WheelHardwareCapability? = nil) throws {
+    public func apply(
+        profile: MouseProfile,
+        to client: RazerCommandClient,
+        wheelCapability: WheelHardwareCapability? = nil,
+        isStillCurrent: () -> Bool = { true }
+    ) throws -> Bool {
         let capability = wheelCapability ?? WheelHardwareCapability()
-        try HardwareProfileApplier.apply(
+        return try HardwareProfileApplier.apply(
             target: profile,
             using: RazerCommandClientHardwareApplier(client: client),
-            capability: capability
+            capability: capability,
+            isStillCurrent: isStillCurrent
         )
     }
 

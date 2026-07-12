@@ -48,6 +48,13 @@ public final class LatestHardwareApplyGate: @unchecked Sendable {
         return generation
     }
 
+    /// Current generation without claiming a new apply. Used by reconnect observation.
+    public func currentGeneration() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+
     public func isCurrent(_ candidate: UInt64) -> Bool {
         lock.lock()
         defer { lock.unlock() }

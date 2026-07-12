@@ -99,24 +99,70 @@ final class HardwareApplyPolicyTests: XCTestCase {
         let gate = LatestHardwareApplyGate()
         let iterations = 1_000
         let group = DispatchGroup()
-        var tokens = [UInt64](repeating: 0, count: iterations)
+        let lock = NSLock()
+        var tokens = [UInt64]()
+        tokens.reserveCapacity(iterations)
 
-        for index in 0..<iterations {
+        for _ in 0..<iterations {
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
-                tokens[index] = gate.issue()
+                let token = gate.issue()
+                lock.lock()
+                tokens.append(token)
+                lock.unlock()
                 group.leave()
             }
         }
         XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
 
-        let unique = Set(tokens)
+        lock.lock()
+        let snapshot = tokens
+        lock.unlock()
+
+        let unique = Set(snapshot)
         XCTAssertEqual(unique.count, iterations)
-        let latest = tokens.max()!
+        let latest = snapshot.max()!
         XCTAssertTrue(gate.isCurrent(latest))
         for token in unique where token != latest {
             XCTAssertFalse(gate.isCurrent(token))
         }
+    }
+
+    func testReconnectObservationDoesNotSupersedeNewerExplicitApply() {
+        let gate = LatestHardwareApplyGate()
+        let generationAtSchedule = gate.currentGeneration()
+        let explicitToken = gate.issue()
+        XCTAssertFalse(
+            gate.isCurrent(generationAtSchedule),
+            "Reconnect must skip after a newer Apply claims the gate"
+        )
+        XCTAssertTrue(gate.isCurrent(explicitToken))
+    }
+
+    func testReconnectProceedsWhenNoNewerApplyIssued() {
+        let gate = LatestHardwareApplyGate()
+        _ = gate.issue()
+        let generationAtSchedule = gate.currentGeneration()
+        XCTAssertTrue(gate.isCurrent(generationAtSchedule))
+        XCTAssertEqual(generationAtSchedule, gate.currentGeneration())
+    }
+
+    func testBaselineTracksExactAppliedSnapshotNotLaterSelection() {
+        var appliedProfile = baseProfile()
+        appliedProfile.pollingRateHz = 1000
+        let recorded = HardwareProfileSettings(profile: appliedProfile)
+
+        var laterSelected = appliedProfile
+        laterSelected.pollingRateHz = 500
+        laterSelected.name = "Edited after apply"
+
+        XCTAssertEqual(recorded.pollingRateHz, 1000)
+        XCTAssertTrue(
+            HardwarePendingDetector.hasPendingChanges(profile: laterSelected, lastApplied: recorded)
+        )
+        XCTAssertFalse(
+            HardwarePendingDetector.hasPendingChanges(profile: appliedProfile, lastApplied: recorded)
+        )
     }
 
     func testHardwareChangesPendingWhenLastAppliedDiffers() {
