@@ -165,6 +165,30 @@ final class HardwareApplyPolicyTests: XCTestCase {
         )
     }
 
+    func testIncompleteApplyDoesNotRecordBaseline() {
+        let candidate = HardwareProfileSettings(profile: baseProfile())
+        XCTAssertNil(
+            HardwareApplyBaseline.settingsToRecord(didComplete: false, applied: candidate)
+        )
+        XCTAssertNil(
+            HardwareApplyBaseline.settingsToRecord(didComplete: true, applied: nil)
+        )
+        XCTAssertEqual(
+            HardwareApplyBaseline.settingsToRecord(didComplete: true, applied: candidate),
+            candidate
+        )
+    }
+
+    func testUnknownWheelReadbackDoesNotRecordBaseline() {
+        let candidate = HardwareProfileSettings(profile: baseProfile())
+        // AppModel only records through settingsToRecord after a completed apply;
+        // thrown unknownWheelReadback never reaches didComplete: true.
+        let didComplete = false
+        XCTAssertNil(
+            HardwareApplyBaseline.settingsToRecord(didComplete: didComplete, applied: candidate)
+        )
+    }
+
     func testHardwareChangesPendingWhenLastAppliedDiffers() {
         let profile = baseProfile()
         let applied = HardwareProfileSettings(profile: profile)

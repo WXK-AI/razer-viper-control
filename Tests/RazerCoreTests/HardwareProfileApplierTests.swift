@@ -279,6 +279,22 @@ final class HardwareProfileApplierTests: XCTestCase {
         XCTAssertFalse(plan.setAcceleration)
         XCTAssertFalse(plan.setSmartReel)
         XCTAssertTrue(plan.isEmpty)
+        XCTAssertEqual(
+            HardwareProfileApplier.unresolvedRequestedWheelFields(
+                target: profile(wheel: .init(
+                    scrollMode: .freeSpin,
+                    accelerationEnabled: true,
+                    smartReelEnabled: true
+                )),
+                wheelCurrent: .init(),
+                capability: .init(
+                    scrollMode: .supported,
+                    acceleration: .supported,
+                    smartReel: .supported
+                )
+            ),
+            ["scrollMode", "acceleration", "smartReel"]
+        )
     }
 
     func testSupportedWheelWithFailedReadbackProducesZeroWrites() throws {
@@ -292,22 +308,56 @@ final class HardwareProfileApplierTests: XCTestCase {
             polling: 1000,
             wheel: .init(scrollMode: .freeSpin, accelerationEnabled: true, smartReelEnabled: true)
         )
-        let didApply = try HardwareProfileApplier.apply(
-            target: target,
-            using: mutator,
-            capability: .init(
-                scrollMode: .supported,
-                acceleration: .supported,
-                smartReel: .supported
+        XCTAssertThrowsError(
+            try HardwareProfileApplier.apply(
+                target: target,
+                using: mutator,
+                capability: .init(
+                    scrollMode: .supported,
+                    acceleration: .supported,
+                    smartReel: .supported
+                )
             )
-        )
-        XCTAssertTrue(didApply)
+        ) { error in
+            guard case let HardwareApplyError.unknownWheelReadback(fields) = error else {
+                return XCTFail("Expected unknownWheelReadback, got \(error)")
+            }
+            XCTAssertEqual(fields, ["scrollMode", "acceleration", "smartReel"])
+        }
         XCTAssertEqual(mutator.setScrollModeCalls, 0)
         XCTAssertEqual(mutator.setAccelerationCalls, 0)
         XCTAssertEqual(mutator.setSmartReelCalls, 0)
         XCTAssertEqual(mutator.setDPIStagesCalls, 0)
         XCTAssertEqual(mutator.setDPICalls, 0)
         XCTAssertEqual(mutator.setPollingCalls, 0)
+    }
+
+    func testUnknownWheelReadbackFailsClosedBeforeDifferingDPIWrites() throws {
+        let mutator = RecordingHardwareMutator()
+        mutator.state = state(dpi: 800, activeStage: 1, stages: [800, 1600], polling: 1000)
+        mutator.simulateFailedWheelReadback = true
+        let target = profile(
+            dpiStages: [400, 800],
+            activeStage: 2,
+            polling: 500,
+            wheel: .init(scrollMode: .freeSpin)
+        )
+        XCTAssertThrowsError(
+            try HardwareProfileApplier.apply(
+                target: target,
+                using: mutator,
+                capability: .init(scrollMode: .supported)
+            )
+        ) { error in
+            guard case let HardwareApplyError.unknownWheelReadback(fields) = error else {
+                return XCTFail("Expected unknownWheelReadback, got \(error)")
+            }
+            XCTAssertEqual(fields, ["scrollMode"])
+        }
+        XCTAssertEqual(mutator.setDPIStagesCalls, 0)
+        XCTAssertEqual(mutator.setDPICalls, 0)
+        XCTAssertEqual(mutator.setPollingCalls, 0)
+        XCTAssertEqual(mutator.setScrollModeCalls, 0)
     }
 
     func testApplyAbortsAfterReadbackWhenSuperseded() throws {

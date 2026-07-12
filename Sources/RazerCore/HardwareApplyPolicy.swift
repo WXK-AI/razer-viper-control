@@ -34,6 +34,18 @@ public enum HardwarePendingDetector {
     }
 }
 
+/// Rules for updating the last-applied hardware baseline after an apply attempt.
+public enum HardwareApplyBaseline {
+    /// Incomplete, superseded, or failed applies must not advance the baseline.
+    public static func settingsToRecord(
+        didComplete: Bool,
+        applied: HardwareProfileSettings?
+    ) -> HardwareProfileSettings? {
+        guard didComplete else { return nil }
+        return applied
+    }
+}
+
 /// Monotonic gate so stale queued hardware applies can be discarded before their first write.
 public final class LatestHardwareApplyGate: @unchecked Sendable {
     private let lock = NSLock()

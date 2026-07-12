@@ -411,9 +411,12 @@ final class AppModel: ObservableObject {
                     wheelCapability: probeReport?.capability ?? .init(),
                     isStillCurrent: { applyGate.isCurrent(generationAtSchedule) }
                 )
-                if didApply {
+                if let recorded = HardwareApplyBaseline.settingsToRecord(
+                    didComplete: didApply,
+                    applied: settings
+                ) {
                     profileAppliedSuccessfully = true
-                    appliedHardwareSettings = settings
+                    appliedHardwareSettings = recorded
                 }
             } catch {
                 applyWarning = error.localizedDescription
@@ -451,8 +454,11 @@ final class AppModel: ObservableObject {
             }
             if snapshot.profileAppliedSuccessfully {
                 AutoApplyCoordinator.onApplySuccess(&autoApplyState)
-                if let applied = snapshot.appliedHardwareSettings {
-                    lastAppliedHardwareSettings = applied
+                if let recorded = HardwareApplyBaseline.settingsToRecord(
+                    didComplete: true,
+                    applied: snapshot.appliedHardwareSettings
+                ) {
+                    lastAppliedHardwareSettings = recorded
                 }
             } else if snapshot.applyWarning != nil {
                 AutoApplyCoordinator.onApplyFailure(&autoApplyState)
@@ -500,9 +506,12 @@ final class AppModel: ObservableObject {
                     wheelCapability: capability,
                     isStillCurrent: { gate.isCurrent(token) }
                 )
-                guard didApply else { return }
+                guard let recorded = HardwareApplyBaseline.settingsToRecord(
+                    didComplete: didApply,
+                    applied: settings
+                ) else { return }
                 Task { @MainActor in
-                    self.lastAppliedHardwareSettings = settings
+                    self.lastAppliedHardwareSettings = recorded
                     self.activeDPI = profile.activeDPI
                     self.pollingRateHz = profile.pollingRateHz
                     self.statusMessage = "Applied profile \(profile.name)"
@@ -513,7 +522,9 @@ final class AppModel: ObservableObject {
             } catch {
                 Task { @MainActor in
                     self.statusMessage = error.localizedDescription
-                    if let commandError = error as? RazerCommandError,
+                    if let applyError = error as? HardwareApplyError {
+                        self.warningMessage = applyError.localizedDescription
+                    } else if let commandError = error as? RazerCommandError,
                        commandError.isPermissionIssue || commandError.isConflictIssue {
                         self.warningMessage = commandError.localizedDescription
                     }
