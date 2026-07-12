@@ -430,10 +430,12 @@ public final class DeviceSession {
     }
 
     public func apply(profile: MouseProfile, to client: RazerCommandClient, wheelCapability: WheelHardwareCapability? = nil) throws {
-        try client.setDPIStages(activeStage: profile.activeStage, stages: profile.dpiStages)
-        try client.setDPI(profile.activeDPI)
-        try client.setPollingRate(hz: profile.pollingRateHz)
-        try applyWheelSettings(profile.wheelSettings.hardware, to: client, capability: wheelCapability)
+        let capability = wheelCapability ?? WheelHardwareCapability()
+        try HardwareProfileApplier.apply(
+            target: profile,
+            using: RazerCommandClientHardwareApplier(client: client),
+            capability: capability
+        )
     }
 
     public func applyWheelSettings(
@@ -441,14 +443,56 @@ public final class DeviceSession {
         to client: RazerCommandClient,
         capability: WheelHardwareCapability? = nil
     ) throws {
-        if let mode = settings.scrollMode, capability?.scrollMode != .notSupported {
+        let resolved = capability ?? WheelHardwareCapability()
+        if let mode = settings.scrollMode, resolved.scrollMode == .supported {
             _ = try client.setScrollMode(mode)
         }
-        if let enabled = settings.accelerationEnabled, capability?.acceleration != .notSupported {
+        if let enabled = settings.accelerationEnabled, resolved.acceleration == .supported {
             _ = try client.setScrollAcceleration(enabled)
         }
-        if let enabled = settings.smartReelEnabled, capability?.smartReel != .notSupported {
+        if let enabled = settings.smartReelEnabled, resolved.smartReel == .supported {
             _ = try client.setScrollSmartReel(enabled)
         }
+    }
+}
+
+/// Adapts `RazerCommandClient` to the apply planner without colliding on return types.
+final class RazerCommandClientHardwareApplier: HardwareProfileApplying {
+    private let client: RazerCommandClient
+
+    init(client: RazerCommandClient) {
+        self.client = client
+    }
+
+    func readState() throws -> DeviceState {
+        try client.readState()
+    }
+
+    func readWheelHardwareState(capability: WheelHardwareCapability) -> HardwareWheelSettings {
+        client.readWheelHardwareState(capability: capability).settings
+    }
+
+    func setDPIStages(activeStage: Int, stages: [Int]) throws {
+        try client.setDPIStages(activeStage: activeStage, stages: stages)
+    }
+
+    func setDPI(_ dpi: Int) throws {
+        try client.setDPI(dpi)
+    }
+
+    func setPollingRate(hz: Int) throws {
+        try client.setPollingRate(hz: hz)
+    }
+
+    func setScrollMode(_ mode: ScrollWheelMode) throws {
+        _ = try client.setScrollMode(mode)
+    }
+
+    func setScrollAcceleration(_ enabled: Bool) throws {
+        _ = try client.setScrollAcceleration(enabled)
+    }
+
+    func setScrollSmartReel(_ enabled: Bool) throws {
+        _ = try client.setScrollSmartReel(enabled)
     }
 }
