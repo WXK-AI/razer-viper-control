@@ -248,6 +248,11 @@ final class AppModel: ObservableObject {
     func refreshPermissions() {
         let wasReady = permissions.remapperReady
         permissions = PermissionStatus.current()
+        if wasReady && !permissions.remapperReady {
+            // Permission loss clears session arming; restoration alone must not restart.
+            remapperArmed = false
+            remapperCircuitOpen = false
+        }
         if wasReady != permissions.remapperReady {
             syncRemapper()
         }
@@ -882,10 +887,13 @@ final class AppModel: ObservableObject {
             return
         }
         guard permissions.remapperReady else {
+            // Fail closed: losing permissions also clears session consent.
+            remapperArmed = false
             remapper.handlePermissionLoss()
             remapperRunning = false
             remapperRecovering = false
             remapperStartError = nil
+            remapperCircuitOpen = remapper.isCircuitOpen
             return
         }
 

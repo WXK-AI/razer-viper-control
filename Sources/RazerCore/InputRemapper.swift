@@ -144,6 +144,12 @@ public final class InputRemapper: @unchecked Sendable {
     }
 
     public func start() throws {
+        lock.lock()
+        let circuitOpen = tapDisableCircuitBreaker.isOpen
+        lock.unlock()
+        guard !circuitOpen else {
+            throw InputRemapperError.circuitOpen
+        }
         guard !isRunning else { return }
         let permissions = PermissionStatus.current()
         guard permissions.remapperReady else {
@@ -784,6 +790,7 @@ public final class InputRemapper: @unchecked Sendable {
 public enum InputRemapperError: Error, LocalizedError {
     case missingPermissions(PermissionStatus)
     case tapCreationFailed
+    case circuitOpen
 
     public var errorDescription: String? {
         switch self {
@@ -791,6 +798,8 @@ public enum InputRemapperError: Error, LocalizedError {
             return "Remapper permissions missing. \(status.summary)"
         case .tapCreationFailed:
             return "Failed to create the global event tap."
+        case .circuitOpen:
+            return "Remapper paused after repeated event-tap timeouts. Arm the remapper again to resume."
         }
     }
 }

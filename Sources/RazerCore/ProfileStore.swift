@@ -193,6 +193,8 @@ public final class ProfileStore {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        // createDirectory attributes apply only on create; harden existing dirs too.
+        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         directoryURL = folder
         fileURL = folder.appendingPathComponent("profiles-\(deviceKey).json")
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -220,8 +222,7 @@ public final class ProfileStore {
 
         let data: Data
         do {
-            try ProfileSafetyValidator.inspectSourceFile(at: fileURL, fileManager: fileManager)
-            data = try Data(contentsOf: fileURL)
+            data = try ProfileSafetyValidator.readValidatedSourceFile(at: fileURL)
         } catch {
             return quarantineAndRecover(reason: "unsafe or unreadable profile file: \(error.localizedDescription)")
         }

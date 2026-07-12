@@ -116,12 +116,47 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         XCTAssertEqual(repaired.bundle.profiles[0].buttonMappings[.sideButton1], .disabled)
         XCTAssertFalse(repaired.repairWarnings.isEmpty)
 
-        let appDirectory = temporaryDirectory.appendingPathComponent("Example.app", isDirectory: true)
-        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        let fakeAppDirectory = temporaryDirectory.appendingPathComponent("Fake.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: fakeAppDirectory, withIntermediateDirectories: true)
+        XCTAssertThrowsError(
+            try ProfileSafetyValidator.validateAndRepair(
+                bundle(profile(mappings: [.sideButton1: .openApp(fakeAppDirectory.path)]))
+            )
+        ) {
+            XCTAssertEqual($0 as? ProfileSafetyValidationError, .invalidAppPath)
+        }
+
+        let realApp = try makeMinimalApplicationBundle(named: "Example.app")
         let valid = try ProfileSafetyValidator.validateAndRepair(
-            bundle(profile(mappings: [.sideButton1: .openApp(appDirectory.path)]))
+            bundle(profile(mappings: [.sideButton1: .openApp(realApp.path)]))
         )
-        XCTAssertEqual(valid.bundle.profiles[0].buttonMappings[.sideButton1], .openApp(appDirectory.path))
+        XCTAssertEqual(valid.bundle.profiles[0].buttonMappings[.sideButton1], .openApp(realApp.path))
+    }
+
+    func testReadValidatedSourceFileRejectsSymlinkAndReadsInode() throws {
+        let target = temporaryDirectory.appendingPathComponent("target.json")
+        let payload = Data("{\"ok\":true}".utf8)
+        try payload.write(to: target)
+        let link = temporaryDirectory.appendingPathComponent("link.json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        XCTAssertThrowsError(try ProfileSafetyValidator.readValidatedSourceFile(at: link)) {
+            XCTAssertEqual($0 as? ProfileSafetyValidationError, .sourceSymlink)
+        }
+
+        let readBack = try ProfileSafetyValidator.readValidatedSourceFile(at: target)
+        XCTAssertEqual(readBack, payload)
+    }
+
+    func testSaveHardensExistingSupportDirectoryMode() throws {
+        let support = temporaryDirectory.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support.path)
+
+        let store = ProfileStore(applicationSupportDirectory: temporaryDirectory)
+        try store.save(bundle())
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: store.storageDirectoryURL.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
     }
 
     func testInspectRejectsSymlinksAndOversizedFiles() throws {
@@ -163,5 +198,31 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         try store.save(bundle())
         let attributes = try FileManager.default.attributesOfItem(atPath: store.storageURL.path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    private func makeMinimalApplicationBundle(named name: String) throws -> URL {
+        let appURL = temporaryDirectory.appendingPathComponent(name, isDirectory: true)
+        let contents = appURL.appendingPathComponent("Contents", isDirectory: true)
+        let macOS = contents.appendingPathComponent("MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        let infoPlist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.razerviper.test.\(UUID().uuidString)</string>
+            <key>CFBundleName</key>
+            <string>Example</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleExecutable</key>
+            <string>Example</string>
+        </dict>
+        </plist>
+        """
+        try Data(infoPlist.utf8).write(to: contents.appendingPathComponent("Info.plist"))
+        try Data([0xCA, 0xFE, 0xBA, 0xBE]).write(to: macOS.appendingPathComponent("Example"))
+        return appURL
     }
 }

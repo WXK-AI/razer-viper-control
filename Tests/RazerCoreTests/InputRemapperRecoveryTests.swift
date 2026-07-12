@@ -274,6 +274,38 @@ final class InputRemapperRecoveryTests: XCTestCase {
         XCTAssertFalse(finalized, "A tripped circuit must not re-enable the event tap")
     }
 
+    func testStartThrowsWhileCircuitIsOpen() {
+        let remapper = InputRemapper()
+        var time: TimeInterval = 0
+        remapper.monotonicTime = { time }
+        remapper.recoverAfterTapDisable()
+        time = 1
+        remapper.recoverAfterTapDisable()
+        time = 2
+        remapper.recoverAfterTapDisable()
+        XCTAssertTrue(remapper.isCircuitOpen)
+
+        XCTAssertThrowsError(try remapper.start()) { error in
+            guard case InputRemapperError.circuitOpen = error else {
+                return XCTFail("Expected circuitOpen, got \(error)")
+            }
+        }
+        XCTAssertFalse(remapper.isRunning)
+
+        remapper.resetTapDisableCircuit()
+        // start may still fail for missing permissions in CI; circuit must no longer block.
+        do {
+            try remapper.start()
+            remapper.stop()
+        } catch let error as InputRemapperError {
+            if case .circuitOpen = error {
+                XCTFail("Circuit must not block start after reset")
+            }
+        } catch {
+            // Other start failures (permissions/tap) are acceptable in this environment.
+        }
+    }
+
     func testOpenAppActionSchedulesWorkspaceOperation() {
         let remapper = InputRemapper()
         var scheduled: [DeferredWorkspaceAction] = []

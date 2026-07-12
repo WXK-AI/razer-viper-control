@@ -57,7 +57,7 @@ public enum ProfileSafetyValidationError: Error, LocalizedError, Equatable {
         case let .urlTooLong(actual):
             return "Profile URL is \(actual) UTF-8 bytes; maximum is \(ProfileSafetyLimits.maximumURLUTF8Bytes)."
         case .invalidAppPath:
-            return "Profile application path must be an existing standardized absolute .app directory."
+            return "Profile application path must be a standardized absolute application bundle (.app)."
         case let .appPathTooLong(actual):
             return "Profile application path is \(actual) UTF-8 bytes; maximum is \(ProfileSafetyLimits.maximumAppPathUTF8Bytes)."
         }
@@ -65,6 +65,9 @@ public enum ProfileSafetyValidationError: Error, LocalizedError, Equatable {
 }
 
 public enum ProfileSafetyValidator {
+    /// Intentional deviation from the plan's "invalid selection → quarantine" wording:
+    /// dangling `selectedProfileID` values are repaired to the first profile instead of
+    /// quarantining an otherwise valid file. Empty profile lists still fail closed.
     public static func inspectSourceFile(at url: URL, fileManager: FileManager = .default) throws {
         var status = stat()
         guard lstat(url.path, &status) == 0 else {
@@ -84,6 +87,63 @@ public enum ProfileSafetyValidator {
         guard status.st_size <= Int64(ProfileSafetyLimits.maximumFileBytes) else {
             throw ProfileSafetyValidationError.sourceTooLarge(actual: status.st_size)
         }
+    }
+
+    /// Opens the path with `O_NOFOLLOW`, validates the opened inode, and reads that inode.
+    /// Avoids TOCTOU where a pathname is replaced between inspect and `Data(contentsOf:)`.
+    public static func readValidatedSourceFile(at url: URL) throws -> Data {
+        let path = url.path
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else {
+            if errno == ELOOP {
+                throw ProfileSafetyValidationError.sourceSymlink
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(fd) }
+
+        var status = stat()
+        guard fstat(fd, &status) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard (status.st_mode & S_IFMT) == S_IFREG else {
+            throw ProfileSafetyValidationError.sourceNotRegularFile
+        }
+        let currentUID = getuid()
+        guard status.st_uid == currentUID else {
+            throw ProfileSafetyValidationError.sourceWrongOwner(expected: currentUID, actual: status.st_uid)
+        }
+        guard status.st_size <= Int64(ProfileSafetyLimits.maximumFileBytes) else {
+            throw ProfileSafetyValidationError.sourceTooLarge(actual: status.st_size)
+        }
+
+        let size = Int(status.st_size)
+        guard size >= 0 else {
+            throw ProfileSafetyValidationError.sourceTooLarge(actual: status.st_size)
+        }
+        if size == 0 {
+            return Data()
+        }
+
+        var data = Data(count: size)
+        let bytesRead: Int = data.withUnsafeMutableBytes { buffer in
+            guard let base = buffer.baseAddress else { return -1 }
+            var total = 0
+            while total < size {
+                let chunk = read(fd, base.advanced(by: total), size - total)
+                if chunk == 0 { break }
+                if chunk < 0 {
+                    if errno == EINTR { continue }
+                    return -1
+                }
+                total += chunk
+            }
+            return total
+        }
+        guard bytesRead == size else {
+            throw POSIXError(.EIO)
+        }
+        return data
     }
 
     public static func validateAndRepair(
@@ -131,6 +191,7 @@ public enum ProfileSafetyValidator {
            repaired.profiles.contains(where: { $0.id == selectedID }) {
             return (repaired, warnings)
         }
+        // Intentional deviation: repair dangling selection instead of quarantining.
         guard let firstID = repaired.profiles.first?.id else {
             throw ProfileSafetyValidationError.invalidSelection
         }
@@ -212,8 +273,25 @@ public enum ProfileSafetyValidator {
             guard isDirectory.boolValue else {
                 throw ProfileSafetyValidationError.invalidAppPath
             }
+            let appURL = URL(fileURLWithPath: standardizedPath, isDirectory: true)
+            guard Self.isActualApplicationBundle(at: appURL, fileManager: fileManager) else {
+                throw ProfileSafetyValidationError.invalidAppPath
+            }
         case .passthrough, .disabled, .mouseButton, .nextDPIStage, .previousDPIStage, .nextProfile, .previousProfile:
             break
         }
+    }
+
+    /// Requires a real application bundle, not merely a directory whose name ends in `.app`.
+    private static func isActualApplicationBundle(at appURL: URL, fileManager: FileManager) -> Bool {
+        let infoPlistURL = appURL.appendingPathComponent("Contents/Info.plist", isDirectory: false)
+        guard fileManager.fileExists(atPath: infoPlistURL.path),
+              let info = NSDictionary(contentsOf: infoPlistURL) as? [String: Any],
+              let packageType = info["CFBundlePackageType"] as? String,
+              packageType == "APPL" else {
+            return false
+        }
+        let resourceValues = try? appURL.resourceValues(forKeys: [.isApplicationKey])
+        return resourceValues?.isApplication == true
     }
 }
