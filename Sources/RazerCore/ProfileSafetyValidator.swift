@@ -95,6 +95,32 @@ public enum ProfileSafetyValidator {
             }
         }
     ) throws {
+        let fd = try openPreparedSupportDirectory(
+            at: url,
+            fileManager: fileManager,
+            currentUID: currentUID,
+            openDirectory: openDirectory,
+            fchmodDirectory: fchmodDirectory
+        )
+        close(fd)
+    }
+
+    /// Same hardening as `prepareSupportDirectory`, but returns the open directory FD.
+    /// Caller must `close` it. Mutations must use this FD (`openat`/`renameat`/`unlinkat`)
+    /// so a pathname swap after validation cannot redirect writes.
+    public static func openPreparedSupportDirectory(
+        at url: URL,
+        fileManager: FileManager = .default,
+        currentUID: () -> uid_t = { getuid() },
+        openDirectory: (String) throws -> Int32 = { path in
+            try openSupportDirectoryFileDescriptor(atPath: path)
+        },
+        fchmodDirectory: (Int32, mode_t) throws -> Void = { fd, mode in
+            if fchmod(fd, mode) != 0 {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EPERM)
+            }
+        }
+    ) throws -> Int32 {
         let path = url.path
         var status = stat()
         let exists = lstat(path, &status) == 0
@@ -127,28 +153,33 @@ public enum ProfileSafetyValidator {
         } catch {
             throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(error.localizedDescription)
         }
-        defer { close(fd) }
-
-        guard fstat(fd, &status) == 0 else {
-            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("fstat failed after open")
-        }
-        try validateOpenedSupportDirectoryStatus(status, currentUID: currentUID())
 
         do {
-            try fchmodDirectory(fd, ownerOnlyDirectoryMode)
-        } catch {
-            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(error.localizedDescription)
-        }
+            guard fstat(fd, &status) == 0 else {
+                throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("fstat failed after open")
+            }
+            try validateOpenedSupportDirectoryStatus(status, currentUID: currentUID())
 
-        guard fstat(fd, &status) == 0 else {
-            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("fstat failed after fchmod")
-        }
-        try validateOpenedSupportDirectoryStatus(status, currentUID: currentUID())
-        let mode = status.st_mode & 0o777
-        guard mode == ownerOnlyDirectoryMode else {
-            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(
-                "expected mode \(String(ownerOnlyDirectoryMode, radix: 8)), got \(String(mode, radix: 8))"
-            )
+            do {
+                try fchmodDirectory(fd, ownerOnlyDirectoryMode)
+            } catch {
+                throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(error.localizedDescription)
+            }
+
+            guard fstat(fd, &status) == 0 else {
+                throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("fstat failed after fchmod")
+            }
+            try validateOpenedSupportDirectoryStatus(status, currentUID: currentUID())
+            let mode = status.st_mode & 0o777
+            guard mode == ownerOnlyDirectoryMode else {
+                throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(
+                    "expected mode \(String(ownerOnlyDirectoryMode, radix: 8)), got \(String(mode, radix: 8))"
+                )
+            }
+            return fd
+        } catch {
+            close(fd)
+            throw error
         }
     }
 
@@ -226,7 +257,111 @@ public enum ProfileSafetyValidator {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         defer { close(fd) }
+        return try readValidatedRegularFile(fromFileDescriptor: fd)
+    }
 
+    /// Reads a profile file relative to an already-validated support-directory FD.
+    public static func readValidatedSourceFile(directoryFD: Int32, fileName: String) throws -> Data {
+        let fd = fileName.withCString { name in
+            openat(directoryFD, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard fd >= 0 else {
+            if errno == ELOOP {
+                throw ProfileSafetyValidationError.sourceSymlink
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(fd) }
+        return try readValidatedRegularFile(fromFileDescriptor: fd)
+    }
+
+    /// Atomically writes `data` as an owner-only regular file via `openat`/`renameat` on `directoryFD`.
+    public static func writeOwnerOnlyRegularFile(
+        directoryFD: Int32,
+        fileName: String,
+        data: Data,
+        temporaryFileName: String,
+        fchmodFile: (Int32, mode_t) throws -> Void = { fd, mode in
+            if fchmod(fd, mode) != 0 {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EPERM)
+            }
+        }
+    ) throws {
+        let tempFD = temporaryFileName.withCString { name in
+            openat(directoryFD, name, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        }
+        guard tempFD >= 0 else {
+            if errno == ELOOP {
+                throw ProfileSafetyValidationError.sourceSymlink
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        do {
+            try data.withUnsafeBytes { buffer in
+                var written = 0
+                let total = buffer.count
+                guard let base = buffer.baseAddress else {
+                    if total == 0 { return }
+                    throw POSIXError(.EIO)
+                }
+                while written < total {
+                    let chunk = write(tempFD, base.advanced(by: written), total - written)
+                    if chunk < 0 {
+                        if errno == EINTR { continue }
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                    written += chunk
+                }
+            }
+            try fchmodFile(tempFD, 0o600)
+        } catch {
+            close(tempFD)
+            _ = temporaryFileName.withCString { unlinkat(directoryFD, $0, 0) }
+            throw error
+        }
+        close(tempFD)
+
+        let renamed = temporaryFileName.withCString { tempName in
+            fileName.withCString { finalName in
+                renameat(directoryFD, tempName, directoryFD, finalName)
+            }
+        }
+        guard renamed == 0 else {
+            _ = temporaryFileName.withCString { unlinkat(directoryFD, $0, 0) }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    public static func entryExists(directoryFD: Int32, fileName: String) -> Bool {
+        var status = stat()
+        let result = fileName.withCString { name in
+            fstatat(directoryFD, name, &status, AT_SYMLINK_NOFOLLOW)
+        }
+        return result == 0
+    }
+
+    public static func unlinkEntry(directoryFD: Int32, fileName: String) throws {
+        let result = fileName.withCString { name in
+            unlinkat(directoryFD, name, 0)
+        }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    public static func renameEntry(directoryFD: Int32, from: String, to: String) throws {
+        let result = from.withCString { fromName in
+            to.withCString { toName in
+                renameat(directoryFD, fromName, directoryFD, toName)
+            }
+        }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func readValidatedRegularFile(fromFileDescriptor fd: Int32) throws -> Data {
         var status = stat()
         guard fstat(fd, &status) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)

@@ -327,18 +327,23 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         let supportRoot = temporaryDirectory.appendingPathComponent("safe-root", isDirectory: true)
         try FileManager.default.createDirectory(at: supportRoot, withIntermediateDirectories: true)
 
-        let fileManager = ToggleFileManager()
-        fileManager.failMoves = true
+        let renameToggle = OperationToggle()
         let store = ProfileStore(
             deviceKey: "post-init",
             applicationSupportDirectory: supportRoot,
-            fileManager: fileManager,
-            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            renameEntry: { directoryFD, from, to in
+                if renameToggle.fail {
+                    throw POSIXError(.EACCES)
+                }
+                try ProfileSafetyValidator.renameEntry(directoryFD: directoryFD, from: from, to: to)
+            }
         )
         XCTAssertFalse(store.writesBlockedForUnsafeSupportDirectory)
 
         let corruptBytes = Data("{post-init-corrupt".utf8)
         try corruptBytes.write(to: store.storageURL)
+        renameToggle.fail = true
         _ = store.loadOutcome()
         XCTAssertTrue(store.writesBlockedForCorruptSource)
         // AppModel/SettingsView would offer quarantine/discard while the directory is still safe.
@@ -379,6 +384,50 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         XCTAssertEqual(targetMode?.intValue, 0o755)
         let targetChildren = try FileManager.default.contentsOfDirectory(atPath: target.path)
         XCTAssertEqual(Set(targetChildren), ["profiles-post-init.json"])
+    }
+
+    func testCheckUseWindowDirectorySwapDoesNotMutateSymlinkTarget() throws {
+        let supportRoot = temporaryDirectory.appendingPathComponent("check-use-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: supportRoot, withIntermediateDirectories: true)
+
+        let target = temporaryDirectory.appendingPathComponent("check-use-target", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+        let victim = target.appendingPathComponent("profiles-check-use.json")
+        let victimBytes = Data("check-use-victim".utf8)
+        try victimBytes.write(to: victim)
+
+        let supportDir = supportRoot.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
+        let orphanedReal = supportRoot.appendingPathComponent("orphaned-real-support", isDirectory: true)
+        var didSwapDuringMutation = false
+        let store = ProfileStore(
+            deviceKey: "check-use",
+            applicationSupportDirectory: supportRoot,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            directoryReadyProbe: { _ in
+                guard !didSwapDuringMutation else { return }
+                didSwapDuringMutation = true
+                // Move the validated inode aside and plant a symlink at the pathname. Mutations must
+                // stay on the held FD (orphaned inode), never follow into `target`.
+                try? FileManager.default.moveItem(at: supportDir, to: orphanedReal)
+                try? FileManager.default.createSymbolicLink(at: supportDir, withDestinationURL: target)
+            }
+        )
+
+        try store.save(bundle())
+        XCTAssertTrue(didSwapDuringMutation)
+
+        XCTAssertEqual(try Data(contentsOf: victim), victimBytes)
+        let targetMode = try FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(targetMode?.intValue, 0o755)
+        let targetChildren = try FileManager.default.contentsOfDirectory(atPath: target.path)
+        XCTAssertEqual(Set(targetChildren), ["profiles-check-use.json"])
+
+        let linkValues = try supportDir.resourceValues(forKeys: [.isSymbolicLinkKey])
+        XCTAssertTrue(linkValues.isSymbolicLink == true)
+        // Profile bytes landed on the orphaned real directory inode, not the symlink target.
+        let orphanedProfile = orphanedReal.appendingPathComponent("profiles-check-use.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: orphanedProfile.path))
     }
 
     /// Mirrors AppModel.allowsCorruptSourceRecoveryActions / SettingsView recovery-button gating.
@@ -511,7 +560,12 @@ final class ProfileSafetyValidatorTests: XCTestCase {
     }
 }
 
-/// Shared with recovery tests: force quarantine move failures without weakening directory mode.
+/// Force rename failures for quarantine paths without changing directory mode.
+private final class OperationToggle {
+    var fail = false
+}
+
+/// Shared helper for move-failure style tests that still use FileManager seams elsewhere.
 private final class ToggleFileManager: FileManager, @unchecked Sendable {
     var failMoves = false
 
