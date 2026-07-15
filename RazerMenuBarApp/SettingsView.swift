@@ -112,7 +112,7 @@ struct SettingsView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                     }
                 }
-                if model.writesBlockedForCorruptSource {
+                if model.allowsCorruptSourceRecoveryActions {
                     Button("Retry Quarantine") {
                         model.retryQuarantineCorruptProfiles()
                     }

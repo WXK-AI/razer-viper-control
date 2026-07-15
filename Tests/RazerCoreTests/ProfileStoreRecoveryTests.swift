@@ -171,6 +171,16 @@ final class ProfileStoreRecoveryTests: XCTestCase {
     }
 
     func testActualWriteFailureIsReported() throws {
+        let nestedSupport = tempDirectory.appendingPathComponent("write-fail-support", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedSupport, withIntermediateDirectories: true)
+
+        let fileManager = ToggleFileManager()
+        let localStore = ProfileStore(
+            deviceKey: "write-fail",
+            applicationSupportDirectory: nestedSupport,
+            fileManager: fileManager,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
         let profile = MouseProfile(
             name: "Valid",
             dpiStages: [800],
@@ -178,15 +188,11 @@ final class ProfileStoreRecoveryTests: XCTestCase {
             pollingRateHz: 1000
         )
         let bundle = ProfileBundle(selectedProfileID: profile.id, profiles: [profile])
-        try store.save(bundle)
+        try localStore.save(bundle)
 
-        let appSupport = store.storageDirectoryURL
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
-        defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
-        }
-
-        XCTAssertThrowsError(try store.save(bundle)) { error in
+        // Re-hardening heals a 0555 directory before write; fail the post-write mode set instead.
+        fileManager.failSetAttributes = true
+        XCTAssertThrowsError(try localStore.save(bundle)) { error in
             guard case .writeFailed = error as? ProfileStoreError else {
                 return XCTFail("Expected writeFailed, got \(error)")
             }
@@ -194,6 +200,16 @@ final class ProfileStoreRecoveryTests: XCTestCase {
     }
 
     func testRepairSaveFailureSurfacesWarningWithoutClaimingCleanPersist() throws {
+        let nestedSupport = tempDirectory.appendingPathComponent("repair-fail-support", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedSupport, withIntermediateDirectories: true)
+
+        let fileManager = ToggleFileManager()
+        let localStore = ProfileStore(
+            deviceKey: "repair-fail",
+            applicationSupportDirectory: nestedSupport,
+            fileManager: fileManager,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
         let profile = MouseProfile(
             name: "Only",
             dpiStages: [800],
@@ -201,21 +217,16 @@ final class ProfileStoreRecoveryTests: XCTestCase {
             pollingRateHz: 1000
         )
         let dangling = ProfileBundle(selectedProfileID: UUID(), profiles: [profile])
-        try JSONEncoder().encode(dangling).write(to: store.storageURL)
+        try JSONEncoder().encode(dangling).write(to: localStore.storageURL)
 
-        let appSupport = store.storageDirectoryURL
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
-        defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
-        }
-
-        let outcome = store.loadOutcome()
+        fileManager.failSetAttributes = true
+        let outcome = localStore.loadOutcome()
         guard case let .loaded(bundle, warning) = outcome else {
             return XCTFail("Expected loaded with warning, got \(outcome)")
         }
         XCTAssertEqual(bundle.selectedProfileID, profile.id)
         XCTAssertNotNil(warning)
-        XCTAssertTrue(warning?.contains("Failed to save") == true || warning?.isEmpty == false, warning ?? "")
+        XCTAssertTrue(warning?.isEmpty == false, warning ?? "")
     }
 
     func testLegacyAliasMigrationOnLoad() throws {
@@ -240,32 +251,29 @@ final class ProfileStoreRecoveryTests: XCTestCase {
     }
 
     func testFailedQuarantineBlocksLaterSavesEvenAfterPermissionsRestored() throws {
-        let readOnlyParent = tempDirectory.appendingPathComponent("readonly", isDirectory: true)
-        try FileManager.default.createDirectory(at: readOnlyParent, withIntermediateDirectories: true)
-        let nestedSupport = readOnlyParent.appendingPathComponent("nested-support", isDirectory: true)
+        let nestedSupport = tempDirectory.appendingPathComponent("nested-support-locked", isDirectory: true)
         try FileManager.default.createDirectory(at: nestedSupport, withIntermediateDirectories: true)
 
+        let fileManager = ToggleFileManager()
+        fileManager.failMoves = true
         let localStore = ProfileStore(
             deviceKey: "locked",
             applicationSupportDirectory: nestedSupport,
+            fileManager: fileManager,
             now: { Date(timeIntervalSince1970: 1_700_000_000) }
         )
         let corruptBytes = Data("{broken-source-must-survive".utf8)
         try corruptBytes.write(to: localStore.storageURL)
 
-        let appSupport = nestedSupport.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
-
         let outcome = localStore.loadOutcome()
         guard case let .corruptPreserved(bundle, sourceURL, _) = outcome else {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
             return XCTFail("Expected corruptPreserved, got \(outcome)")
         }
         XCTAssertTrue(localStore.writesBlockedForCorruptSource)
         XCTAssertEqual(try Data(contentsOf: sourceURL), corruptBytes)
 
-        // Restore write permission — durable block must still prevent overwrite.
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
+        // Moves work again — durable corrupt-source block must still prevent overwrite.
+        fileManager.failMoves = false
 
         XCTAssertThrowsError(try localStore.save(bundle)) { error in
             guard case .writeBlockedCorruptSource = error as? ProfileStoreError else {
@@ -282,25 +290,24 @@ final class ProfileStoreRecoveryTests: XCTestCase {
     }
 
     func testRetryQuarantineClearsWriteBlock() throws {
-        let readOnlyParent = tempDirectory.appendingPathComponent("readonly-retry", isDirectory: true)
-        try FileManager.default.createDirectory(at: readOnlyParent, withIntermediateDirectories: true)
-        let nestedSupport = readOnlyParent.appendingPathComponent("nested-support", isDirectory: true)
+        let nestedSupport = tempDirectory.appendingPathComponent("nested-support-retry", isDirectory: true)
         try FileManager.default.createDirectory(at: nestedSupport, withIntermediateDirectories: true)
 
+        let fileManager = ToggleFileManager()
+        fileManager.failMoves = true
         let localStore = ProfileStore(
             deviceKey: "retry",
             applicationSupportDirectory: nestedSupport,
+            fileManager: fileManager,
             now: { Date(timeIntervalSince1970: 1_700_000_000) }
         )
         let corruptBytes = Data("{retry-me".utf8)
         try corruptBytes.write(to: localStore.storageURL)
 
-        let appSupport = nestedSupport.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: appSupport.path)
         _ = localStore.loadOutcome()
         XCTAssertTrue(localStore.writesBlockedForCorruptSource)
 
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: appSupport.path)
+        fileManager.failMoves = false
         let quarantined = try localStore.retryQuarantineCorruptSource()
         XCTAssertFalse(localStore.writesBlockedForCorruptSource)
         XCTAssertTrue(FileManager.default.fileExists(atPath: quarantined.path))
@@ -350,5 +357,26 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: quarantinedURL.path))
         try store.save(bundle)
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.storageURL.path))
+    }
+}
+
+/// Test double that can force quarantine move / attribute failures without changing directory mode.
+/// Re-hardening on refresh would otherwise heal a 0555 support directory and mask these paths.
+private final class ToggleFileManager: FileManager, @unchecked Sendable {
+    var failMoves = false
+    var failSetAttributes = false
+
+    override func moveItem(at src: URL, to dst: URL) throws {
+        if failMoves {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES), userInfo: nil)
+        }
+        try super.moveItem(at: src, to: dst)
+    }
+
+    override func setAttributes(_ attributes: [FileAttributeKey: Any], ofItemAtPath path: String) throws {
+        if failSetAttributes {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES), userInfo: nil)
+        }
+        try super.setAttributes(attributes, ofItemAtPath: path)
     }
 }

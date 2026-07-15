@@ -233,7 +233,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
     func testChmodFailureBlocksLoadAndSaveWithoutCreatingProfileFile() throws {
         let store = ProfileStore(
             applicationSupportDirectory: temporaryDirectory,
-            chmodDirectory: { _, _ in
+            fchmodDirectory: { _, _ in
                 throw POSIXError(.EPERM)
             }
         )
@@ -252,6 +252,152 @@ final class ProfileSafetyValidatorTests: XCTestCase {
             }
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.storageURL.path))
+    }
+
+    func testDirectorySwapBeforeHardeningLeavesReplacementAndTargetUntouched() throws {
+        let support = temporaryDirectory.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
+        let target = temporaryDirectory.appendingPathComponent("swap-target", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+        let marker = target.appendingPathComponent("marker.txt")
+        let markerBytes = Data("do-not-touch".utf8)
+        try markerBytes.write(to: marker)
+
+        XCTAssertThrowsError(
+            try ProfileSafetyValidator.prepareSupportDirectory(
+                at: support,
+                openDirectory: { path in
+                    // Simulate a pathname swap after the initial existence check and before open.
+                    try FileManager.default.removeItem(at: support)
+                    try FileManager.default.createSymbolicLink(at: support, withDestinationURL: target)
+                    return try ProfileSafetyValidator.openSupportDirectoryFileDescriptor(atPath: path)
+                }
+            )
+        ) {
+            XCTAssertEqual($0 as? ProfileSafetyValidationError, .supportDirectorySymlink)
+        }
+
+        let values = try support.resourceValues(forKeys: [.isSymbolicLinkKey])
+        XCTAssertTrue(values.isSymbolicLink == true)
+        let targetMode = try FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(targetMode?.intValue, 0o755)
+        XCTAssertEqual(try Data(contentsOf: marker), markerBytes)
+    }
+
+    func testUnsafeSymlinkSupportDirectoryRejectsRetryQuarantineAndDiscard() throws {
+        let fixture = try makeUnsafeSymlinkSupportFixture()
+        let store = fixture.store
+
+        XCTAssertThrowsError(try store.retryQuarantineCorruptSource()) { error in
+            XCTAssertEqual(
+                error as? ProfileStoreError,
+                .unsafeSupportDirectory(.supportDirectorySymlink)
+            )
+        }
+        XCTAssertThrowsError(try store.discardCorruptSourceAndAllowWrites()) { error in
+            XCTAssertEqual(
+                error as? ProfileStoreError,
+                .unsafeSupportDirectory(.supportDirectorySymlink)
+            )
+        }
+    }
+
+    func testTargetProfileDataRemainsUnchangedAfterEveryRecoveryAction() throws {
+        let fixture = try makeUnsafeSymlinkSupportFixture()
+        let store = fixture.store
+
+        // Exercise every recovery entry point; each must fail closed without touching the target.
+        _ = store.loadOutcome()
+        XCTAssertThrowsError(try store.retryQuarantineCorruptSource())
+        XCTAssertThrowsError(try store.discardCorruptSourceAndAllowWrites())
+        XCTAssertThrowsError(try store.save(bundle()))
+
+        XCTAssertEqual(try Data(contentsOf: fixture.profileInTarget), fixture.profileBytes)
+        let targetMode = try FileManager.default.attributesOfItem(atPath: fixture.target.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(targetMode?.intValue, 0o755)
+        let linkValues = try fixture.link.resourceValues(forKeys: [.isSymbolicLinkKey])
+        XCTAssertTrue(linkValues.isSymbolicLink == true)
+        let targetChildren = try FileManager.default.contentsOfDirectory(atPath: fixture.target.path)
+        XCTAssertEqual(targetChildren, ["profiles-test-device.json"])
+    }
+
+    func testPostInitializationDirectorySwapRejectsRecoveryWithoutTouchingTarget() throws {
+        let supportRoot = temporaryDirectory.appendingPathComponent("safe-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: supportRoot, withIntermediateDirectories: true)
+
+        let fileManager = ToggleFileManager()
+        fileManager.failMoves = true
+        let store = ProfileStore(
+            deviceKey: "post-init",
+            applicationSupportDirectory: supportRoot,
+            fileManager: fileManager,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+        XCTAssertFalse(store.writesBlockedForUnsafeSupportDirectory)
+
+        let corruptBytes = Data("{post-init-corrupt".utf8)
+        try corruptBytes.write(to: store.storageURL)
+        _ = store.loadOutcome()
+        XCTAssertTrue(store.writesBlockedForCorruptSource)
+        // AppModel/SettingsView would offer quarantine/discard while the directory is still safe.
+        XCTAssertTrue(store.allowsCorruptSourceRecoveryActions)
+
+        let target = temporaryDirectory.appendingPathComponent("post-init-target", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+        let victim = target.appendingPathComponent("profiles-post-init.json")
+        let victimBytes = Data("victim-profile-bytes".utf8)
+        try victimBytes.write(to: victim)
+
+        // Swap the previously validated support directory for a symlink after initialization.
+        let supportDir = store.storageDirectoryURL
+        try FileManager.default.removeItem(at: supportDir)
+        try FileManager.default.createSymbolicLink(at: supportDir, withDestinationURL: target)
+
+        // Live app-facing gate must hide destructive actions after the swap.
+        XCTAssertTrue(store.writesBlockedForUnsafeSupportDirectory)
+        XCTAssertFalse(store.allowsCorruptSourceRecoveryActions)
+
+        XCTAssertThrowsError(try store.retryQuarantineCorruptSource()) { error in
+            XCTAssertEqual(
+                error as? ProfileStoreError,
+                .unsafeSupportDirectory(.supportDirectorySymlink)
+            )
+        }
+        XCTAssertThrowsError(try store.discardCorruptSourceAndAllowWrites()) { error in
+            XCTAssertEqual(
+                error as? ProfileStoreError,
+                .unsafeSupportDirectory(.supportDirectorySymlink)
+            )
+        }
+        XCTAssertThrowsError(try store.save(bundle()))
+
+        XCTAssertEqual(try Data(contentsOf: victim), victimBytes)
+        let targetMode = try FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(targetMode?.intValue, 0o755)
+        let targetChildren = try FileManager.default.contentsOfDirectory(atPath: target.path)
+        XCTAssertEqual(Set(targetChildren), ["profiles-post-init.json"])
+    }
+
+    /// Mirrors AppModel.allowsCorruptSourceRecoveryActions / SettingsView recovery-button gating.
+    func testAppFacingRecoveryGateHidesActionsWhenSupportDirectoryIsUnsafe() throws {
+        let fixture = try makeUnsafeSymlinkSupportFixture()
+        let store = fixture.store
+
+        // Same property AppModel forwards to SettingsView.
+        let allowsCorruptSourceRecoveryActions = store.allowsCorruptSourceRecoveryActions
+        XCTAssertFalse(allowsCorruptSourceRecoveryActions)
+        XCTAssertTrue(store.areWritesBlocked)
+
+        let outcome = store.loadOutcome()
+        guard case let .firstRun(_, warning) = outcome else {
+            return XCTFail("Expected firstRun under unsafe support directory, got \(outcome)")
+        }
+        XCTAssertNotNil(warning)
+        XCTAssertFalse(store.allowsCorruptSourceRecoveryActions)
+        XCTAssertFalse(store.writesBlockedForCorruptSource)
     }
 
     func testPrepareSupportDirectoryHardensExisting0755() throws {
@@ -305,6 +451,39 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
 
+    private struct UnsafeSymlinkSupportFixture {
+        let store: ProfileStore
+        let target: URL
+        let link: URL
+        let profileInTarget: URL
+        let profileBytes: Data
+    }
+
+    private func makeUnsafeSymlinkSupportFixture() throws -> UnsafeSymlinkSupportFixture {
+        let target = temporaryDirectory.appendingPathComponent("real-support", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+        let profileBytes = Data("{\"profiles\":[]}".utf8)
+        let profileInTarget = target.appendingPathComponent("profiles-test-device.json")
+        try profileBytes.write(to: profileInTarget)
+
+        let link = temporaryDirectory.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let store = ProfileStore(
+            deviceKey: "test-device",
+            applicationSupportDirectory: temporaryDirectory
+        )
+        XCTAssertTrue(store.writesBlockedForUnsafeSupportDirectory)
+        return UnsafeSymlinkSupportFixture(
+            store: store,
+            target: target,
+            link: link,
+            profileInTarget: profileInTarget,
+            profileBytes: profileBytes
+        )
+    }
+
     private func makeMinimalApplicationBundle(named name: String) throws -> URL {
         let appURL = temporaryDirectory.appendingPathComponent(name, isDirectory: true)
         let contents = appURL.appendingPathComponent("Contents", isDirectory: true)
@@ -329,5 +508,17 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         try Data(infoPlist.utf8).write(to: contents.appendingPathComponent("Info.plist"))
         try Data([0xCA, 0xFE, 0xBA, 0xBE]).write(to: macOS.appendingPathComponent("Example"))
         return appURL
+    }
+}
+
+/// Shared with recovery tests: force quarantine move failures without weakening directory mode.
+private final class ToggleFileManager: FileManager, @unchecked Sendable {
+    var failMoves = false
+
+    override func moveItem(at src: URL, to dst: URL) throws {
+        if failMoves {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES), userInfo: nil)
+        }
+        try super.moveItem(at: src, to: dst)
     }
 }

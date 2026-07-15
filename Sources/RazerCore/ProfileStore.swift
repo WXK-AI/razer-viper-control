@@ -177,17 +177,33 @@ public final class ProfileStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let now: () -> Date
-    private let supportDirectoryError: ProfileSafetyValidationError?
+    private let currentUID: () -> uid_t
+    private let openDirectory: (String) throws -> Int32
+    private let fchmodDirectory: (Int32, mode_t) throws -> Void
+    /// Cached result of the latest support-directory check. Revalidated before mutations and
+    /// app-facing recovery gates so a post-init pathname swap cannot stay trusted.
+    private var supportDirectoryError: ProfileSafetyValidationError?
 
     /// When true, `save` refuses to write the primary path so a corrupt source cannot be overwritten.
     public private(set) var writesBlockedForCorruptSource = false
 
     /// When true, support-directory validation failed and no profile files may be created.
-    public var writesBlockedForUnsafeSupportDirectory: Bool { supportDirectoryError != nil }
+    public var writesBlockedForUnsafeSupportDirectory: Bool {
+        refreshSupportDirectorySafety()
+        return supportDirectoryError != nil
+    }
 
     /// Combined write gate used by the app UI and recovery paths.
     public var areWritesBlocked: Bool {
         writesBlockedForCorruptSource || writesBlockedForUnsafeSupportDirectory
+    }
+
+    /// Corrupt-file quarantine/discard UI is only valid when the support directory itself is safe.
+    /// Revalidates the directory so AppModel/SettingsView cannot offer destructive actions after a
+    /// post-initialization swap to an unsafe path.
+    public var allowsCorruptSourceRecoveryActions: Bool {
+        refreshSupportDirectorySafety()
+        return writesBlockedForCorruptSource && supportDirectoryError == nil
     }
 
     public init(
@@ -196,8 +212,11 @@ public final class ProfileStore {
         fileManager: FileManager = .default,
         now: @escaping () -> Date = Date.init,
         currentUID: @escaping () -> uid_t = { getuid() },
-        chmodDirectory: @escaping (String, mode_t) throws -> Void = { path, mode in
-            if chmod(path, mode) != 0 {
+        openDirectory: @escaping (String) throws -> Int32 = { path in
+            try ProfileSafetyValidator.openSupportDirectoryFileDescriptor(atPath: path)
+        },
+        fchmodDirectory: @escaping (Int32, mode_t) throws -> Void = { fd, mode in
+            if fchmod(fd, mode) != 0 {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EPERM)
             }
         }
@@ -205,6 +224,9 @@ public final class ProfileStore {
         self.deviceKey = deviceKey
         self.fileManager = fileManager
         self.now = now
+        self.currentUID = currentUID
+        self.openDirectory = openDirectory
+        self.fchmodDirectory = fchmodDirectory
 
         let support = applicationSupportDirectory
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -213,18 +235,32 @@ public final class ProfileStore {
         fileURL = folder.appendingPathComponent("profiles-\(deviceKey).json")
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
+        refreshSupportDirectorySafety()
+    }
+
+    /// Re-runs FD-based support-directory hardening and updates the cached safety error.
+    @discardableResult
+    public func refreshSupportDirectorySafety() -> ProfileSafetyValidationError? {
         do {
             try ProfileSafetyValidator.prepareSupportDirectory(
-                at: folder,
+                at: directoryURL,
                 fileManager: fileManager,
                 currentUID: currentUID,
-                chmodDirectory: chmodDirectory
+                openDirectory: openDirectory,
+                fchmodDirectory: fchmodDirectory
             )
             supportDirectoryError = nil
         } catch let error as ProfileSafetyValidationError {
             supportDirectoryError = error
         } catch {
             supportDirectoryError = .supportDirectoryPermissionFailure(error.localizedDescription)
+        }
+        return supportDirectoryError
+    }
+
+    private func requireSafeSupportDirectory() throws {
+        if let error = refreshSupportDirectorySafety() {
+            throw ProfileStoreError.unsafeSupportDirectory(error)
         }
     }
 
@@ -236,7 +272,7 @@ public final class ProfileStore {
     }
 
     public func loadOutcome() -> ProfileLoadOutcome {
-        if let supportDirectoryError {
+        if let supportDirectoryError = refreshSupportDirectorySafety() {
             // Fail closed: never create profile files on an unsafe support directory.
             return .firstRun(
                 defaultBundle(),
@@ -303,9 +339,7 @@ public final class ProfileStore {
     }
 
     public func save(_ bundle: ProfileBundle) throws {
-        if let supportDirectoryError {
-            throw ProfileStoreError.unsafeSupportDirectory(supportDirectoryError)
-        }
+        try requireSafeSupportDirectory()
         if writesBlockedForCorruptSource {
             throw ProfileStoreError.writeBlockedCorruptSource(fileURL.path)
         }
@@ -334,6 +368,7 @@ public final class ProfileStore {
     /// Retries moving the corrupt primary file aside, then clears the write block.
     @discardableResult
     public func retryQuarantineCorruptSource() throws -> URL {
+        try requireSafeSupportDirectory()
         do {
             if sourcePathExists() {
                 let quarantineURL = try performQuarantineMove()
@@ -351,6 +386,7 @@ public final class ProfileStore {
 
     /// Explicitly removes the corrupt primary file and allows subsequent saves.
     public func discardCorruptSourceAndAllowWrites() throws {
+        try requireSafeSupportDirectory()
         do {
             if sourcePathExists() {
                 try fileManager.removeItem(at: fileURL)
@@ -374,6 +410,17 @@ public final class ProfileStore {
 
     private func quarantineAndRecover(reason: String) -> ProfileLoadOutcome {
         let defaults = defaultBundle()
+        do {
+            try requireSafeSupportDirectory()
+        } catch let error as ProfileStoreError {
+            writesBlockedForCorruptSource = true
+            let combined = "\(reason); \(error.localizedDescription)"
+            return .corruptPreserved(defaults, sourceURL: fileURL, reason: combined)
+        } catch {
+            writesBlockedForCorruptSource = true
+            let combined = "\(reason); support directory unsafe: \(error.localizedDescription)"
+            return .corruptPreserved(defaults, sourceURL: fileURL, reason: combined)
+        }
         do {
             let quarantineURL = try performQuarantineMove()
             writesBlockedForCorruptSource = false

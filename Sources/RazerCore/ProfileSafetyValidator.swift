@@ -80,13 +80,17 @@ public enum ProfileSafetyValidator {
     public static let ownerOnlyDirectoryMode: mode_t = 0o700
 
     /// Creates (if needed) and hardens a profile support directory to owner-only mode.
-    /// Rejects symlinks and non-directories without mutating symlink targets.
+    /// Opens with `O_NOFOLLOW | O_DIRECTORY` and hardens via `fchmod` on that inode so a
+    /// pathname swap to a symlink cannot mutate the replacement target.
     public static func prepareSupportDirectory(
         at url: URL,
         fileManager: FileManager = .default,
         currentUID: () -> uid_t = { getuid() },
-        chmodDirectory: (String, mode_t) throws -> Void = { path, mode in
-            if chmod(path, mode) != 0 {
+        openDirectory: (String) throws -> Int32 = { path in
+            try openSupportDirectoryFileDescriptor(atPath: path)
+        },
+        fchmodDirectory: (Int32, mode_t) throws -> Void = { fd, mode in
+            if fchmod(fd, mode) != 0 {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EPERM)
             }
         }
@@ -96,7 +100,13 @@ public enum ProfileSafetyValidator {
         let exists = lstat(path, &status) == 0
 
         if exists {
-            try validateExistingSupportDirectoryStatus(status, currentUID: currentUID())
+            // Fast-fail obvious pathname problems before open; open is still authoritative.
+            if (status.st_mode & S_IFMT) == S_IFLNK {
+                throw ProfileSafetyValidationError.supportDirectorySymlink
+            }
+            if (status.st_mode & S_IFMT) != S_IFDIR {
+                throw ProfileSafetyValidationError.supportDirectoryNotDirectory
+            }
         } else {
             do {
                 try fileManager.createDirectory(
@@ -107,22 +117,33 @@ public enum ProfileSafetyValidator {
             } catch {
                 throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(error.localizedDescription)
             }
-            guard lstat(path, &status) == 0 else {
-                throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("directory missing after create")
-            }
-            try validateExistingSupportDirectoryStatus(status, currentUID: currentUID())
         }
 
+        let fd: Int32
         do {
-            try chmodDirectory(path, ownerOnlyDirectoryMode)
+            fd = try openDirectory(path)
+        } catch let error as ProfileSafetyValidationError {
+            throw error
+        } catch {
+            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(error.localizedDescription)
+        }
+        defer { close(fd) }
+
+        guard fstat(fd, &status) == 0 else {
+            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("fstat failed after open")
+        }
+        try validateOpenedSupportDirectoryStatus(status, currentUID: currentUID())
+
+        do {
+            try fchmodDirectory(fd, ownerOnlyDirectoryMode)
         } catch {
             throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(error.localizedDescription)
         }
 
-        guard lstat(path, &status) == 0 else {
-            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("directory missing after chmod")
+        guard fstat(fd, &status) == 0 else {
+            throw ProfileSafetyValidationError.supportDirectoryPermissionFailure("fstat failed after fchmod")
         }
-        try validateExistingSupportDirectoryStatus(status, currentUID: currentUID())
+        try validateOpenedSupportDirectoryStatus(status, currentUID: currentUID())
         let mode = status.st_mode & 0o777
         guard mode == ownerOnlyDirectoryMode else {
             throw ProfileSafetyValidationError.supportDirectoryPermissionFailure(
@@ -131,13 +152,33 @@ public enum ProfileSafetyValidator {
         }
     }
 
-    private static func validateExistingSupportDirectoryStatus(
+    public static func openSupportDirectoryFileDescriptor(atPath path: String) throws -> Int32 {
+        let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else {
+            let openErrno = errno
+            // Darwin may report ENOTDIR (instead of ELOOP) when O_NOFOLLOW refuses a symlink.
+            if openErrno == ELOOP || openErrno == EMLINK || pathIsSymlink(path) {
+                throw ProfileSafetyValidationError.supportDirectorySymlink
+            }
+            if openErrno == ENOTDIR {
+                throw ProfileSafetyValidationError.supportDirectoryNotDirectory
+            }
+            throw POSIXError(POSIXErrorCode(rawValue: openErrno) ?? .EIO)
+        }
+        return fd
+    }
+
+    private static func pathIsSymlink(_ path: String) -> Bool {
+        var status = stat()
+        guard lstat(path, &status) == 0 else { return false }
+        return (status.st_mode & S_IFMT) == S_IFLNK
+    }
+
+    private static func validateOpenedSupportDirectoryStatus(
         _ status: stat,
         currentUID: uid_t
     ) throws {
-        guard (status.st_mode & S_IFMT) != S_IFLNK else {
-            throw ProfileSafetyValidationError.supportDirectorySymlink
-        }
+        // After O_DIRECTORY open, the inode is a directory; still verify owner/mode family.
         guard (status.st_mode & S_IFMT) == S_IFDIR else {
             throw ProfileSafetyValidationError.supportDirectoryNotDirectory
         }

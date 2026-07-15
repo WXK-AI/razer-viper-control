@@ -21,7 +21,16 @@ final class AppModel: ObservableObject {
     @Published var mappingWarning: String?
 
     var writesBlockedForCorruptSource: Bool {
+        profileStore.writesBlockedForCorruptSource
+    }
+
+    var areWritesBlocked: Bool {
         profileStore.areWritesBlocked
+    }
+
+    /// Quarantine/discard actions are only for preserved corrupt profile files.
+    var allowsCorruptSourceRecoveryActions: Bool {
+        profileStore.allowsCorruptSourceRecoveryActions
     }
     @Published var bundle: ProfileBundle
     @Published var launchAtLogin = false
@@ -63,7 +72,7 @@ final class AppModel: ObservableObject {
     }
 
     private let session = DeviceSession()
-    private let profileStore = ProfileStore()
+    private let profileStore: ProfileStore
     private let remapper = InputRemapper()
     private let systemExtensionManager = SystemExtensionManager()
     private let hidQueue = DispatchQueue(label: "com.razermenubar.hid", qos: .utility)
@@ -97,7 +106,8 @@ final class AppModel: ObservableObject {
         let appliedHardwareSettings: HardwareProfileSettings?
     }
 
-    init() {
+    init(profileStore: ProfileStore = ProfileStore()) {
+        self.profileStore = profileStore
         let outcome = profileStore.loadOutcome()
         bundle = outcome.bundle
 
@@ -128,7 +138,7 @@ final class AppModel: ObservableObject {
 
         if bundle.profiles.isEmpty {
             bundle = profileStore.defaultBundle()
-            if !profileStore.writesBlockedForCorruptSource {
+            if !profileStore.areWritesBlocked {
                 do {
                     try profileStore.save(bundle)
                 } catch {
@@ -175,7 +185,7 @@ final class AppModel: ObservableObject {
 
     func dismissPersistenceWarning() {
         // Dismissing the banner must not clear a durable corrupt-source write block.
-        if profileStore.writesBlockedForCorruptSource {
+        if profileStore.allowsCorruptSourceRecoveryActions {
             return
         }
         persistenceWarning = nil
@@ -183,6 +193,12 @@ final class AppModel: ObservableObject {
 
     /// Retries quarantine, then persists the in-memory defaults/bundle.
     func retryQuarantineCorruptProfiles() {
+        guard profileStore.allowsCorruptSourceRecoveryActions else {
+            persistenceWarning = profileStore.areWritesBlocked
+                ? (persistenceWarning ?? "Profile storage is blocked.")
+                : persistenceWarning
+            return
+        }
         do {
             let url = try profileStore.retryQuarantineCorruptSource()
             quarantinedProfileURL = url
@@ -197,6 +213,10 @@ final class AppModel: ObservableObject {
 
     /// Explicitly discards the corrupt primary file and starts fresh with the in-memory bundle.
     func discardCorruptFileAndStartFresh() {
+        guard profileStore.allowsCorruptSourceRecoveryActions else {
+            confirmDiscardCorruptFile = false
+            return
+        }
         do {
             try profileStore.discardCorruptSourceAndAllowWrites()
             try profileStore.save(bundle)
