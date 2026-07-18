@@ -382,21 +382,40 @@ public final class RazerCommandClient {
     private func performRoundTripAllowingUnsupported(_ request: RazerReport) throws -> CommandSendResult {
         let payload = request.bytes
         try transport.setFeatureReport(payload)
-        transport.sleep(milliseconds: DeviceDescriptor.responseWaitMilliseconds)
-        let response = try transport.getFeatureReport(length: RazerReport.length)
-
-        guard response.count == RazerReport.length else {
-            throw RazerCommandError.invalidResponse(
-                "Expected \(RazerReport.length) bytes, got \(response.count)."
-            )
-        }
-
-        let report = try RazerReport(bytes: response)
-        return try RazerResponseValidator.validate(
-            response: report,
-            for: request,
-            allowingUnsupported: true
+        let initialWait = min(
+            DeviceDescriptor.responseWaitMilliseconds,
+            DeviceDescriptor.responseDeadlineMilliseconds
         )
+        transport.sleep(milliseconds: initialWait)
+        var elapsedMilliseconds = initialWait
+
+        while true {
+            let response = try transport.getFeatureReport(length: RazerReport.length)
+            guard response.count == RazerReport.length else {
+                throw RazerCommandError.invalidResponse(
+                    "Expected \(RazerReport.length) bytes, got \(response.count)."
+                )
+            }
+
+            let report = try RazerReport(bytes: response)
+            do {
+                return try RazerResponseValidator.validate(
+                    response: report,
+                    for: request,
+                    allowingUnsupported: true
+                )
+            } catch let RazerCommandError.blockedDeviceAccess(details) {
+                guard elapsedMilliseconds < DeviceDescriptor.responseDeadlineMilliseconds else {
+                    throw RazerCommandError.blockedDeviceAccess(details)
+                }
+                let pollWait = min(
+                    DeviceDescriptor.responsePollIntervalMilliseconds,
+                    DeviceDescriptor.responseDeadlineMilliseconds - elapsedMilliseconds
+                )
+                transport.sleep(milliseconds: pollWait)
+                elapsedMilliseconds += pollWait
+            }
+        }
     }
 
     private func performRoundTrip(_ request: RazerReport) throws -> RazerReport {

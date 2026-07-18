@@ -77,6 +77,59 @@ final class RazerCommandClientTransportTests: XCTestCase {
         XCTAssertEqual(transport.sleeps, [DeviceDescriptor.responseWaitMilliseconds])
     }
 
+    func testNewCommandResponsesPollGetThenSucceed() throws {
+        let request = RazerReport.getBatteryLevel()
+        let transport = FakeRazerReportTransport(
+            getResponses: [
+                .success(response(for: request, status: .newCommand).bytes),
+                .success(response(for: request, status: .newCommand).bytes),
+                .success(response(for: request, status: .successful).bytes)
+            ]
+        )
+        let client = RazerCommandClient(transport: transport)
+
+        let report = try client.send(request)
+
+        XCTAssertEqual(report.responseStatus, RazerReportStatus.successful)
+        XCTAssertEqual(transport.setCount, 1)
+        XCTAssertEqual(transport.getCount, 3)
+        XCTAssertEqual(
+            transport.sleeps,
+            [
+                DeviceDescriptor.responseWaitMilliseconds,
+                DeviceDescriptor.responsePollIntervalMilliseconds,
+                DeviceDescriptor.responsePollIntervalMilliseconds
+            ]
+        )
+    }
+
+    func testNewCommandPollingStopsAtDeadlineAndReportsBlockedAccess() {
+        let request = RazerReport.getBatteryLevel()
+        let notReady: Result<[UInt8], RazerCommandError> = .success(
+            response(for: request, status: .newCommand).bytes
+        )
+        let transport = FakeRazerReportTransport(
+            getResponses: Array(repeating: notReady, count: 32)
+        )
+        let client = RazerCommandClient(transport: transport)
+
+        XCTAssertThrowsError(try client.send(request)) { error in
+            XCTAssertEqual(
+                error as? RazerCommandError,
+                .blockedDeviceAccess("status 0x00 — no acknowledgement")
+            )
+        }
+        XCTAssertEqual(transport.setCount, 1)
+        XCTAssertEqual(
+            transport.sleeps.reduce(UInt64(0), +),
+            DeviceDescriptor.responseDeadlineMilliseconds
+        )
+        XCTAssertLessThanOrEqual(
+            transport.sleeps.reduce(UInt64(0), +),
+            DeviceDescriptor.responseDeadlineMilliseconds
+        )
+    }
+
     private func response(for request: RazerReport, status: RazerReportStatus) -> RazerReport {
         var response = request
         response.status = status.rawValue

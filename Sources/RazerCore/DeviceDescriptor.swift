@@ -9,7 +9,9 @@ public enum DeviceDescriptor {
 
     public static let featureReportLength = 90
     public static let transactionID: UInt8 = 0x1F
-    public static let responseWaitMilliseconds: UInt64 = 60
+    public static let responseWaitMilliseconds: UInt64 = 15
+    public static let responsePollIntervalMilliseconds: UInt64 = 15
+    public static let responseDeadlineMilliseconds: UInt64 = 200
     public static let maxCommandRetries = 5
 
     public static let minDPI = 100
