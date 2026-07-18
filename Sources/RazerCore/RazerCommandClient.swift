@@ -138,9 +138,9 @@ public enum RazerCommandError: Error, LocalizedError, Equatable {
     /// (sleep/wake, dongle re-enumeration, timeout). Clear and reopen the session.
     public var shouldInvalidateSession: Bool {
         switch self {
-        case .timeout, .transport, .deviceNotOpen, .invalidResponse:
+        case .timeout, .transport, .deviceNotOpen, .invalidResponse, .deviceBusy:
             return true
-        case .permissionDenied, .blockedDeviceAccess, .deviceBusy, .unsupportedCommand:
+        case .permissionDenied, .blockedDeviceAccess, .unsupportedCommand:
             return false
         }
     }

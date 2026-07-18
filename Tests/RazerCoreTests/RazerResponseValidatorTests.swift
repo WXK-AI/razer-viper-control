@@ -160,4 +160,8 @@ final class RazerResponseValidatorTests: XCTestCase {
             XCTAssertEqual(error as? RazerCommandError, .deviceBusy)
         }
     }
+
+    func testDeviceBusyInvalidatesCachedSession() {
+        XCTAssertTrue(RazerCommandError.deviceBusy.shouldInvalidateSession)
+    }
 }

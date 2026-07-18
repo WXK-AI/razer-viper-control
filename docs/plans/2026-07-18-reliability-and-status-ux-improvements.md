@@ -339,7 +339,7 @@ Follow the checklist in phase order (Phase 1 first). TDD every task: write the f
 
 - [x] Task 1: Inject `RazerReportTransport` into `RazerCommandClient` + transport tests
 - [x] Task 2: Bounded response poll replaces fixed 60 ms sleep
-- [ ] Task 3: BUSY exhaustion + explicit-apply failure invalidate session
+- [x] Task 3: BUSY exhaustion + explicit-apply failure invalidate session
 - [ ] Task 4: Deterministic control-interface selection
 - [ ] Task 5: Removal callbacks + sleep/wake reconnect
 - [ ] Task 6: Post-apply readback verification + fail-closed polling decode

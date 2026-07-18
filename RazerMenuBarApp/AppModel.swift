@@ -553,6 +553,9 @@ final class AppModel: ObservableObject {
                     self.syncRemapper()
                 }
             } catch {
+                if HardwareApplyFailurePolicy.shouldInvalidate(error: error) {
+                    self.session.disconnect()
+                }
                 Task { @MainActor in
                     self.statusMessage = error.localizedDescription
                     if let applyError = error as? HardwareApplyError {

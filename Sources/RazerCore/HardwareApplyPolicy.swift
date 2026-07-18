@@ -46,6 +46,19 @@ public enum HardwareApplyBaseline {
     }
 }
 
+/// Decides whether an explicit apply failure makes the cached HID session unsafe to reuse.
+public enum HardwareApplyFailurePolicy {
+    public static func shouldInvalidate(error: Error) -> Bool {
+        if let commandError = error as? RazerCommandError {
+            return commandError.shouldInvalidateSession
+        }
+        if error is RazerValidationError {
+            return false
+        }
+        return true
+    }
+}
+
 /// Monotonic gate so stale queued hardware applies can be discarded before their first write.
 public final class LatestHardwareApplyGate: @unchecked Sendable {
     private let lock = NSLock()

@@ -220,4 +220,41 @@ final class HardwareApplyPolicyTests: XCTestCase {
         ]
         XCTAssertEqual(Set(reasons.map(\.rawValue)).count, 4)
     }
+
+    func testApplyFailureInvalidatesForWedgedCommandAndReadbackErrors() {
+        XCTAssertTrue(
+            HardwareApplyFailurePolicy.shouldInvalidate(error: RazerCommandError.deviceBusy)
+        )
+        XCTAssertTrue(
+            HardwareApplyFailurePolicy.shouldInvalidate(error: RazerCommandError.timeout)
+        )
+        XCTAssertTrue(
+            HardwareApplyFailurePolicy.shouldInvalidate(
+                error: HardwareApplyError.unknownWheelReadback(fields: ["scrollMode"])
+            )
+        )
+    }
+
+    func testApplyFailureKeepsSessionForAccessAndValidationErrors() {
+        XCTAssertFalse(
+            HardwareApplyFailurePolicy.shouldInvalidate(
+                error: RazerCommandError.permissionDenied("test")
+            )
+        )
+        XCTAssertFalse(
+            HardwareApplyFailurePolicy.shouldInvalidate(
+                error: RazerCommandError.blockedDeviceAccess("test")
+            )
+        )
+        XCTAssertFalse(
+            HardwareApplyFailurePolicy.shouldInvalidate(
+                error: RazerCommandError.unsupportedCommand
+            )
+        )
+        XCTAssertFalse(
+            HardwareApplyFailurePolicy.shouldInvalidate(
+                error: RazerValidationError.unsupportedPollingRate(250)
+            )
+        )
+    }
 }
