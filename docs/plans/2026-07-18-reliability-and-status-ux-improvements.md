@@ -337,7 +337,7 @@ Follow the checklist in phase order (Phase 1 first). TDD every task: write the f
 
 ## Implementation checklist
 
-- [ ] Task 1: Inject `RazerReportTransport` into `RazerCommandClient` + transport tests
+- [x] Task 1: Inject `RazerReportTransport` into `RazerCommandClient` + transport tests
 - [ ] Task 2: Bounded response poll replaces fixed 60 ms sleep
 - [ ] Task 3: BUSY exhaustion + explicit-apply failure invalidate session
 - [ ] Task 4: Deterministic control-interface selection

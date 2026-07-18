@@ -1,10 +1,5 @@
 import Foundation
 
-/// Injectable transport for 90-byte Razer feature-report round trips.
-public protocol RazerReportTransport: Sendable {
-    func roundTrip(_ request: [UInt8]) throws -> [UInt8]
-}
-
 /// Validates feature-report responses against the originating request.
 public enum RazerResponseValidator {
     public static func validate(

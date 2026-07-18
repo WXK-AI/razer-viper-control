@@ -1,6 +1,98 @@
 import Foundation
 import IOKit.hid
 
+/// Injectable lifecycle, I/O, and timing seam for Razer feature reports.
+public protocol RazerReportTransport: Sendable {
+    func open(nonSeizing: Bool) throws
+    func close()
+    func setFeatureReport(_ report: [UInt8]) throws
+    func getFeatureReport(length: Int) throws -> [UInt8]
+    func sleep(milliseconds: UInt64)
+}
+
+private final class IOHIDReportTransport: RazerReportTransport, @unchecked Sendable {
+    private let device: IOHIDDevice
+    private let reportID: CFIndex = 0
+
+    init(device: IOHIDDevice) {
+        self.device = device
+    }
+
+    func open(nonSeizing: Bool) throws {
+        let options = nonSeizing
+            ? IOOptionBits(kIOHIDOptionsTypeNone)
+            : IOOptionBits(kIOHIDOptionsTypeSeizeDevice)
+        let result = IOHIDDeviceOpen(device, options)
+        guard result == kIOReturnSuccess else {
+            throw mapOpenError(result)
+        }
+    }
+
+    func close() {
+        IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
+    }
+
+    func setFeatureReport(_ report: [UInt8]) throws {
+        let result = IOHIDDeviceSetReport(
+            device,
+            kIOHIDReportTypeFeature,
+            reportID,
+            report,
+            report.count
+        )
+        guard result == kIOReturnSuccess else {
+            throw mapTransportError(result, phase: "set")
+        }
+    }
+
+    func getFeatureReport(length: Int) throws -> [UInt8] {
+        var response = [UInt8](repeating: 0, count: length)
+        var responseLength = response.count
+        let result = IOHIDDeviceGetReport(
+            device,
+            kIOHIDReportTypeFeature,
+            reportID,
+            &response,
+            &responseLength
+        )
+        guard result == kIOReturnSuccess else {
+            throw mapTransportError(result, phase: "get")
+        }
+        guard responseLength <= response.count else {
+            throw RazerCommandError.invalidResponse(
+                "Expected at most \(response.count) bytes, got \(responseLength)."
+            )
+        }
+        return Array(response.prefix(responseLength))
+    }
+
+    func sleep(milliseconds: UInt64) {
+        usleep(useconds_t(milliseconds * 1_000))
+    }
+
+    private func mapOpenError(_ result: IOReturn) -> RazerCommandError {
+        switch result {
+        case kIOReturnNotPermitted, kIOReturnNotPrivileged:
+            return .permissionDenied("open result \(result)")
+        case kIOReturnExclusiveAccess:
+            return .blockedDeviceAccess("device already seized")
+        default:
+            return .transport("open result \(result)")
+        }
+    }
+
+    private func mapTransportError(_ result: IOReturn, phase: String) -> RazerCommandError {
+        switch result {
+        case kIOReturnNotPermitted, kIOReturnNotPrivileged:
+            return .permissionDenied("\(phase) result \(result)")
+        case kIOReturnExclusiveAccess:
+            return .blockedDeviceAccess("\(phase) result \(result)")
+        default:
+            return .transport("\(phase) result \(result)")
+        }
+    }
+}
+
 public enum RazerCommandError: Error, LocalizedError, Equatable {
     case deviceNotOpen
     case permissionDenied(String)
@@ -88,25 +180,22 @@ public struct DeviceState: Equatable, Sendable {
 }
 
 public final class RazerCommandClient {
-    private let device: IOHIDDevice
-    private let reportID: CFIndex = 0
+    private let transport: any RazerReportTransport
 
     public init(device: IOHIDDevice) {
-        self.device = device
+        transport = IOHIDReportTransport(device: device)
+    }
+
+    public init(transport: any RazerReportTransport) {
+        self.transport = transport
     }
 
     public func open(nonSeizing: Bool = true) throws {
-        let options = nonSeizing
-            ? IOOptionBits(kIOHIDOptionsTypeNone)
-            : IOOptionBits(kIOHIDOptionsTypeSeizeDevice)
-        let result = IOHIDDeviceOpen(device, options)
-        guard result == kIOReturnSuccess else {
-            throw mapOpenError(result)
-        }
+        try transport.open(nonSeizing: nonSeizing)
     }
 
     public func close() {
-        IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        transport.close()
     }
 
     @discardableResult
@@ -119,7 +208,7 @@ public final class RazerCommandClient {
             } catch RazerCommandError.deviceBusy {
                 lastError = RazerCommandError.deviceBusy
                 if attempt < DeviceDescriptor.maxCommandRetries {
-                    Thread.sleep(forTimeInterval: 0.05 * Double(attempt))
+                    transport.sleep(milliseconds: UInt64(50 * attempt))
                 }
             } catch {
                 throw error
@@ -177,7 +266,7 @@ public final class RazerCommandClient {
             } catch RazerCommandError.deviceBusy {
                 lastError = RazerCommandError.deviceBusy
                 if attempt < DeviceDescriptor.maxCommandRetries {
-                    Thread.sleep(forTimeInterval: 0.05 * Double(attempt))
+                    transport.sleep(milliseconds: UInt64(50 * attempt))
                 }
             } catch {
                 throw error
@@ -292,38 +381,14 @@ public final class RazerCommandClient {
 
     private func performRoundTripAllowingUnsupported(_ request: RazerReport) throws -> CommandSendResult {
         let payload = request.bytes
+        try transport.setFeatureReport(payload)
+        transport.sleep(milliseconds: DeviceDescriptor.responseWaitMilliseconds)
+        let response = try transport.getFeatureReport(length: RazerReport.length)
 
-        let setResult = IOHIDDeviceSetReport(
-            device,
-            kIOHIDReportTypeFeature,
-            reportID,
-            payload,
-            payload.count
-        )
-
-        guard setResult == kIOReturnSuccess else {
-            throw mapTransportError(setResult, phase: "set")
-        }
-
-        usleep(useconds_t(DeviceDescriptor.responseWaitMilliseconds * 1000))
-
-        var response = [UInt8](repeating: 0, count: RazerReport.length)
-        var responseLength = response.count
-
-        let getResult = IOHIDDeviceGetReport(
-            device,
-            kIOHIDReportTypeFeature,
-            reportID,
-            &response,
-            &responseLength
-        )
-
-        guard getResult == kIOReturnSuccess else {
-            throw mapTransportError(getResult, phase: "get")
-        }
-
-        guard responseLength == RazerReport.length else {
-            throw RazerCommandError.invalidResponse("Expected \(RazerReport.length) bytes, got \(responseLength).")
+        guard response.count == RazerReport.length else {
+            throw RazerCommandError.invalidResponse(
+                "Expected \(RazerReport.length) bytes, got \(response.count)."
+            )
         }
 
         let report = try RazerReport(bytes: response)
@@ -343,25 +408,4 @@ public final class RazerCommandClient {
         }
     }
 
-    private func mapOpenError(_ result: IOReturn) -> RazerCommandError {
-        switch result {
-        case kIOReturnNotPermitted, kIOReturnNotPrivileged:
-            return .permissionDenied("open result \(result)")
-        case kIOReturnExclusiveAccess:
-            return .blockedDeviceAccess("device already seized")
-        default:
-            return .transport("open result \(result)")
-        }
-    }
-
-    private func mapTransportError(_ result: IOReturn, phase: String) -> RazerCommandError {
-        switch result {
-        case kIOReturnNotPermitted, kIOReturnNotPrivileged:
-            return .permissionDenied("\(phase) result \(result)")
-        case kIOReturnExclusiveAccess:
-            return .blockedDeviceAccess("\(phase) result \(result)")
-        default:
-            return .transport("\(phase) result \(result)")
-        }
-    }
 }
