@@ -1,7 +1,8 @@
 import Foundation
+import IOKit
 import IOKit.hid
 
-public struct DiscoveredHIDInterface: Identifiable, Sendable {
+public struct DiscoveredHIDInterface: Identifiable, Sendable, Equatable {
     public let id: String
     public let vendorID: UInt16
     public let productID: UInt16
@@ -11,12 +12,25 @@ public struct DiscoveredHIDInterface: Identifiable, Sendable {
     public let primaryUsage: UInt32
     public let maxFeatureReportSize: Int
     public let transport: String
+    /// Display / ranking location from `kIOHIDLocationIDKey`. Not used as device identity.
+    /// `nil` means the property was absent (distinct from a reported `0`).
+    public let locationID: UInt32?
     public let isTargetControlInterface: Bool
+
+    /// Unique within a discovery pass for selection ordering/mapping.
+    /// Prefers `IORegistryEntryGetRegistryEntryID` when available; otherwise a process-local fallback.
+    let selectionIdentity: UInt64
 
     public var summary: String {
         let marker = isTargetControlInterface ? " [control]" : ""
+        let locationText: String
+        if let locationID {
+            locationText = String(format: " loc %08X", locationID)
+        } else {
+            locationText = " loc nil"
+        }
         return String(
-            format: "%04X:%04X %@ usage %u:%u feature %dB transport %@%@",
+            format: "%04X:%04X %@ usage %u:%u feature %dB transport %@%@%@",
             vendorID,
             productID,
             productName,
@@ -24,8 +38,18 @@ public struct DiscoveredHIDInterface: Identifiable, Sendable {
             primaryUsage,
             maxFeatureReportSize,
             transport,
+            locationText,
             marker
         )
+    }
+
+    /// Builds the public `id` from vendor/product + selection identity (not location).
+    static func makeID(
+        vendorID: UInt16,
+        productID: UInt16,
+        selectionIdentity: UInt64
+    ) -> String {
+        String(format: "%04X:%04X:%016llX", vendorID, productID, selectionIdentity)
     }
 }
 
@@ -68,14 +92,69 @@ public final class HIDDeviceDiscovery {
             return nil
         }
 
-        let candidates = deviceSet
+        let candidates: [(IOHIDDevice, DiscoveredHIDInterface)] = deviceSet
             .compactMap { device -> (IOHIDDevice, DiscoveredHIDInterface)? in
                 guard let info = describe(device: device), info.isTargetControlInterface else { return nil }
                 return (device, info)
             }
             .filter { $0.1.productID == DeviceDescriptor.productID }
 
-        return candidates.first?.0
+        // Index into this candidate array — never remap via display location / non-unique fields.
+        guard let index = Self.selectControlInterfaceIndex(from: candidates.map(\.1)) else {
+            return nil
+        }
+        return candidates[index].0
+    }
+
+    /// Deterministic pick among control-interface candidates (by value).
+    static func selectControlInterface(from interfaces: [DiscoveredHIDInterface]) -> DiscoveredHIDInterface? {
+        guard let index = selectControlInterfaceIndex(from: interfaces) else { return nil }
+        return interfaces[index]
+    }
+
+    /// Preferred candidate index in `interfaces`. Callers map back with this index.
+    static func selectControlInterfaceIndex(from interfaces: [DiscoveredHIDInterface]) -> Int? {
+        guard !interfaces.isEmpty else { return nil }
+        return interfaces.indices.min { lhs, rhs in
+            isPreferredControlInterface(interfaces[lhs], before: interfaces[rhs])
+        }
+    }
+
+    /// Total order: transport preference → known lowest location → selection identity → `id`.
+    private static func isPreferredControlInterface(
+        _ lhs: DiscoveredHIDInterface,
+        before rhs: DiscoveredHIDInterface
+    ) -> Bool {
+        let leftRank = transportPreferenceRank(lhs.transport)
+        let rightRank = transportPreferenceRank(rhs.transport)
+        if leftRank != rightRank {
+            return leftRank < rightRank
+        }
+
+        let leftLocation = lhs.locationID ?? .max
+        let rightLocation = rhs.locationID ?? .max
+        if leftLocation != rightLocation {
+            return leftLocation < rightLocation
+        }
+
+        if lhs.selectionIdentity != rhs.selectionIdentity {
+            return lhs.selectionIdentity < rhs.selectionIdentity
+        }
+
+        return lhs.id < rhs.id
+    }
+
+    /// Lower rank is preferred. USB/dongle beat unknown/other; Bluetooth is last.
+    private static func transportPreferenceRank(_ transport: String) -> Int {
+        let normalized = transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.contains("usb") || normalized.contains("dongle") {
+            return 0
+        }
+        if normalized.contains("bluetooth") {
+            return 2
+        }
+        // Missing, "unknown", or unrecognized transports stay between USB and Bluetooth.
+        return 1
     }
 
     private func makeManager() throws -> IOHIDManager {
@@ -103,14 +182,19 @@ public final class HIDDeviceDiscovery {
         let product = stringProperty(device, key: kIOHIDProductKey) ?? "Unknown"
         let manufacturer = stringProperty(device, key: kIOHIDManufacturerKey) ?? "Unknown"
         let transport = stringProperty(device, key: kIOHIDTransportKey) ?? "unknown"
-        let locationID = property(device, key: kIOHIDLocationIDKey) ?? 0
+        let locationID = property(device, key: kIOHIDLocationIDKey)
+        let selectionIdentity = Self.selectionIdentity(for: device)
 
         let isTarget = usagePage == DeviceDescriptor.primaryUsagePage
             && usage == DeviceDescriptor.primaryUsage
             && featureSize >= DeviceDescriptor.featureReportLength
 
         return DiscoveredHIDInterface(
-            id: String(format: "%04X:%04X:%08X", vendorID, productID, locationID),
+            id: DiscoveredHIDInterface.makeID(
+                vendorID: vendorID,
+                productID: productID,
+                selectionIdentity: selectionIdentity
+            ),
             vendorID: vendorID,
             productID: productID,
             productName: product,
@@ -119,8 +203,24 @@ public final class HIDDeviceDiscovery {
             primaryUsage: usage,
             maxFeatureReportSize: Int(featureSize),
             transport: transport,
-            isTargetControlInterface: isTarget
+            locationID: locationID,
+            isTargetControlInterface: isTarget,
+            selectionIdentity: selectionIdentity
         )
+    }
+
+    /// Selection identity for one discovery pass: registry-entry ID when
+    /// `IORegistryEntryGetRegistryEntryID` succeeds; otherwise a high-bit-tagged
+    /// process-local surrogate from the in-process `IOHIDDevice` object identity
+    /// so candidates stay distinct and totally ordered (not stable across launches).
+    private static func selectionIdentity(for device: IOHIDDevice) -> UInt64 {
+        let service = IOHIDDeviceGetService(device)
+        var entryID: UInt64 = 0
+        if IORegistryEntryGetRegistryEntryID(service, &entryID) == KERN_SUCCESS {
+            return entryID
+        }
+        let pointerValue = UInt64(UInt(bitPattern: ObjectIdentifier(device)))
+        return 0x8000_0000_0000_0000 | (pointerValue & 0x7FFF_FFFF_FFFF_FFFF)
     }
 
     private func property(_ device: IOHIDDevice, key: String) -> UInt32? {
