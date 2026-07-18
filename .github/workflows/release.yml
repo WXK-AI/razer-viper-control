@@ -23,42 +23,55 @@ jobs:
   release:
     runs-on: macos-15
     steps:
-      - name: Resolve release tag name
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Checkout with full tag history
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Resolve release commit
-        id: commit
+      - name: Resolve release tag name
+        id: tag
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_RELEASE_TAG: ${{ github.event.inputs.tag }}
+          PUSH_RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.name }}"
-          case "$TAG" in
-            v*) ;;
+          case "$RELEASE_EVENT_NAME" in
+            workflow_dispatch)
+              TAG="$DISPATCH_RELEASE_TAG"
+              ;;
+            push)
+              TAG="$PUSH_RELEASE_TAG"
+              ;;
             *)
-              echo "error: release tag must start with 'v' (got: $TAG)" >&2
+              printf 'error: unsupported release event: %q\n' "$RELEASE_EVENT_NAME" >&2
               exit 1
               ;;
           esac
+
+          bash scripts/validate-release-tag.sh "$TAG"
+          printf 'name=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve release commit
+        id: commit
+        env:
+          RELEASE_EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          TAG="$RELEASE_TAG"
+          bash scripts/validate-release-tag.sh "$TAG"
 
           git fetch --tags --force origin
 
           # Always build from the initially selected workflow commit so release
           # tooling matches the sources under test. Never check out a historical tag.
           INTENDED_SHA="$(git rev-parse HEAD)"
+          TAG_REF="refs/tags/${TAG}"
 
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            TAG_SHA="$(git rev-list -n 1 "refs/tags/${TAG}")"
+          if TAG_OBJECT="$(git rev-parse -q --verify "$TAG_REF")"; then
+            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
             echo "Tag ${TAG} already exists at ${TAG_SHA}"
             if [ "$TAG_SHA" != "$INTENDED_SHA" ]; then
               echo "error: published tags are immutable" >&2
@@ -68,18 +81,20 @@ jobs:
               exit 1
             fi
             echo "Tag ${TAG} already matches this commit; will republish assets without moving the tag"
-            echo "sha=${INTENDED_SHA}" >> "$GITHUB_OUTPUT"
-            echo "create_tag=false" >> "$GITHUB_OUTPUT"
+            CREATE_TAG=false
           else
-            if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            if [ "$RELEASE_EVENT_NAME" != "workflow_dispatch" ]; then
               echo "error: tag push event for missing tag ${TAG}" >&2
               exit 1
             fi
             echo "New tag ${TAG} will be pushed at ${INTENDED_SHA} only after validation succeeds"
-            echo "sha=${INTENDED_SHA}" >> "$GITHUB_OUTPUT"
-            echo "create_tag=true" >> "$GITHUB_OUTPUT"
+            TAG_OBJECT=""
+            CREATE_TAG=true
           fi
 
+          printf 'sha=%s\n' "$INTENDED_SHA" >> "$GITHUB_OUTPUT"
+          printf 'create_tag=%s\n' "$CREATE_TAG" >> "$GITHUB_OUTPUT"
+          printf 'tag_object=%s\n' "$TAG_OBJECT" >> "$GITHUB_OUTPUT"
           echo "Building from $(git rev-parse HEAD) for tag ${TAG}"
 
       - name: Install pinned XcodeGen
@@ -116,25 +131,142 @@ jobs:
           shasum -a 256 RazerMenuBarApp-macOS.dmg *.zip > SHA256SUMS.txt
           ls -la
 
-      - name: Push new release tag
-        if: steps.commit.outputs.create_tag == 'true'
+      - name: Verify or push release tag
+        env:
+          CREATE_TAG: ${{ steps.commit.outputs.create_tag }}
+          ORIGINAL_TAG_OBJECT: ${{ steps.commit.outputs.tag_object }}
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
+          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.name }}"
-          SHA="${{ steps.commit.outputs.sha }}"
+          TAG="$RELEASE_TAG"
+          SHA="$RELEASE_SHA"
+          bash scripts/validate-release-tag.sh "$TAG"
+
+          case "$CREATE_TAG" in
+            true|false) ;;
+            *)
+              printf 'error: invalid create_tag state: %q\n' "$CREATE_TAG" >&2
+              exit 1
+              ;;
+          esac
+
+          CURRENT_SHA="$(git rev-parse HEAD)"
+          if [ "$SHA" != "$CURRENT_SHA" ]; then
+            echo "error: intended release SHA ${SHA} no longer matches checkout ${CURRENT_SHA}" >&2
+            exit 1
+          fi
+
+          TAG_REF="refs/tags/${TAG}"
+
+          exact_remote_tag_object() {
+            local remote_records
+            local parsed_object
+            local parser_status
+
+            if ! remote_records="$(git ls-remote --refs origin "$TAG_REF")"; then
+              echo "error: unable to query remote tag ${TAG_REF}" >&2
+              return 3
+            fi
+
+            if parsed_object="$(printf '%s\n' "$remote_records" | bash scripts/parse-exact-ls-remote-ref.sh "$TAG_REF")"; then
+              printf '%s' "$parsed_object"
+              return 0
+            else
+              parser_status=$?
+              if [ "$parser_status" -eq 1 ]; then
+                return 1
+              fi
+              echo "error: unable to parse exact remote tag ${TAG_REF}" >&2
+              return "$parser_status"
+            fi
+          }
+
           git fetch --tags --force origin
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            EXISTING="$(git rev-list -n 1 "refs/tags/${TAG}")"
-            if [ "$EXISTING" != "$SHA" ]; then
-              echo "error: tag ${TAG} appeared at ${EXISTING}, expected ${SHA}" >&2
+          LOCAL_TAG_OBJECT="$(git rev-parse -q --verify "$TAG_REF" || true)"
+          REMOTE_TAG_OBJECT=""
+          REMOTE_TAG_PRESENT=false
+          if REMOTE_TAG_OBJECT="$(exact_remote_tag_object)"; then
+            REMOTE_TAG_PRESENT=true
+          else
+            REMOTE_TAG_STATUS=$?
+            if [ "$REMOTE_TAG_STATUS" -ne 1 ]; then
               exit 1
             fi
-            echo "Tag ${TAG} already points at ${SHA}; skipping push"
+          fi
+
+          if [ "$CREATE_TAG" = "false" ]; then
+            if [ -z "$ORIGINAL_TAG_OBJECT" ]; then
+              echo "error: existing-tag release is missing its original tag object" >&2
+              exit 1
+            fi
+            if [ -z "$LOCAL_TAG_OBJECT" ] || [ "$REMOTE_TAG_PRESENT" != "true" ]; then
+              echo "error: existing tag ${TAG} is missing locally or remotely" >&2
+              echo "  local object: ${LOCAL_TAG_OBJECT:-<missing>}" >&2
+              echo "  remote object: ${REMOTE_TAG_OBJECT:-<missing>}" >&2
+              exit 1
+            fi
+            if [ "$LOCAL_TAG_OBJECT" != "$ORIGINAL_TAG_OBJECT" ] || [ "$REMOTE_TAG_OBJECT" != "$ORIGINAL_TAG_OBJECT" ]; then
+              echo "error: existing tag object identity changed for ${TAG}" >&2
+              echo "  original object: ${ORIGINAL_TAG_OBJECT}" >&2
+              echo "  local object: ${LOCAL_TAG_OBJECT}" >&2
+              echo "  remote object: ${REMOTE_TAG_OBJECT}" >&2
+              exit 1
+            fi
+
+            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
+            if [ "$TAG_SHA" != "$SHA" ]; then
+              echo "error: published tag ${TAG} is immutable" >&2
+              echo "  tag commit: ${TAG_SHA}" >&2
+              echo "  intended commit: ${SHA}" >&2
+              exit 1
+            fi
+
+            echo "Verified existing tag object ${ORIGINAL_TAG_OBJECT} and commit ${TAG} -> ${SHA}"
           else
+            if [ -n "$ORIGINAL_TAG_OBJECT" ]; then
+              echo "error: new-tag release unexpectedly has an original tag object" >&2
+              exit 1
+            fi
+            if [ "$REMOTE_TAG_PRESENT" = "true" ]; then
+              echo "error: tag ${TAG} appeared remotely after the initial absence decision" >&2
+              echo "  untrusted remote object: ${REMOTE_TAG_OBJECT}" >&2
+              exit 1
+            fi
+            if [ -n "$LOCAL_TAG_OBJECT" ]; then
+              echo "error: tag ${TAG} appeared locally after the initial absence decision" >&2
+              echo "  untrusted local object: ${LOCAL_TAG_OBJECT}" >&2
+              exit 1
+            fi
+
             git tag "$TAG" "$SHA"
             # Non-force: refuse to overwrite an unexpected remote tag.
-            git push origin "refs/tags/${TAG}"
-            echo "Pushed tag ${TAG} -> ${SHA}"
+            git push origin "$TAG_REF"
+
+            git fetch --tags --force origin
+            LOCAL_TAG_OBJECT="$(git rev-parse -q --verify "$TAG_REF" || true)"
+            if REMOTE_TAG_OBJECT="$(exact_remote_tag_object)"; then
+              :
+            else
+              REMOTE_TAG_STATUS=$?
+              echo "error: exact remote tag ${TAG} missing or ambiguous after push (status ${REMOTE_TAG_STATUS})" >&2
+              exit 1
+            fi
+            if [ "$LOCAL_TAG_OBJECT" != "$SHA" ] || [ "$REMOTE_TAG_OBJECT" != "$SHA" ]; then
+              echo "error: pushed lightweight tag object identity mismatch for ${TAG}" >&2
+              echo "  expected object: ${SHA}" >&2
+              echo "  local object: ${LOCAL_TAG_OBJECT:-<missing>}" >&2
+              echo "  remote object: ${REMOTE_TAG_OBJECT:-<missing>}" >&2
+              exit 1
+            fi
+
+            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
+            if [ "$TAG_SHA" != "$SHA" ]; then
+              echo "error: pushed tag ${TAG} resolves to ${TAG_SHA}, expected ${SHA}" >&2
+              exit 1
+            fi
+
+            echo "Pushed and verified lightweight tag object and commit ${TAG} -> ${SHA}"
           fi
 
       - name: Publish GitHub Release

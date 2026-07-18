@@ -47,34 +47,60 @@ for script in "$ROOT"/scripts/*.sh; do
   fi
 done
 
-# 2) package-dmg path safety self-test
+# 2) Release tag validator tests
+if bash "$ROOT/scripts/test-release-tag-validator.sh"; then
+  pass "release tag validator exact-format tests"
+else
+  fail "release tag validator exact-format tests"
+fi
+
+# 3) Exact ls-remote ref parser tests
+if bash "$ROOT/scripts/test-exact-ls-remote-ref.sh"; then
+  pass "exact ls-remote ref parser tests"
+else
+  fail "exact ls-remote ref parser tests"
+fi
+
+# 4) Workflow run interpolation checker fixture tests
+if bash "$ROOT/scripts/test-workflow-run-interpolation-checker.sh"; then
+  pass "workflow run interpolation checker fixture tests"
+else
+  fail "workflow run interpolation checker fixture tests"
+fi
+
+# 5) Workflow run scripts must receive GitHub values through env, never expression interpolation
+RELEASE_WORKFLOW="$ROOT/.github/workflows/release.yml"
+if bash "$ROOT/scripts/check-workflow-run-interpolation.sh" "$RELEASE_WORKFLOW"; then
+  pass "release workflow run scripts contain no direct GitHub expression interpolation"
+else
+  fail "release workflow run scripts directly interpolate GitHub expressions"
+fi
+
+# 6) package-dmg path safety self-test
 if bash "$ROOT/scripts/package-dmg.sh" --self-test; then
   pass "package-dmg rejects directory / non-.dmg paths and removes stale files with rm -f"
 else
   fail "package-dmg --self-test"
 fi
 
-# 3) Tag / marketing version equality when a release tag is provided
-normalize_tag() {
-  local tag="$1"
-  tag="${tag#refs/tags/}"
-  tag="${tag#v}"
-  printf '%s' "$tag"
-}
-
+# 7) Exact tag validation and marketing version equality when a release tag is provided
 TAG_RAW="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 if [ -n "$TAG_RAW" ]; then
-  TAG_VERSION="$(normalize_tag "$TAG_RAW")"
-  if [ "$TAG_VERSION" = "$MARKETING_VERSION" ]; then
-    pass "release tag ${TAG_RAW} matches MARKETING_VERSION ${MARKETING_VERSION}"
+  if bash "$ROOT/scripts/validate-release-tag.sh" "$TAG_RAW"; then
+    TAG_VERSION="${TAG_RAW#v}"
+    if [ "$TAG_VERSION" = "$MARKETING_VERSION" ]; then
+      pass "release tag ${TAG_RAW} matches MARKETING_VERSION ${MARKETING_VERSION}"
+    else
+      fail "release tag ${TAG_RAW} (version ${TAG_VERSION}) != MARKETING_VERSION ${MARKETING_VERSION}"
+    fi
   else
-    fail "release tag ${TAG_RAW} (normalized ${TAG_VERSION}) != MARKETING_VERSION ${MARKETING_VERSION}"
+    fail "release tag is unsafe or unsupported; version comparison skipped"
   fi
 else
   echo "SKIP: no RELEASE_TAG/GITHUB_REF_NAME; tag equality not checked"
 fi
 
-# 4) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
+# 8) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
 #    (avoids false passes on stale/partial build/Release trees during pre-build).
 if [ "$VERIFY_ARTIFACTS" = "1" ]; then
   APP="$OUT/RazerMenuBarApp.app"
@@ -147,7 +173,7 @@ else
   echo "SKIP: artifact checks (set VERIFY_RELEASE_ARTIFACTS=1 after ci-release-build)"
 fi
 
-# 5) shellcheck when available (required in CI via workflow install)
+# 9) shellcheck when available (required in CI via workflow install)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck -x "$ROOT"/scripts/*.sh; then
     pass "shellcheck scripts/*.sh"
