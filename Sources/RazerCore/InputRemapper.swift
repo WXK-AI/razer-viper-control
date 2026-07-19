@@ -63,8 +63,13 @@ public final class InputRemapper: @unchecked Sendable {
     private var buttonSession = InputRemapperEngine.ButtonRemapSession()
     private var verticalLineScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
     private var verticalPointScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    /// Residuals for Shift-converted vertical→horizontal output.
     private var horizontalLineScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
     private var horizontalPointScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    /// Residuals for native axis-2 (hardware/trackpad horizontal) output.
+    private var nativeHorizontalLineScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    private var nativeHorizontalPointScrollScaler = InputRemapperEngine.ScrollDeltaScaler()
+    private var scrollActionThrottle = InputRemapperEngine.ScrollActionThrottle()
     /// Last recovery transition that notified observers (including empty tap-disable).
     private var lastHeldOutputRecovery: HeldOutputRecoveryReason?
     /// Synthetic mouse-ups posted by recovery releases (observed by tests via `@testable`).
@@ -138,6 +143,7 @@ public final class InputRemapper: @unchecked Sendable {
         let release = commitRecoveryTransition(reason: .permissionLoss, notifyIfEmpty: false) {
             let targets = buttonSession.releaseAllHeldOutputs()
             tearDownEventTapLocked()
+            resetScrollAccumulatorsLocked()
             return targets
         }
         publishHeldOutputRelease(release)
@@ -197,6 +203,7 @@ public final class InputRemapper: @unchecked Sendable {
         let release = commitRecoveryTransition(reason: .stop, notifyIfEmpty: false) {
             let targets = buttonSession.releaseAllHeldOutputs()
             tearDownEventTapLocked()
+            resetScrollAccumulatorsLocked()
             return targets
         }
         publishHeldOutputRelease(release)
@@ -276,6 +283,20 @@ public final class InputRemapper: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return InputRemapperEngine.resolvedButtonAction(for: control, in: profile.buttonMappings)
+    }
+
+    /// Shared scroll path for the event tap and tests. Snapshots pause/profile under lock,
+    /// then scales axes / fires mapped wheel actions via the same internal handlers.
+    func processScrollWheelEvent(_ event: CGEvent) -> Unmanaged<CGEvent>? {
+        lock.lock()
+        let currentProfile = profile
+        let callbacks = callbacks
+        let paused = isPaused
+        lock.unlock()
+        guard !paused, currentProfile.remapperEnabled else {
+            return Unmanaged.passUnretained(event)
+        }
+        return handleScrollEvent(event: event, profile: currentProfile, callbacks: callbacks)
     }
 
     /// Invoked after synthetic ups are posted and before deferred finalize work
@@ -419,7 +440,6 @@ public final class InputRemapper: @unchecked Sendable {
 
         lock.lock()
         let currentProfile = profile
-        let paused = isPaused
         let callbacks = callbacks
         lock.unlock()
 
@@ -475,10 +495,8 @@ public final class InputRemapper: @unchecked Sendable {
             )
 
         case .scrollWheel:
-            if paused || !currentProfile.remapperEnabled {
-                return Unmanaged.passUnretained(event)
-            }
-            return handleScrollEvent(event: event, profile: currentProfile, callbacks: callbacks)
+            // Re-enter through the shared scroll path so production and tests share one code path.
+            return processScrollWheelEvent(event)
 
         default:
             break
@@ -561,6 +579,9 @@ public final class InputRemapper: @unchecked Sendable {
         verticalPointScrollScaler.reset()
         horizontalLineScrollScaler.reset()
         horizontalPointScrollScaler.reset()
+        nativeHorizontalLineScrollScaler.reset()
+        nativeHorizontalPointScrollScaler.reset()
+        scrollActionThrottle.reset()
     }
 
     private static func sanitizedProfile(_ profile: MouseProfile) -> MouseProfile {
@@ -572,12 +593,15 @@ public final class InputRemapper: @unchecked Sendable {
         return sanitized
     }
 
-    /// Installs a sanitized profile. Resets scroll residuals only when software wheel settings change.
+    /// Installs a sanitized profile. Resets scroll residuals / action throttle when software
+    /// wheel settings change, and always resets the action throttle on profile replacement.
     private func applyProfileLocked(_ profile: MouseProfile) {
         let wheelSoftwareChanged = self.profile.wheelSettings.software != profile.wheelSettings.software
         self.profile = profile
         if wheelSoftwareChanged {
             resetScrollAccumulatorsLocked()
+        } else {
+            scrollActionThrottle.reset()
         }
     }
 
@@ -591,10 +615,35 @@ public final class InputRemapper: @unchecked Sendable {
             point: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1),
             fixedPt: event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
         )
-        guard !axis1.isEffectivelyZero else { return Unmanaged.passUnretained(event) }
+        let axis2 = InputRemapperEngine.ScrollAxisValues(
+            line: event.getIntegerValueField(.scrollWheelEventDeltaAxis2),
+            point: event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2),
+            fixedPt: event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2)
+        )
+        guard !axis1.isEffectivelyZero || !axis2.isEffectivelyZero else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        let software = profile.wheelSettings.software
+        let shiftKeyHeld = event.flags.contains(.maskShift)
+        let convertVerticalToHorizontal =
+            software.horizontalScrollModifier == .shift && shiftKeyHeld
+
+        // Wheel-up/down actions key off axis 1 only; axis-2-only is always software passthrough.
+        if axis1.isEffectivelyZero {
+            let modified = event
+            applyScaledPassthrough(
+                axis1: axis1,
+                axis2: axis2,
+                software: software,
+                event: modified,
+                shiftKeyHeld: shiftKeyHeld
+            )
+            callbacks.onInputDiagnostic?(nil, .passthrough, "scroll-axis2")
+            return Unmanaged.passUnretained(modified)
+        }
 
         let primaryDelta = InputRemapperEngine.primaryScrollDelta(for: axis1)
-        let software = profile.wheelSettings.software
         let wheelUp = primaryDelta > 0
         let wheelControl: PhysicalControl = wheelUp ? .wheelUp : .wheelDown
 
@@ -604,43 +653,62 @@ public final class InputRemapper: @unchecked Sendable {
 
         if case .passthrough = action {
             let modified = event
-            let invert = software.scrollDirection == .inverted
-            let multiplier = SoftwareWheelSettings.sanitizedSpeedMultiplier(software.verticalSpeedMultiplier)
-            let moveHorizontal = software.horizontalScrollModifier == .shift && event.flags.contains(.maskShift)
-
-            lock.lock()
-            let scaled: InputRemapperEngine.ScrollAxisPair
-            if moveHorizontal {
-                scaled = InputRemapperEngine.scalePassthroughScroll(
-                    axis1: axis1,
-                    lineScaler: &horizontalLineScrollScaler,
-                    pointScaler: &horizontalPointScrollScaler,
-                    multiplier: multiplier,
-                    invert: invert,
-                    moveToHorizontalAxis: true
-                )
-            } else {
-                scaled = InputRemapperEngine.scalePassthroughScroll(
-                    axis1: axis1,
-                    lineScaler: &verticalLineScrollScaler,
-                    pointScaler: &verticalPointScrollScaler,
-                    multiplier: multiplier,
-                    invert: invert,
-                    moveToHorizontalAxis: false
-                )
-            }
-            lock.unlock()
-
-            applyScrollAxes(scaled, to: modified)
+            applyScaledPassthrough(
+                axis1: axis1,
+                axis2: axis2,
+                software: software,
+                event: modified,
+                shiftKeyHeld: shiftKeyHeld
+            )
             callbacks.onInputDiagnostic?(
                 wheelControl,
                 .passthrough,
-                moveHorizontal ? "scroll→horizontal" : "scroll"
+                convertVerticalToHorizontal ? "scroll→horizontal" : "scroll"
             )
             return Unmanaged.passUnretained(modified)
         }
 
-        return executeScrollAction(action, wheelControl: wheelControl, callbacks: callbacks)
+        return executeScrollAction(
+            action,
+            wheelControl: wheelControl,
+            direction: wheelUp ? 1 : -1,
+            axis2: axis2,
+            software: software,
+            event: event,
+            callbacks: callbacks
+        )
+    }
+
+    /// Scales axis1/axis2 for passthrough. `shiftKeyHeld` is the raw Shift key state;
+    /// conversion only happens when software also enables `.shift` as the horizontal modifier.
+    private func applyScaledPassthrough(
+        axis1: InputRemapperEngine.ScrollAxisValues,
+        axis2: InputRemapperEngine.ScrollAxisValues,
+        software: SoftwareWheelSettings,
+        event: CGEvent,
+        shiftKeyHeld: Bool
+    ) {
+        let invert = software.scrollDirection == .inverted
+        let multiplier = SoftwareWheelSettings.sanitizedSpeedMultiplier(software.verticalSpeedMultiplier)
+        let convertVerticalToHorizontal =
+            software.horizontalScrollModifier == .shift && shiftKeyHeld
+
+        lock.lock()
+        let scaled = InputRemapperEngine.scalePassthroughScroll(
+            axis1: axis1,
+            axis2: axis2,
+            verticalLineScaler: &verticalLineScrollScaler,
+            verticalPointScaler: &verticalPointScrollScaler,
+            horizontalLineScaler: &horizontalLineScrollScaler,
+            horizontalPointScaler: &horizontalPointScrollScaler,
+            nativeHorizontalLineScaler: &nativeHorizontalLineScrollScaler,
+            nativeHorizontalPointScaler: &nativeHorizontalPointScrollScaler,
+            multiplier: multiplier,
+            invert: invert,
+            convertVerticalToHorizontal: convertVerticalToHorizontal
+        )
+        lock.unlock()
+        applyScrollAxes(scaled, to: event)
     }
 
     private func applyScrollAxes(_ pair: InputRemapperEngine.ScrollAxisPair, to event: CGEvent) {
@@ -652,25 +720,50 @@ public final class InputRemapper: @unchecked Sendable {
         event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: pair.axis2.fixedPt)
     }
 
+    /// Fires a mapped wheel action under the 60ms throttle. Axis 1 is always consumed by the
+    /// mapping; non-zero native axis 2 is still scaled and returned as a remainder event.
     private func executeScrollAction(
         _ action: ButtonAction,
         wheelControl: PhysicalControl,
+        direction: Int,
+        axis2: InputRemapperEngine.ScrollAxisValues,
+        software: SoftwareWheelSettings,
+        event: CGEvent,
         callbacks: Callbacks
     ) -> Unmanaged<CGEvent>? {
-        switch action {
-        case .passthrough, .disabled:
-            callbacks.onInputDiagnostic?(wheelControl, .consumed, "scroll disabled")
-            return nil
-        case let .mouseButton(target):
-            callbacks.onInputDiagnostic?(wheelControl, .remapped, "scroll→\(target)")
-            postMouseButton(target, down: true)
-            postMouseButton(target, down: false)
-            return nil
-        case .keyboardShortcut, .nextDPIStage, .previousDPIStage, .nextProfile, .previousProfile, .openApp, .openURL:
-            callbacks.onInputDiagnostic?(wheelControl, .consumed, "scroll one-shot")
-            executeOneShotAction(action, callbacks: callbacks)
+        lock.lock()
+        let shouldFire = scrollActionThrottle.shouldFire(direction: direction, at: monotonicTime())
+        lock.unlock()
+
+        if shouldFire {
+            switch action {
+            case .passthrough, .disabled:
+                callbacks.onInputDiagnostic?(wheelControl, .consumed, "scroll disabled")
+            case let .mouseButton(target):
+                callbacks.onInputDiagnostic?(wheelControl, .remapped, "scroll→\(target)")
+                postMouseButton(target, down: true)
+                postMouseButton(target, down: false)
+            case .keyboardShortcut, .nextDPIStage, .previousDPIStage, .nextProfile, .previousProfile, .openApp, .openURL:
+                callbacks.onInputDiagnostic?(wheelControl, .consumed, "scroll one-shot")
+                executeOneShotAction(action, callbacks: callbacks)
+            }
+        }
+
+        // Mapped axis-1 dual-axis events must preserve scaled native axis 2 even when the
+        // vertical action fires or is throttled. Axis1-only mapped ticks still return nil.
+        guard !axis2.isEffectivelyZero else {
             return nil
         }
+        let modified = event
+        // Axis 1 was consumed by the mapping; only scale native axis 2 (no Shift conversion).
+        applyScaledPassthrough(
+            axis1: .zero,
+            axis2: axis2,
+            software: software,
+            event: modified,
+            shiftKeyHeld: false
+        )
+        return Unmanaged.passUnretained(modified)
     }
 
     private func isSyntheticEvent(_ event: CGEvent) -> Bool {

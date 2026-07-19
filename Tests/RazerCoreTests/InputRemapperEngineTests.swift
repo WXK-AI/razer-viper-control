@@ -110,6 +110,177 @@ final class InputRemapperEngineTests: XCTestCase {
         )
     }
 
+    func testScalePassthroughScrollScalesAxis2InPlace() {
+        var verticalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var verticalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var nativeLine = InputRemapperEngine.ScrollDeltaScaler()
+        var nativePoint = InputRemapperEngine.ScrollDeltaScaler()
+        let scaled = InputRemapperEngine.scalePassthroughScroll(
+            axis1: .zero,
+            axis2: .init(line: 3, point: 4, fixedPt: 1.5),
+            verticalLineScaler: &verticalLine,
+            verticalPointScaler: &verticalPoint,
+            horizontalLineScaler: &horizontalLine,
+            horizontalPointScaler: &horizontalPoint,
+            nativeHorizontalLineScaler: &nativeLine,
+            nativeHorizontalPointScaler: &nativePoint,
+            multiplier: 2.0,
+            invert: false,
+            convertVerticalToHorizontal: false
+        )
+        XCTAssertEqual(scaled.axis1, .zero)
+        XCTAssertEqual(scaled.axis2.line, 6)
+        XCTAssertEqual(scaled.axis2.point, 8)
+        XCTAssertEqual(scaled.axis2.fixedPt, 3.0, accuracy: 0.0001)
+    }
+
+    func testScalePassthroughScrollScalesDualAxisIndependently() {
+        var verticalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var verticalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var nativeLine = InputRemapperEngine.ScrollDeltaScaler()
+        var nativePoint = InputRemapperEngine.ScrollDeltaScaler()
+        let scaled = InputRemapperEngine.scalePassthroughScroll(
+            axis1: .init(line: 1, point: 2, fixedPt: 0.5),
+            axis2: .init(line: 3, point: 4, fixedPt: 1.0),
+            verticalLineScaler: &verticalLine,
+            verticalPointScaler: &verticalPoint,
+            horizontalLineScaler: &horizontalLine,
+            horizontalPointScaler: &horizontalPoint,
+            nativeHorizontalLineScaler: &nativeLine,
+            nativeHorizontalPointScaler: &nativePoint,
+            multiplier: 2.0,
+            invert: false,
+            convertVerticalToHorizontal: false
+        )
+        XCTAssertEqual(scaled.axis1.line, 2)
+        XCTAssertEqual(scaled.axis1.point, 4)
+        XCTAssertEqual(scaled.axis1.fixedPt, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(scaled.axis2.line, 6)
+        XCTAssertEqual(scaled.axis2.point, 8)
+        XCTAssertEqual(scaled.axis2.fixedPt, 2.0, accuracy: 0.0001)
+    }
+
+    func testScalePassthroughScrollShiftMergesConvertedAndNativeHorizontal() {
+        var verticalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var verticalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var nativeLine = InputRemapperEngine.ScrollDeltaScaler()
+        var nativePoint = InputRemapperEngine.ScrollDeltaScaler()
+        let scaled = InputRemapperEngine.scalePassthroughScroll(
+            axis1: .init(line: 1, point: 0, fixedPt: 0),
+            axis2: .init(line: 3, point: 0, fixedPt: 0),
+            verticalLineScaler: &verticalLine,
+            verticalPointScaler: &verticalPoint,
+            horizontalLineScaler: &horizontalLine,
+            horizontalPointScaler: &horizontalPoint,
+            nativeHorizontalLineScaler: &nativeLine,
+            nativeHorizontalPointScaler: &nativePoint,
+            multiplier: 2.0,
+            invert: false,
+            convertVerticalToHorizontal: true
+        )
+        XCTAssertEqual(scaled.axis1, .zero)
+        XCTAssertEqual(scaled.axis2.line, 8)
+    }
+
+    func testScalePassthroughScrollInvertsNativeAxis2() {
+        var verticalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var verticalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var nativeLine = InputRemapperEngine.ScrollDeltaScaler()
+        var nativePoint = InputRemapperEngine.ScrollDeltaScaler()
+        let scaled = InputRemapperEngine.scalePassthroughScroll(
+            axis1: .zero,
+            axis2: .init(line: 2, point: 4, fixedPt: 1.5),
+            verticalLineScaler: &verticalLine,
+            verticalPointScaler: &verticalPoint,
+            horizontalLineScaler: &horizontalLine,
+            horizontalPointScaler: &horizontalPoint,
+            nativeHorizontalLineScaler: &nativeLine,
+            nativeHorizontalPointScaler: &nativePoint,
+            multiplier: 2.0,
+            invert: true,
+            convertVerticalToHorizontal: false
+        )
+        XCTAssertEqual(scaled.axis1, .zero)
+        XCTAssertEqual(scaled.axis2.line, -4)
+        XCTAssertEqual(scaled.axis2.point, -8)
+        XCTAssertEqual(scaled.axis2.fixedPt, -3.0, accuracy: 0.0001)
+    }
+
+    func testNativeAxis2ResidualDoesNotTransferIntoShiftConvertedHorizontal() {
+        var verticalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var verticalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalLine = InputRemapperEngine.ScrollDeltaScaler()
+        var horizontalPoint = InputRemapperEngine.ScrollDeltaScaler()
+        var nativeLine = InputRemapperEngine.ScrollDeltaScaler()
+        var nativePoint = InputRemapperEngine.ScrollDeltaScaler()
+        let nativeTick = InputRemapperEngine.ScrollAxisValues(line: 1, point: 0, fixedPt: 0)
+
+        for _ in 0..<3 {
+            XCTAssertEqual(
+                InputRemapperEngine.scalePassthroughScroll(
+                    axis1: .zero,
+                    axis2: nativeTick,
+                    verticalLineScaler: &verticalLine,
+                    verticalPointScaler: &verticalPoint,
+                    horizontalLineScaler: &horizontalLine,
+                    horizontalPointScaler: &horizontalPoint,
+                    nativeHorizontalLineScaler: &nativeLine,
+                    nativeHorizontalPointScaler: &nativePoint,
+                    multiplier: 0.25,
+                    invert: false,
+                    convertVerticalToHorizontal: false
+                ).axis2.line,
+                0
+            )
+        }
+
+        let shifted = InputRemapperEngine.scalePassthroughScroll(
+            axis1: nativeTick,
+            axis2: .zero,
+            verticalLineScaler: &verticalLine,
+            verticalPointScaler: &verticalPoint,
+            horizontalLineScaler: &horizontalLine,
+            horizontalPointScaler: &horizontalPoint,
+            nativeHorizontalLineScaler: &nativeLine,
+            nativeHorizontalPointScaler: &nativePoint,
+            multiplier: 0.25,
+            invert: false,
+            convertVerticalToHorizontal: true
+        )
+        XCTAssertEqual(shifted.axis1, .zero)
+        XCTAssertEqual(
+            shifted.axis2.line,
+            0,
+            "Shift-converted horizontal must not inherit native axis-2 residual"
+        )
+
+        XCTAssertEqual(
+            InputRemapperEngine.scalePassthroughScroll(
+                axis1: .zero,
+                axis2: nativeTick,
+                verticalLineScaler: &verticalLine,
+                verticalPointScaler: &verticalPoint,
+                horizontalLineScaler: &horizontalLine,
+                horizontalPointScaler: &horizontalPoint,
+                nativeHorizontalLineScaler: &nativeLine,
+                nativeHorizontalPointScaler: &nativePoint,
+                multiplier: 0.25,
+                invert: false,
+                convertVerticalToHorizontal: false
+            ).axis2.line,
+            1,
+            "Native axis-2 residual must remain isolated after Shift conversion"
+        )
+    }
+
     func testScalePassthroughScrollAccumulatesPointDelta() {
         var lineScaler = InputRemapperEngine.ScrollDeltaScaler()
         var pointScaler = InputRemapperEngine.ScrollDeltaScaler()
@@ -351,5 +522,44 @@ final class InputRemapperEngineTests: XCTestCase {
         )
         let decodedNull = try JSONDecoder().decode(SoftwareWheelSettings.self, from: nullMultiplier)
         XCTAssertEqual(decodedNull.verticalSpeedMultiplier, 1.0)
+    }
+
+    // MARK: - ScrollActionThrottle (Task 9)
+
+    func testScrollActionThrottleBurstWithinWindowFiresOnce() {
+        var throttle = InputRemapperEngine.ScrollActionThrottle()
+        var fireCount = 0
+        // 10 ticks inside 20ms at 2ms spacing.
+        for index in 0..<10 {
+            let time = Double(index) * 0.002
+            if throttle.shouldFire(direction: 1, at: time) {
+                fireCount += 1
+            }
+        }
+        XCTAssertEqual(fireCount, 1)
+    }
+
+    func testScrollActionThrottleExactThresholdFires() {
+        var throttle = InputRemapperEngine.ScrollActionThrottle(minimumInterval: 0.060)
+        XCTAssertTrue(throttle.shouldFire(direction: 1, at: 1.000))
+        XCTAssertFalse(throttle.shouldFire(direction: 1, at: 1.059))
+        XCTAssertTrue(throttle.shouldFire(direction: 1, at: 1.060))
+        XCTAssertTrue(throttle.shouldFire(direction: 1, at: 1.120))
+    }
+
+    func testScrollActionThrottleDirectionChangeFiresImmediatelyAndResets() {
+        var throttle = InputRemapperEngine.ScrollActionThrottle(minimumInterval: 0.060)
+        XCTAssertTrue(throttle.shouldFire(direction: 1, at: 2.000))
+        XCTAssertFalse(throttle.shouldFire(direction: 1, at: 2.010))
+        XCTAssertTrue(throttle.shouldFire(direction: -1, at: 2.011))
+        XCTAssertFalse(throttle.shouldFire(direction: -1, at: 2.020))
+        XCTAssertTrue(throttle.shouldFire(direction: -1, at: 2.071))
+    }
+
+    func testScrollActionThrottleResetClearsWindow() {
+        var throttle = InputRemapperEngine.ScrollActionThrottle(minimumInterval: 0.060)
+        XCTAssertTrue(throttle.shouldFire(direction: 1, at: 3.000))
+        throttle.reset()
+        XCTAssertTrue(throttle.shouldFire(direction: 1, at: 3.001))
     }
 }

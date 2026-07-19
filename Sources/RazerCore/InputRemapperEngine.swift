@@ -108,21 +108,114 @@ public enum InputRemapperEngine {
 
     public static func scalePassthroughScroll(
         axis1: ScrollAxisValues,
+        axis2: ScrollAxisValues = .zero,
+        verticalLineScaler: inout ScrollDeltaScaler,
+        verticalPointScaler: inout ScrollDeltaScaler,
+        horizontalLineScaler: inout ScrollDeltaScaler,
+        horizontalPointScaler: inout ScrollDeltaScaler,
+        nativeHorizontalLineScaler: inout ScrollDeltaScaler,
+        nativeHorizontalPointScaler: inout ScrollDeltaScaler,
+        multiplier: Double,
+        invert: Bool,
+        convertVerticalToHorizontal: Bool
+    ) -> ScrollAxisPair {
+        let scaledNativeHorizontal = scaleAxisValues(
+            axis2,
+            lineScaler: &nativeHorizontalLineScaler,
+            pointScaler: &nativeHorizontalPointScaler,
+            multiplier: multiplier,
+            invert: invert
+        )
+
+        if convertVerticalToHorizontal {
+            let converted = scaleAxisValues(
+                axis1,
+                lineScaler: &horizontalLineScaler,
+                pointScaler: &horizontalPointScaler,
+                multiplier: multiplier,
+                invert: invert
+            )
+            return ScrollAxisPair(
+                axis1: .zero,
+                axis2: addAxisValues(converted, scaledNativeHorizontal)
+            )
+        }
+
+        let scaledVertical = scaleAxisValues(
+            axis1,
+            lineScaler: &verticalLineScaler,
+            pointScaler: &verticalPointScaler,
+            multiplier: multiplier,
+            invert: invert
+        )
+        return ScrollAxisPair(axis1: scaledVertical, axis2: scaledNativeHorizontal)
+    }
+
+    /// Backward-compatible wrapper used by older call sites/tests that only scale axis 1.
+    public static func scalePassthroughScroll(
+        axis1: ScrollAxisValues,
         lineScaler: inout ScrollDeltaScaler,
         pointScaler: inout ScrollDeltaScaler,
         multiplier: Double,
         invert: Bool,
         moveToHorizontalAxis: Bool
     ) -> ScrollAxisPair {
-        let scaledLine = lineScaler.scale(rawDelta: axis1.line, multiplier: multiplier, invert: invert)
-        let scaledPoint = pointScaler.scale(rawDelta: axis1.point, multiplier: multiplier, invert: invert)
-        let scaledFixed = scaleImmediateFixed(axis1.fixedPt, multiplier: multiplier, invert: invert)
-        let scaled = ScrollAxisValues(line: scaledLine, point: scaledPoint, fixedPt: scaledFixed)
-
+        var unusedVerticalLine = ScrollDeltaScaler()
+        var unusedVerticalPoint = ScrollDeltaScaler()
+        var unusedHorizontalLine = ScrollDeltaScaler()
+        var unusedHorizontalPoint = ScrollDeltaScaler()
+        var unusedNativeLine = ScrollDeltaScaler()
+        var unusedNativePoint = ScrollDeltaScaler()
         if moveToHorizontalAxis {
-            return ScrollAxisPair(axis1: .zero, axis2: scaled)
+            return scalePassthroughScroll(
+                axis1: axis1,
+                axis2: .zero,
+                verticalLineScaler: &unusedVerticalLine,
+                verticalPointScaler: &unusedVerticalPoint,
+                horizontalLineScaler: &lineScaler,
+                horizontalPointScaler: &pointScaler,
+                nativeHorizontalLineScaler: &unusedNativeLine,
+                nativeHorizontalPointScaler: &unusedNativePoint,
+                multiplier: multiplier,
+                invert: invert,
+                convertVerticalToHorizontal: true
+            )
         }
-        return ScrollAxisPair(axis1: scaled, axis2: .zero)
+        return scalePassthroughScroll(
+            axis1: axis1,
+            axis2: .zero,
+            verticalLineScaler: &lineScaler,
+            verticalPointScaler: &pointScaler,
+            horizontalLineScaler: &unusedHorizontalLine,
+            horizontalPointScaler: &unusedHorizontalPoint,
+            nativeHorizontalLineScaler: &unusedNativeLine,
+            nativeHorizontalPointScaler: &unusedNativePoint,
+            multiplier: multiplier,
+            invert: invert,
+            convertVerticalToHorizontal: false
+        )
+    }
+
+    private static func scaleAxisValues(
+        _ axis: ScrollAxisValues,
+        lineScaler: inout ScrollDeltaScaler,
+        pointScaler: inout ScrollDeltaScaler,
+        multiplier: Double,
+        invert: Bool
+    ) -> ScrollAxisValues {
+        ScrollAxisValues(
+            line: lineScaler.scale(rawDelta: axis.line, multiplier: multiplier, invert: invert),
+            point: pointScaler.scale(rawDelta: axis.point, multiplier: multiplier, invert: invert),
+            fixedPt: scaleImmediateFixed(axis.fixedPt, multiplier: multiplier, invert: invert)
+        )
+    }
+
+    private static func addAxisValues(_ lhs: ScrollAxisValues, _ rhs: ScrollAxisValues) -> ScrollAxisValues {
+        ScrollAxisValues(
+            line: lhs.line + rhs.line,
+            point: lhs.point + rhs.point,
+            fixedPt: lhs.fixedPt + rhs.fixedPt
+        )
     }
 
     private static func scaleImmediateFixed(_ raw: Double, multiplier: Double, invert: Bool) -> Double {
@@ -136,6 +229,38 @@ public enum InputRemapperEngine {
 
     public static func scaledScrollDelta(rawDelta: Int64, multiplier: Double) -> Int64 {
         Int64((Double(rawDelta) * multiplier).rounded(.towardZero))
+    }
+
+    /// Min-interval gate for scroll→button/one-shot actions under momentum.
+    public struct ScrollActionThrottle: Sendable {
+        public var minimumInterval: TimeInterval
+        private var lastFireTime: TimeInterval?
+        private var lastDirection: Int?
+
+        public init(minimumInterval: TimeInterval = 0.060) {
+            self.minimumInterval = minimumInterval
+        }
+
+        public mutating func reset() {
+            lastFireTime = nil
+            lastDirection = nil
+        }
+
+        /// - Parameter direction: Sign of the scroll action (+1 up / -1 down).
+        public mutating func shouldFire(direction: Int, at now: TimeInterval) -> Bool {
+            let normalizedDirection = direction >= 0 ? 1 : -1
+            if let previousDirection = lastDirection, previousDirection != normalizedDirection {
+                lastDirection = normalizedDirection
+                lastFireTime = now
+                return true
+            }
+            if let previousFire = lastFireTime, now - previousFire < minimumInterval {
+                return false
+            }
+            lastDirection = normalizedDirection
+            lastFireTime = now
+            return true
+        }
     }
 
     public static func buttonOutcome(action: ButtonAction, isDown: Bool) -> RemapButtonOutcome {
