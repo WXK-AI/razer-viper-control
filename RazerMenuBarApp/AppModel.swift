@@ -65,6 +65,29 @@ final class AppModel: ObservableObject {
         )
     }
 
+    /// Pure menu presentation — views render this instead of raw error dumps.
+    var menuStatus: MenuStatusPresentation {
+        let remapper = remapperStatus
+        let showRemapper = selectedProfile?.remapperEnabled == true
+            || remapperRunning
+            || remapperArmed
+            || remapperCircuitOpen
+        return MenuStatusModel.make(
+            inputs: MenuStatusInputs(
+                isConnected: isConnected,
+                batteryPercent: batteryPercent,
+                isCharging: isCharging,
+                isLowBattery: lowBatteryLatched,
+                commandError: lastCommandError,
+                connectionStatusLine: statusMessage,
+                remapperStatus: remapper,
+                showRemapperSection: showRemapper,
+                persistenceWarning: persistenceWarning,
+                reconnectFeedback: reconnectFeedback
+            )
+        )
+    }
+
     var hardwareChangesPending: Bool {
         HardwarePendingDetector.hasPendingChanges(
             profile: selectedProfile,
@@ -99,6 +122,15 @@ final class AppModel: ObservableObject {
     private var autoApplyState = AutoApplyCoordinator.State()
     private var saveWorkItem: DispatchWorkItem?
     private let saveDebounceInterval: TimeInterval = 0.4
+    /// Low-battery hysteresis latch (enter ≤15%, clear ≥20%).
+    private var lowBatteryLatched = false
+    /// Last device command error used for friendly menu mapping.
+    private var lastCommandError: RazerCommandError?
+    /// Transient reconnect result line for the menu.
+    @Published private(set) var reconnectFeedback: MenuReconnectFeedback?
+    private var reconnectFeedbackGeneration: UInt64 = 0
+    /// True after any successful link this process; first connect must not say "Reconnected".
+    private var hadPriorSuccessfulConnection = false
 
     private var draftsByProfileID: [UUID: ProfileDraft] = [:]
 
@@ -735,8 +767,13 @@ final class AppModel: ObservableObject {
 
             wasConnected = true
             isConnected = true
+            lastCommandError = nil
             batteryPercent = state.batteryPercent
             isCharging = state.isCharging
+            lowBatteryLatched = MenuStatusModel.isLowBattery(
+                percent: state.batteryPercent,
+                wasLow: lowBatteryLatched
+            )
             activeDPI = state.dpiX
             pollingRateHz = state.pollingRateHz
             let monitoringWarning: String?
@@ -761,6 +798,16 @@ final class AppModel: ObservableObject {
             statusMessage = hardwareVerificationWarning == nil
                 ? monitoringStatus
                 : "Connected (profile not verified)"
+            if snapshot.becameConnected {
+                if let feedback = MenuReconnectFeedbackPolicy.feedback(
+                    becameConnected: true,
+                    hadPriorSuccessfulConnection: hadPriorSuccessfulConnection,
+                    profileApplied: acceptsApplyResult && snapshot.profileAppliedSuccessfully
+                ) {
+                    publishReconnectFeedback(feedback)
+                }
+                hadPriorSuccessfulConnection = true
+            }
             if let probeReport = snapshot.probeReport {
                 wheelCapability = probeReport.capability
                 wheelProbeSummary = probeReport.summary
@@ -777,17 +824,34 @@ final class AppModel: ObservableObject {
         hardwareVerificationWarning = nil
         wasConnected = false
         isConnected = false
+        // Clear battery so status item never flashes a stale percentage.
         batteryPercent = 0
         isCharging = false
+        lowBatteryLatched = false
+        clearReconnectFeedback()
+        lastCommandError = commandError
         if let error = commandError {
-            statusMessage = error.localizedDescription
-            if error.isPermissionIssue || error.isConflictIssue {
-                warningMessage = error.localizedDescription
-            }
+            statusMessage = MenuStatusModel.friendlyMessage(for: error)
         } else {
             statusMessage = "Disconnected"
-            warningMessage = nil
         }
+        // Permission/conflict keep a banner; other errors clear unrelated stale warnings.
+        warningMessage = MenuStatusModel.disconnectWarningMessage(for: commandError)
+    }
+
+    private func publishReconnectFeedback(_ feedback: MenuReconnectFeedback) {
+        reconnectFeedbackGeneration += 1
+        let generation = reconnectFeedbackGeneration
+        reconnectFeedback = feedback
+        scheduleDelayedAction(5) { [weak self] in
+            guard let self, self.reconnectFeedbackGeneration == generation else { return }
+            self.reconnectFeedback = nil
+        }
+    }
+
+    private func clearReconnectFeedback() {
+        reconnectFeedbackGeneration += 1
+        reconnectFeedback = nil
     }
 
     func applySelectedProfile(reason: HardwareApplyReason = .explicitApply) {
@@ -840,9 +904,14 @@ final class AppModel: ObservableObject {
                               lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
                             return
                         }
-                        self.statusMessage = "Profile applied but not verified"
-                        self.hardwareVerificationWarning = warning
-                        self.warningMessage = warning
+                        // Drop stale command errors so connectedDetailLine shows verification.
+                        let status = MenuStatusModel.deviceStatusAfterUnverifiedApply(
+                            verificationWarning: warning
+                        )
+                        self.lastCommandError = status.lastCommandError
+                        self.hardwareVerificationWarning = status.hardwareVerificationWarning
+                        self.warningMessage = status.warningMessage
+                        self.statusMessage = status.statusMessage
                         self.syncRemapper()
                     }
                     return
@@ -856,9 +925,13 @@ final class AppModel: ObservableObject {
                     self.lastAppliedHardwareSettings = recorded
                     self.activeDPI = profile.activeDPI
                     self.pollingRateHz = profile.pollingRateHz
-                    self.statusMessage = "Applied profile \(profile.name)"
-                    self.hardwareVerificationWarning = nil
-                    self.warningMessage = nil
+                    let cleared = MenuStatusModel.deviceStatusAfterSuccessfulApply(
+                        profileName: profile.name
+                    )
+                    self.lastCommandError = cleared.lastCommandError
+                    self.hardwareVerificationWarning = cleared.hardwareVerificationWarning
+                    self.warningMessage = cleared.warningMessage
+                    self.statusMessage = cleared.statusMessage
                     AutoApplyCoordinator.onApplySuccess(&self.autoApplyState)
                     self.syncRemapper()
                 }
@@ -876,13 +949,29 @@ final class AppModel: ObservableObject {
                           lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
                         return
                     }
-                    self.statusMessage = error.localizedDescription
-                    if let applyError = error as? HardwareApplyError {
+                    if let commandError = error as? RazerCommandError {
+                        self.lastCommandError = commandError
+                        let friendly = MenuStatusModel.friendlyMessage(for: commandError)
+                        self.statusMessage = friendly
+                        // New failure supersedes a stale verification banner.
+                        self.hardwareVerificationWarning = nil
+                        if commandError.isPermissionIssue || commandError.isConflictIssue {
+                            self.warningMessage = friendly
+                        } else {
+                            self.warningMessage = nil
+                        }
+                    } else if let applyError = error as? HardwareApplyError {
+                        self.lastCommandError = nil
+                        self.statusMessage = "Profile apply failed"
+                        // Keep technical detail in Settings only; menu uses statusMessage.
                         self.hardwareVerificationWarning = applyError.localizedDescription
                         self.warningMessage = applyError.localizedDescription
-                    } else if let commandError = error as? RazerCommandError,
-                       commandError.isPermissionIssue || commandError.isConflictIssue {
-                        self.warningMessage = commandError.localizedDescription
+                    } else {
+                        let status = MenuStatusModel.deviceStatusAfterGenericApplyFailure()
+                        self.lastCommandError = status.lastCommandError
+                        self.hardwareVerificationWarning = status.hardwareVerificationWarning
+                        self.warningMessage = status.warningMessage
+                        self.statusMessage = status.statusMessage
                     }
                     self.syncRemapper()
                 }
@@ -1016,7 +1105,7 @@ final class AppModel: ObservableObject {
         case .openPrivacySettings:
             // One Privacy & Security pane — opening both deep links races and stacks two windows.
             openPrivacyAndSecuritySettings()
-        case .armRemapper:
+        case .armRemapper, .rearmRemapper:
             armRemapperForSession()
         case .resume:
             setRemapperPaused(false)

@@ -178,8 +178,10 @@ final class ControlModelsTests: XCTestCase {
         )
 
         XCTAssertEqual(status, .circuitOpen)
+        XCTAssertEqual(status.title, "Remapper paused (safety)")
         XCTAssertEqual(status.detail, "Remapper paused after repeated event-tap timeouts.")
-        XCTAssertEqual(status.recoveryAction, .armRemapper)
+        XCTAssertEqual(status.recoveryAction, .rearmRemapper)
+        XCTAssertEqual(status.recoveryAction?.buttonTitle, "Re-arm…")
     }
 
     func testUIPausedFlagStaysTrueWhenResumeFails() {

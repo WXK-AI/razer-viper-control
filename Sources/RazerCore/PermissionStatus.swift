@@ -55,7 +55,7 @@ public enum RemapperRuntimeStatus: Equatable, Sendable {
         case .awaitingConsent:
             return "Remapper awaiting consent"
         case .circuitOpen:
-            return "Remapper paused"
+            return "Remapper paused (safety)"
         case .missingPermission:
             return "Remapper needs permissions"
         case .active:
@@ -94,8 +94,11 @@ public enum RemapperRuntimeStatus: Equatable, Sendable {
         switch self {
         case .disabled, .active:
             return nil
-        case .awaitingConsent, .circuitOpen:
+        case .awaitingConsent:
             return .armRemapper
+        case .circuitOpen:
+            // Distinct from first-time arm: circuit open needs an explicit re-arm.
+            return .rearmRemapper
         case let .missingPermission(permissions):
             switch (permissions.inputMonitoringGranted, permissions.accessibilityGranted) {
             case (false, false):
@@ -122,6 +125,8 @@ public enum RemapperRecoveryAction: Equatable, Sendable {
     case openAccessibility
     case openPrivacySettings
     case armRemapper
+    /// Circuit-breaker recovery — same arming path, distinct menu label ("Re-arm…").
+    case rearmRemapper
     case resume
     case acknowledgeRecovery
     case retryStart
@@ -136,6 +141,8 @@ public enum RemapperRecoveryAction: Equatable, Sendable {
             return "Open Privacy Settings"
         case .armRemapper:
             return "Arm Remapper"
+        case .rearmRemapper:
+            return "Re-arm…"
         case .resume:
             return "Resume Remapper"
         case .acknowledgeRecovery:

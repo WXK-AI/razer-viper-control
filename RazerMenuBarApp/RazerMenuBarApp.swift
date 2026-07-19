@@ -21,12 +21,7 @@ struct RazerMenuBarApp: App {
                 }
             })
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: model.isConnected ? "computermouse.fill" : "computermouse")
-                if model.isConnected {
-                    Text("\(model.batteryPercent)%")
-                }
-            }
+            StatusItemLabel(status: model.menuStatus)
         }
 
         Window("Razer Viper V3 HyperSpeed", id: "settings") {
@@ -37,40 +32,82 @@ struct RazerMenuBarApp: App {
     }
 }
 
+/// Thin status-item label driven entirely by `MenuStatusPresentation`.
+private struct StatusItemLabel: View {
+    let status: MenuStatusPresentation
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: status.isConnected ? "computermouse.fill" : "computermouse")
+            if let batteryText = status.statusItemBatteryText {
+                if status.statusItemShowsCharging {
+                    Image(systemName: "bolt.fill")
+                        .imageScale(.small)
+                }
+                Text(batteryText)
+                    .foregroundStyle(status.statusItemIsLowBattery ? .orange : .primary)
+            }
+        }
+    }
+}
+
 private struct MenuBarContent: View {
     @ObservedObject var model: AppModel
     let openSettings: () -> Void
     @State private var showSaveFailureAlert = false
 
+    private var status: MenuStatusPresentation {
+        model.menuStatus
+    }
+
     var body: some View {
         Text(DeviceDescriptor.productName)
             .font(.headline)
 
-        if model.isConnected {
-            Text("Battery: \(model.batteryPercent)%\(model.isCharging ? " (charging)" : "")")
+        if status.isConnected {
+            if let batteryLine = status.batteryMenuLine {
+                Text(batteryLine)
+            }
             Text("Profile: \(model.profileName)")
             Text("DPI: \(model.activeDPI) • Polling: \(model.pollingRateHz.map { "\($0) Hz" } ?? "Unknown")")
+            // Non-default connection status (verify/degraded/apply/command errors).
+            if let detail = status.connectedDetailLine {
+                Text(detail)
+            }
         } else {
-            Text(model.statusMessage)
+            Text(status.connectionLine)
         }
 
-        if model.selectedProfile?.remapperEnabled == true || model.remapperRunning || model.remapperArmed {
-            Text(model.remapperStatus.title)
+        if let transient = status.transientLine {
+            Text(transient)
+                .foregroundStyle(.secondary)
+        }
+
+        ForEach(Array(status.warningLines.enumerated()), id: \.offset) { _, warning in
+            Text(warning)
+                .foregroundStyle(.orange)
+        }
+
+        if let remapperTitle = status.remapperTitle {
+            Text(remapperTitle)
+            if let detail = status.remapperDetail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
 
         Divider()
 
-        Button(model.remapperPaused ? "Resume Remapper" : "Pause Remapper") {
-            model.toggleRemapperPause()
+        if status.showPauseResume {
+            Button(model.remapperPaused ? "Resume Remapper" : "Pause Remapper") {
+                model.toggleRemapperPause()
+            }
+            .disabled(!model.remapperRunning)
         }
-        .disabled(!model.remapperRunning)
-        if let action = model.remapperStatus.recoveryAction,
-           action == .openInputMonitoring
-            || action == .openAccessibility
-            || action == .openPrivacySettings
-            || action == .retryStart
-            || action == .armRemapper {
-            Button(action.buttonTitle) {
+        if let action = status.recoveryAction,
+           let title = status.recoveryButtonTitle {
+            Button(title) {
                 model.performRemapperRecoveryAction(action)
             }
         }
