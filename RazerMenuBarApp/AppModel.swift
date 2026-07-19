@@ -15,6 +15,8 @@ final class AppModel: ObservableObject {
     @Published var warningMessage: String?
     @Published var persistenceWarning: String?
     @Published var quarantinedProfileURL: URL?
+    /// This device's quarantine artifacts for Diagnostics restore/reveal (newest first).
+    @Published var quarantinedArtifacts: [URL] = []
     @Published var persistenceStatus: PersistenceStatus = .clean
     @Published var profileDraft: ProfileDraft?
     @Published var pendingQuitAfterSaveFailure = false
@@ -219,6 +221,7 @@ final class AppModel: ObservableObject {
         refreshProfileSummary()
         refreshMappingWarning()
         reloadDraftFromSelectedProfile()
+        refreshQuarantineList()
         startMonitoring()
         syncRemapper()
     }
@@ -268,6 +271,7 @@ final class AppModel: ObservableObject {
             try profileStore.save(bundle)
             persistenceStatus = .clean
             persistenceWarning = "Corrupt profiles were quarantined and defaults were saved."
+            refreshQuarantineList()
         } catch {
             persistenceStatus = .failed(error.localizedDescription)
             persistenceWarning = error.localizedDescription
@@ -287,10 +291,44 @@ final class AppModel: ObservableObject {
             persistenceWarning = nil
             quarantinedProfileURL = nil
             confirmDiscardCorruptFile = false
+            refreshQuarantineList()
         } catch {
             persistenceStatus = .failed(error.localizedDescription)
             persistenceWarning = error.localizedDescription
         }
+    }
+
+    /// Refreshes the Diagnostics quarantine list (newest first for this device).
+    func refreshQuarantineList() {
+        do {
+            quarantinedArtifacts = try profileStore.listQuarantineArtifacts()
+        } catch {
+            quarantinedArtifacts = []
+        }
+    }
+
+    /// Restores a validated quarantine artifact into the primary store. On failure, in-memory state is unchanged.
+    func restoreQuarantinedProfile(from url: URL) {
+        do {
+            let restored = try profileStore.attemptRestore(from: url)
+            bundle = restored
+            draftsByProfileID.removeAll()
+            reloadDraftFromSelectedProfile()
+            refreshProfileSummary()
+            refreshMappingWarning()
+            persistenceStatus = .clean
+            persistenceWarning = nil
+            // Banner "reveal last quarantine" may still point at a useful file; keep if present.
+            refreshQuarantineList()
+            syncRemapper()
+        } catch {
+            persistenceStatus = .failed(error.localizedDescription)
+            persistenceWarning = "Could not restore quarantined profiles: \(error.localizedDescription)"
+        }
+    }
+
+    func revealInFinder(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     func reloadDraftFromSelectedProfile() {

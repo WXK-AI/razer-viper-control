@@ -382,6 +382,398 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         try store.save(bundle)
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.storageURL.path))
     }
+
+    // MARK: - Quarantine list + guided restore (Task 16)
+
+    private func makeValidProfile(name: String, id: UUID = UUID()) -> MouseProfile {
+        MouseProfile(
+            id: id,
+            name: name,
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+    }
+
+    private func writeQuarantineArtifact(
+        named fileName: String,
+        bundle: ProfileBundle,
+        modificationDate: Date
+    ) throws -> URL {
+        let url = store.storageDirectoryURL.appendingPathComponent(fileName)
+        try JSONEncoder().encode(bundle).write(to: url)
+        try FileManager.default.setAttributes(
+            [.modificationDate: modificationDate],
+            ofItemAtPath: url.path
+        )
+        return url
+    }
+
+    func testListQuarantineArtifactsFiltersAndOrdersByNewest() throws {
+        let older = try writeQuarantineArtifact(
+            named: "profiles-test-device-corrupt-2020-01-01T00-00-00Z.json",
+            bundle: ProfileBundle(
+                selectedProfileID: nil,
+                profiles: [makeValidProfile(name: "Older")]
+            ),
+            modificationDate: Date(timeIntervalSince1970: 1_000)
+        )
+        let newer = try writeQuarantineArtifact(
+            named: "profiles-test-device-corrupt-2021-01-01T00-00-00Z.json",
+            bundle: ProfileBundle(
+                selectedProfileID: nil,
+                profiles: [makeValidProfile(name: "Newer")]
+            ),
+            modificationDate: Date(timeIntervalSince1970: 2_000)
+        )
+        // Wrong device key — must not appear.
+        _ = try writeQuarantineArtifact(
+            named: "profiles-other-device-corrupt-2022-01-01T00-00-00Z.json",
+            bundle: ProfileBundle(
+                selectedProfileID: nil,
+                profiles: [makeValidProfile(name: "Other")]
+            ),
+            modificationDate: Date(timeIntervalSince1970: 3_000)
+        )
+        // Primary file — must not appear.
+        try store.save(
+            ProfileBundle(
+                selectedProfileID: nil,
+                profiles: [makeValidProfile(name: "Primary")]
+            )
+        )
+
+        let listed = try store.listQuarantineArtifacts()
+        XCTAssertEqual(listed.map(\.lastPathComponent), [
+            newer.lastPathComponent,
+            older.lastPathComponent
+        ])
+        XCTAssertFalse(listed.contains(where: { $0.lastPathComponent == store.storageURL.lastPathComponent }))
+        XCTAssertFalse(listed.contains(where: { $0.lastPathComponent.contains("other-device") }))
+    }
+
+    func testAttemptRestoreValidQuarantineReplacesPrimaryWithoutNewQuarantine() throws {
+        let primaryID = UUID()
+        let primary = makeValidProfile(name: "Primary", id: primaryID)
+        try store.save(ProfileBundle(selectedProfileID: primaryID, profiles: [primary]))
+        let primaryBefore = try Data(contentsOf: store.storageURL)
+
+        let restoredID = UUID()
+        let restoredProfile = makeValidProfile(name: "Restored", id: restoredID)
+        let quarantineBundle = ProfileBundle(
+            selectedProfileID: restoredID,
+            profiles: [restoredProfile]
+        )
+        let quarantineURL = try writeQuarantineArtifact(
+            named: "profiles-test-device-corrupt-restore-valid.json",
+            bundle: quarantineBundle,
+            modificationDate: Date(timeIntervalSince1970: 5_000)
+        )
+        let quarantineBytesBefore = try Data(contentsOf: quarantineURL)
+        let quarantineCountBefore = try store.listQuarantineArtifacts().count
+
+        let result = try store.attemptRestore(from: quarantineURL)
+        XCTAssertEqual(result.profiles.first?.name, "Restored")
+        XCTAssertEqual(result.selectedProfileID, restoredID)
+        XCTAssertEqual(result.schemaVersion, ProfileBundle.currentSchemaVersion)
+
+        let primaryAfter = try Data(contentsOf: store.storageURL)
+        XCTAssertNotEqual(primaryAfter, primaryBefore)
+        let onDisk = try JSONDecoder().decode(ProfileBundle.self, from: primaryAfter)
+        XCTAssertEqual(onDisk.profiles.first?.name, "Restored")
+
+        // Quarantine artifact untouched; no additional quarantine created.
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), quarantineBytesBefore)
+        XCTAssertEqual(try store.listQuarantineArtifacts().count, quarantineCountBefore)
+    }
+
+    func testAttemptRestoreInvalidQuarantineLeavesPrimaryAndArtifactUntouched() throws {
+        let primaryID = UUID()
+        try store.save(
+            ProfileBundle(
+                selectedProfileID: primaryID,
+                profiles: [makeValidProfile(name: "Keep", id: primaryID)]
+            )
+        )
+        let primaryBefore = try Data(contentsOf: store.storageURL)
+
+        let quarantineURL = store.storageDirectoryURL
+            .appendingPathComponent("profiles-test-device-corrupt-invalid.json")
+        let badBytes = Data("{not-valid-json".utf8)
+        try badBytes.write(to: quarantineURL)
+
+        XCTAssertThrowsError(try store.attemptRestore(from: quarantineURL))
+
+        XCTAssertEqual(try Data(contentsOf: store.storageURL), primaryBefore)
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), badBytes)
+        XCTAssertEqual(try store.listQuarantineArtifacts().count, 1)
+    }
+
+    func testAttemptRestoreRejectsOutOfDirectoryAndWrongDeviceURLs() throws {
+        let primaryID = UUID()
+        try store.save(
+            ProfileBundle(
+                selectedProfileID: primaryID,
+                profiles: [makeValidProfile(name: "Primary", id: primaryID)]
+            )
+        )
+        let primaryBefore = try Data(contentsOf: store.storageURL)
+
+        let outside = tempDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("outside-\(UUID().uuidString).json")
+        try JSONEncoder().encode(
+            ProfileBundle(profiles: [makeValidProfile(name: "Outside")])
+        ).write(to: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        XCTAssertThrowsError(try store.attemptRestore(from: outside)) { error in
+            guard case .invalidRestoreSource = error as? ProfileStoreError else {
+                return XCTFail("Expected invalidRestoreSource, got \(error)")
+            }
+        }
+
+        let wrongDevice = try writeQuarantineArtifact(
+            named: "profiles-wrong-device-corrupt-x.json",
+            bundle: ProfileBundle(profiles: [makeValidProfile(name: "Wrong")]),
+            modificationDate: Date()
+        )
+        XCTAssertThrowsError(try store.attemptRestore(from: wrongDevice)) { error in
+            guard case .invalidRestoreSource = error as? ProfileStoreError else {
+                return XCTFail("Expected invalidRestoreSource, got \(error)")
+            }
+        }
+
+        XCTAssertEqual(try Data(contentsOf: store.storageURL), primaryBefore)
+    }
+
+    func testAttemptRestoreRejectsSymlinkWithoutFollowingTarget() throws {
+        let primaryID = UUID()
+        try store.save(
+            ProfileBundle(
+                selectedProfileID: primaryID,
+                profiles: [makeValidProfile(name: "Primary", id: primaryID)]
+            )
+        )
+        let primaryBefore = try Data(contentsOf: store.storageURL)
+
+        let target = tempDirectory.appendingPathComponent("restore-symlink-target.json")
+        let targetBytes = try JSONEncoder().encode(
+            ProfileBundle(profiles: [makeValidProfile(name: "Target")])
+        )
+        try targetBytes.write(to: target)
+
+        let linkURL = store.storageDirectoryURL
+            .appendingPathComponent("profiles-test-device-corrupt-symlink.json")
+        try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: target)
+
+        XCTAssertThrowsError(try store.attemptRestore(from: linkURL))
+
+        XCTAssertEqual(try Data(contentsOf: store.storageURL), primaryBefore)
+        XCTAssertEqual(try Data(contentsOf: target), targetBytes)
+    }
+
+    func testAttemptRestoreRejectsUnsupportedSchemaWithoutTouchingPrimary() throws {
+        let primaryID = UUID()
+        try store.save(
+            ProfileBundle(
+                selectedProfileID: primaryID,
+                profiles: [makeValidProfile(name: "Primary", id: primaryID)]
+            )
+        )
+        let primaryBefore = try Data(contentsOf: store.storageURL)
+
+        let futureID = UUID()
+        let future = ProfileBundle(
+            selectedProfileID: futureID,
+            profiles: [makeValidProfile(name: "Future", id: futureID)],
+            schemaVersion: 99
+        )
+        let quarantineURL = try writeQuarantineArtifact(
+            named: "profiles-test-device-corrupt-future.json",
+            bundle: future,
+            modificationDate: Date()
+        )
+        let quarantineBefore = try Data(contentsOf: quarantineURL)
+
+        XCTAssertThrowsError(try store.attemptRestore(from: quarantineURL))
+
+        XCTAssertEqual(try Data(contentsOf: store.storageURL), primaryBefore)
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), quarantineBefore)
+    }
+
+    func testAttemptRestoreWriteFailureLeavesPrimaryUntouched() throws {
+        let nestedSupport = tempDirectory.appendingPathComponent("restore-write-fail", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedSupport, withIntermediateDirectories: true)
+
+        let fchmodToggle = OperationToggle()
+        let localStore = ProfileStore(
+            deviceKey: "restore-write-fail",
+            applicationSupportDirectory: nestedSupport,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            fchmodFile: { fd, mode in
+                if fchmodToggle.fail {
+                    throw POSIXError(.EPERM)
+                }
+                if fchmod(fd, mode) != 0 {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EPERM)
+                }
+            }
+        )
+
+        let primaryID = UUID()
+        try localStore.save(
+            ProfileBundle(
+                selectedProfileID: primaryID,
+                profiles: [makeValidProfile(name: "Primary", id: primaryID)]
+            )
+        )
+        let primaryBefore = try Data(contentsOf: localStore.storageURL)
+
+        let restoredID = UUID()
+        let quarantineURL = localStore.storageDirectoryURL
+            .appendingPathComponent("profiles-restore-write-fail-corrupt-ok.json")
+        try JSONEncoder().encode(
+            ProfileBundle(
+                selectedProfileID: restoredID,
+                profiles: [makeValidProfile(name: "Restored", id: restoredID)]
+            )
+        ).write(to: quarantineURL)
+        let quarantineBefore = try Data(contentsOf: quarantineURL)
+
+        fchmodToggle.fail = true
+        XCTAssertThrowsError(try localStore.attemptRestore(from: quarantineURL))
+
+        XCTAssertEqual(try Data(contentsOf: localStore.storageURL), primaryBefore)
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), quarantineBefore)
+    }
+
+    func testAttemptRestoreRejectsWhileCorruptSourceWriteBlocked() throws {
+        let renameToggle = OperationToggle()
+        let nestedSupport = tempDirectory.appendingPathComponent("restore-block-reject", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedSupport, withIntermediateDirectories: true)
+
+        let localStore = ProfileStore(
+            deviceKey: "restore-block",
+            applicationSupportDirectory: nestedSupport,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            renameEntry: { directoryFD, from, to in
+                if renameToggle.fail {
+                    throw POSIXError(.EACCES)
+                }
+                try ProfileSafetyValidator.renameEntry(directoryFD: directoryFD, from: from, to: to)
+            }
+        )
+
+        // Force corrupt-preserved primary (writes blocked).
+        let blockedPrimary = Data("{broken-must-survive-restore".utf8)
+        try blockedPrimary.write(to: localStore.storageURL)
+        renameToggle.fail = true
+        _ = localStore.loadOutcome()
+        XCTAssertTrue(localStore.writesBlockedForCorruptSource)
+
+        let restoredID = UUID()
+        let quarantineURL = localStore.storageDirectoryURL
+            .appendingPathComponent("profiles-restore-block-corrupt-good.json")
+        let quarantineBytes = try JSONEncoder().encode(
+            ProfileBundle(
+                selectedProfileID: restoredID,
+                profiles: [makeValidProfile(name: "FromQuarantine", id: restoredID)]
+            )
+        )
+        try quarantineBytes.write(to: quarantineURL)
+
+        // Even with a valid quarantine artifact, restore must not replace the unquarantined primary.
+        renameToggle.fail = false
+        XCTAssertThrowsError(try localStore.attemptRestore(from: quarantineURL)) { error in
+            guard case .writeBlockedCorruptSource = error as? ProfileStoreError else {
+                return XCTFail("Expected writeBlockedCorruptSource, got \(error)")
+            }
+        }
+        XCTAssertTrue(localStore.writesBlockedForCorruptSource)
+        XCTAssertEqual(try Data(contentsOf: localStore.storageURL), blockedPrimary)
+        XCTAssertEqual(try Data(contentsOf: quarantineURL), quarantineBytes)
+    }
+
+    func testListQuarantineExcludesSymlinksAndNonRegularEntries() throws {
+        let valid = try writeQuarantineArtifact(
+            named: "profiles-test-device-corrupt-regular.json",
+            bundle: ProfileBundle(profiles: [makeValidProfile(name: "Regular")]),
+            modificationDate: Date(timeIntervalSince1970: 4_000)
+        )
+
+        let target = tempDirectory.appendingPathComponent("list-symlink-target.json")
+        try JSONEncoder().encode(
+            ProfileBundle(profiles: [makeValidProfile(name: "SymlinkTarget")])
+        ).write(to: target)
+        let linkURL = store.storageDirectoryURL
+            .appendingPathComponent("profiles-test-device-corrupt-symlink.json")
+        try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: target)
+
+        let dirURL = store.storageDirectoryURL
+            .appendingPathComponent("profiles-test-device-corrupt-directory.json")
+        try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+
+        let listed = try store.listQuarantineArtifacts()
+        XCTAssertEqual(listed.map(\.lastPathComponent), [valid.lastPathComponent])
+        XCTAssertFalse(listed.contains(where: { $0.lastPathComponent.contains("symlink") }))
+        XCTAssertFalse(listed.contains(where: { $0.lastPathComponent.contains("directory") }))
+    }
+
+    func testListQuarantineDoesNotFollowPathnameSwapViaDirectoryReadyProbe() throws {
+        let supportRoot = tempDirectory.appendingPathComponent("list-swap-root", isDirectory: true)
+        try FileManager.default.createDirectory(at: supportRoot, withIntermediateDirectories: true)
+
+        // Seed a real quarantine artifact on the eventual support directory inode.
+        let prep = ProfileStore(
+            deviceKey: "list-swap",
+            applicationSupportDirectory: supportRoot,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+        let realQuarantineName = "profiles-list-swap-corrupt-real.json"
+        let realURL = prep.storageDirectoryURL.appendingPathComponent(realQuarantineName)
+        try JSONEncoder().encode(
+            ProfileBundle(profiles: [makeValidProfile(name: "Real")])
+        ).write(to: realURL)
+
+        let supportDir = prep.storageDirectoryURL
+        let orphanedReal = supportRoot.appendingPathComponent("orphaned-real-support", isDirectory: true)
+        let attacker = supportRoot.appendingPathComponent("attacker-target", isDirectory: true)
+        try FileManager.default.createDirectory(at: attacker, withIntermediateDirectories: true)
+        let fakeName = "profiles-list-swap-corrupt-fake.json"
+        let fakeBytes = Data("attacker-should-never-be-listed".utf8)
+        try fakeBytes.write(to: attacker.appendingPathComponent(fakeName))
+
+        var didSwap = false
+        let listingStore = ProfileStore(
+            deviceKey: "list-swap",
+            applicationSupportDirectory: supportRoot,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            directoryReadyProbe: { _ in
+                guard !didSwap else { return }
+                didSwap = true
+                // After FD validation, replace the pathname with a symlink into attacker.
+                try? FileManager.default.moveItem(at: supportDir, to: orphanedReal)
+                try? FileManager.default.createSymbolicLink(at: supportDir, withDestinationURL: attacker)
+            }
+        )
+
+        let listed = try listingStore.listQuarantineArtifacts()
+        XCTAssertTrue(didSwap)
+        XCTAssertEqual(listed.map(\.lastPathComponent), [realQuarantineName])
+        XCTAssertFalse(listed.contains(where: { $0.lastPathComponent == fakeName }))
+        // Attacker payload must remain unread/unmutated.
+        XCTAssertEqual(
+            try Data(contentsOf: attacker.appendingPathComponent(fakeName)),
+            fakeBytes
+        )
+        // Real artifact still lives on the orphaned inode held by the FD path.
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: orphanedReal.appendingPathComponent(realQuarantineName).path
+            )
+        )
+    }
 }
 
 private final class OperationToggle {

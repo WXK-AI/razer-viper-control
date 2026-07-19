@@ -109,7 +109,7 @@ struct SettingsView: View {
             HStack {
                 if let url = model.quarantinedProfileURL {
                     Button("Reveal File") {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                        model.revealInFinder(url)
                     }
                 }
                 if model.allowsCorruptSourceRecoveryActions {
@@ -707,6 +707,38 @@ private struct DiagnosticsTab: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                GroupBox("Quarantined profiles") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Previously unreadable profile files for this device. Restore re-validates the file and replaces the current profiles only if it is fully safe.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if model.quarantinedArtifacts.isEmpty {
+                            Text("No quarantine artifacts.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(model.quarantinedArtifacts, id: \.path) { url in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(url.lastPathComponent)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .lineLimit(2)
+                                    Spacer(minLength: 8)
+                                    Button("Restore") {
+                                        model.restoreQuarantinedProfile(from: url)
+                                    }
+                                    Button("Reveal in Finder") {
+                                        model.revealInFinder(url)
+                                    }
+                                }
+                            }
+                        }
+                        Button("Refresh List") {
+                            model.refreshQuarantineList()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 GroupBox("DriverKit spike") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(model.driverStatusMessage)
@@ -793,6 +825,7 @@ private struct DiagnosticsTab: View {
         }
         .onAppear {
             model.refreshPermissions()
+            model.refreshQuarantineList()
             model.probeWheelHardware()
         }
     }

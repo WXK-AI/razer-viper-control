@@ -181,6 +181,8 @@ public enum ProfileStoreError: Error, LocalizedError, Equatable {
     case quarantineFailed(String)
     case writeBlockedCorruptSource(String)
     case unsafeSupportDirectory(ProfileSafetyValidationError)
+    /// Restore source is outside the support dir, wrong device, not a quarantine name, etc.
+    case invalidRestoreSource(String)
 
     public var errorDescription: String? {
         switch self {
@@ -196,6 +198,8 @@ public enum ProfileStoreError: Error, LocalizedError, Equatable {
             return "Profile saves are blocked until the corrupt file is quarantined or discarded: \(path)"
         case let .unsafeSupportDirectory(error):
             return error.localizedDescription
+        case let .invalidRestoreSource(details):
+            return "Cannot restore quarantined profiles: \(details)"
         }
     }
 }
@@ -536,6 +540,22 @@ public final class ProfileStore {
         }
     }
 
+    /// Lists this device's quarantine artifacts (newest first). Ignores other devices and the primary file.
+    public func listQuarantineArtifacts() throws -> [URL] {
+        try withSafeSupportDirectoryFD { directoryFD in
+            try listQuarantineArtifacts(directoryFD: directoryFD)
+        }
+    }
+
+    /// Re-validates a quarantine artifact and atomically replaces the primary only if fully valid.
+    /// Does not create a new quarantine entry. Leaves primary + artifact untouched on failure.
+    @discardableResult
+    public func attemptRestore(from url: URL) throws -> ProfileBundle {
+        try withSafeSupportDirectoryFD { directoryFD in
+            try attemptRestore(from: url, directoryFD: directoryFD)
+        }
+    }
+
     public func defaultBundle() -> ProfileBundle {
         let profile = MouseProfile(
             name: "Default",
@@ -618,5 +638,185 @@ public final class ProfileStore {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date).replacingOccurrences(of: ":", with: "-")
+    }
+
+    /// Basename pattern for this device's quarantine files.
+    private var quarantineFileNamePrefix: String {
+        "profiles-\(deviceKey)-corrupt-"
+    }
+
+    private func isQuarantineFileName(_ fileName: String) -> Bool {
+        guard fileName != profileFileName else { return false }
+        guard !fileName.contains("/") && fileName != "." && fileName != ".." else { return false }
+        return fileName.hasPrefix(quarantineFileNamePrefix) && fileName.hasSuffix(".json")
+    }
+
+    private func listQuarantineArtifacts(directoryFD: Int32) throws -> [URL] {
+        // Enumerate exclusively via the validated directory FD — never re-open directoryURL.
+        let names = try Self.readDirectoryBasenames(fromDirectoryFD: directoryFD)
+        let expectedUID = currentUID()
+        var scored: [(name: String, sec: Int64, nsec: Int64)] = []
+
+        for name in names {
+            guard isQuarantineFileName(name) else { continue }
+
+            var status = stat()
+            let result = name.withCString { cName in
+                fstatat(directoryFD, cName, &status, AT_SYMLINK_NOFOLLOW)
+            }
+            guard result == 0 else { continue }
+
+            let fileType = status.st_mode & S_IFMT
+            // Skip symlinks and non-regular entries without following.
+            guard fileType != S_IFLNK else { continue }
+            guard fileType == S_IFREG else { continue }
+            guard status.st_uid == expectedUID else { continue }
+            guard status.st_size <= Int64(ProfileSafetyLimits.maximumFileBytes) else { continue }
+
+            scored.append((name, Int64(status.st_mtimespec.tv_sec), Int64(status.st_mtimespec.tv_nsec)))
+        }
+
+        scored.sort { lhs, rhs in
+            if lhs.sec != rhs.sec { return lhs.sec > rhs.sec }
+            if lhs.nsec != rhs.nsec { return lhs.nsec > rhs.nsec }
+            return lhs.name > rhs.name
+        }
+
+        // URLs are display handles only; subsequent restore re-validates via openat on the FD path.
+        return scored.map { directoryURL.appendingPathComponent($0.name) }
+    }
+
+    /// `dup` + `fdopendir`/`readdir` so listing cannot follow a post-validation pathname swap.
+    private static func readDirectoryBasenames(fromDirectoryFD directoryFD: Int32) throws -> [String] {
+        let dupFD = dup(directoryFD)
+        guard dupFD >= 0 else {
+            throw ProfileStoreError.writeFailed(
+                "Unable to duplicate support directory FD: \(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO).localizedDescription)"
+            )
+        }
+        guard let dir = fdopendir(dupFD) else {
+            let code = errno
+            close(dupFD)
+            throw ProfileStoreError.writeFailed(
+                "Unable to open support directory stream: \(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO).localizedDescription)"
+            )
+        }
+        // `closedir` owns `dupFD`.
+        defer { closedir(dir) }
+
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(dir) else {
+                if errno != 0 {
+                    throw ProfileStoreError.writeFailed(
+                        "Unable to read support directory: \(POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO).localizedDescription)"
+                    )
+                }
+                break
+            }
+            let name = withUnsafePointer(to: entry.pointee.d_name) { ptr in
+                ptr.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { cPtr in
+                    String(cString: cPtr)
+                }
+            }
+            if name == "." || name == ".." { continue }
+            if name.hasPrefix(".") { continue }
+            names.append(name)
+        }
+        return names
+    }
+
+    private func attemptRestore(from url: URL, directoryFD: Int32) throws -> ProfileBundle {
+        // Durable fail-closed gate: never replace an unquarantined corrupt primary.
+        if writesBlockedForCorruptSource {
+            throw ProfileStoreError.writeBlockedCorruptSource(fileURL.path)
+        }
+
+        let fileName = try validatedQuarantineFileName(for: url)
+
+        let data: Data
+        do {
+            data = try ProfileSafetyValidator.readValidatedSourceFile(
+                directoryFD: directoryFD,
+                fileName: fileName
+            )
+        } catch let error as ProfileSafetyValidationError {
+            throw ProfileStoreError.invalidRestoreSource(error.localizedDescription)
+        } catch {
+            throw ProfileStoreError.invalidRestoreSource(error.localizedDescription)
+        }
+
+        let validated = try decodeMigrateAndValidate(data)
+
+        // Atomic replace only after complete validation; failure leaves prior primary intact.
+        do {
+            let encoded = try encoder.encode(validated.bundle)
+            try ProfileSafetyValidator.writeOwnerOnlyRegularFile(
+                directoryFD: directoryFD,
+                fileName: profileFileName,
+                data: encoded,
+                temporaryFileName: ".\(profileFileName).tmp",
+                fchmodFile: fchmodFile
+            )
+        } catch let error as ProfileSafetyValidationError {
+            throw ProfileStoreError.unsafeSupportDirectory(error)
+        } catch let error as ProfileStoreError {
+            throw error
+        } catch {
+            throw ProfileStoreError.writeFailed(error.localizedDescription)
+        }
+
+        return validated.bundle
+    }
+
+    private func validatedQuarantineFileName(for url: URL) throws -> String {
+        let candidate = url.standardizedFileURL
+        let support = directoryURL.standardizedFileURL
+        let parent = candidate.deletingLastPathComponent().standardizedFileURL
+        guard parent.path == support.path else {
+            throw ProfileStoreError.invalidRestoreSource("path is outside the profile support directory")
+        }
+        let fileName = candidate.lastPathComponent
+        guard isQuarantineFileName(fileName) else {
+            throw ProfileStoreError.invalidRestoreSource("not a quarantine artifact for this device")
+        }
+        return fileName
+    }
+
+    /// Shared decode → schema gate → button migration → schema upgrade → safety validation.
+    private func decodeMigrateAndValidate(
+        _ data: Data
+    ) throws -> (bundle: ProfileBundle, repairWarnings: [String]) {
+        let decoded: ProfileBundle
+        do {
+            decoded = try decoder.decode(ProfileBundle.self, from: data)
+        } catch {
+            throw ProfileStoreError.writeFailed("malformed profile JSON: \(error.localizedDescription)")
+        }
+
+        if decoded.schemaVersion > ProfileBundle.currentSchemaVersion
+            || decoded.schemaVersion < ProfileBundle.legacySchemaVersion {
+            throw ProfileStoreError.writeFailed(
+                "unsupported profile schema version \(decoded.schemaVersion) (supported \(ProfileBundle.legacySchemaVersion)...\(ProfileBundle.currentSchemaVersion))"
+            )
+        }
+
+        var bundle = decoded
+        for index in bundle.profiles.indices {
+            bundle.profiles[index].migrateButton2Alias()
+        }
+        if bundle.schemaVersion < ProfileBundle.currentSchemaVersion {
+            bundle.schemaVersion = ProfileBundle.currentSchemaVersion
+        }
+
+        do {
+            return try ProfileSafetyValidator.validateAndRepair(bundle, fileManager: fileManager)
+        } catch let error as ProfileSafetyValidationError {
+            if case let .invalidHardware(validationError) = error {
+                throw ProfileStoreError.validation(validationError)
+            }
+            throw ProfileStoreError.safetyValidation(error)
+        }
     }
 }
