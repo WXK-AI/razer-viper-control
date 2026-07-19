@@ -158,7 +158,8 @@ public struct DeviceState: Equatable, Sendable {
     public var dpiY: Int
     public var activeDPIStage: Int
     public var dpiStages: [Int]
-    public var pollingRateHz: Int
+    public var dpiStagesY: [Int]
+    public var pollingRateHz: Int?
 
     public init(
         batteryPercent: Int = 0,
@@ -167,7 +168,8 @@ public struct DeviceState: Equatable, Sendable {
         dpiY: Int = 800,
         activeDPIStage: Int = 1,
         dpiStages: [Int] = [800],
-        pollingRateHz: Int = 1000
+        dpiStagesY: [Int]? = nil,
+        pollingRateHz: Int? = nil
     ) {
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
@@ -175,6 +177,7 @@ public struct DeviceState: Equatable, Sendable {
         self.dpiY = dpiY
         self.activeDPIStage = activeDPIStage
         self.dpiStages = dpiStages
+        self.dpiStagesY = dpiStagesY ?? dpiStages
         self.pollingRateHz = pollingRateHz
     }
 }
@@ -236,16 +239,19 @@ public final class RazerCommandClient: @unchecked Sendable {
             let polling = try send(.getPollingRate())
 
             let decodedStages = try stages.decodeDPIStages()
-            let stageValues = decodedStages.stages.map(\.x)
+            let decodedDPI = dpi.decodeDPI()
+            let stageValuesX = decodedStages.stages.map(\.x)
+            let stageValuesY = decodedStages.stages.map(\.y)
 
             return DeviceState(
                 batteryPercent: battery.decodeBatteryPercent(),
                 isCharging: charging.decodeCharging(),
-                dpiX: dpi.decodeDPI().x,
-                dpiY: dpi.decodeDPI().y,
+                dpiX: decodedDPI.x,
+                dpiY: decodedDPI.y,
                 activeDPIStage: decodedStages.activeStage,
-                dpiStages: stageValues.isEmpty ? [dpi.decodeDPI().x] : stageValues,
-                pollingRateHz: polling.decodePollingRateHz() ?? 1000
+                dpiStages: stageValuesX.isEmpty ? [decodedDPI.x] : stageValuesX,
+                dpiStagesY: stageValuesY.isEmpty ? [decodedDPI.y] : stageValuesY,
+                pollingRateHz: polling.decodePollingRateHz()
             )
         }
     }

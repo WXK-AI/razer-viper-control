@@ -421,7 +421,7 @@ public final class DeviceSession: @unchecked Sendable {
         to client: RazerCommandClient,
         wheelCapability: WheelHardwareCapability? = nil,
         isStillCurrent: () -> Bool = { true }
-    ) throws -> Bool {
+    ) throws -> HardwareApplyResult {
         let capability = wheelCapability ?? WheelHardwareCapability()
         return try HardwareProfileApplier.apply(
             target: profile,

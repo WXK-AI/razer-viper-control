@@ -165,27 +165,33 @@ final class HardwareApplyPolicyTests: XCTestCase {
         )
     }
 
-    func testIncompleteApplyDoesNotRecordBaseline() {
+    func testOnlyVerifiedApplyRecordsBaseline() {
         let candidate = HardwareProfileSettings(profile: baseProfile())
         XCTAssertNil(
-            HardwareApplyBaseline.settingsToRecord(didComplete: false, applied: candidate)
+            HardwareApplyBaseline.settingsToRecord(
+                result: .unverified(mismatches: [.pollingRate]),
+                applied: candidate
+            )
         )
         XCTAssertNil(
-            HardwareApplyBaseline.settingsToRecord(didComplete: true, applied: nil)
+            HardwareApplyBaseline.settingsToRecord(result: .superseded, applied: candidate)
+        )
+        XCTAssertNil(
+            HardwareApplyBaseline.settingsToRecord(result: .verified, applied: nil)
         )
         XCTAssertEqual(
-            HardwareApplyBaseline.settingsToRecord(didComplete: true, applied: candidate),
+            HardwareApplyBaseline.settingsToRecord(result: .verified, applied: candidate),
             candidate
         )
     }
 
     func testUnknownWheelReadbackDoesNotRecordBaseline() {
         let candidate = HardwareProfileSettings(profile: baseProfile())
-        // AppModel only records through settingsToRecord after a completed apply;
-        // thrown unknownWheelReadback never reaches didComplete: true.
-        let didComplete = false
         XCTAssertNil(
-            HardwareApplyBaseline.settingsToRecord(didComplete: didComplete, applied: candidate)
+            HardwareApplyBaseline.settingsToRecord(
+                result: .unverified(mismatches: [.scrollMode]),
+                applied: candidate
+            )
         )
     }
 
@@ -221,17 +227,12 @@ final class HardwareApplyPolicyTests: XCTestCase {
         XCTAssertEqual(Set(reasons.map(\.rawValue)).count, 4)
     }
 
-    func testApplyFailureInvalidatesForWedgedCommandAndReadbackErrors() {
+    func testApplyFailureInvalidatesForWedgedCommandErrors() {
         XCTAssertTrue(
             HardwareApplyFailurePolicy.shouldInvalidate(error: RazerCommandError.deviceBusy)
         )
         XCTAssertTrue(
             HardwareApplyFailurePolicy.shouldInvalidate(error: RazerCommandError.timeout)
-        )
-        XCTAssertTrue(
-            HardwareApplyFailurePolicy.shouldInvalidate(
-                error: HardwareApplyError.unknownWheelReadback(fields: ["scrollMode"])
-            )
         )
     }
 
@@ -254,6 +255,58 @@ final class HardwareApplyPolicyTests: XCTestCase {
         XCTAssertFalse(
             HardwareApplyFailurePolicy.shouldInvalidate(
                 error: RazerValidationError.unsupportedPollingRate(250)
+            )
+        )
+        XCTAssertFalse(
+            HardwareApplyFailurePolicy.shouldInvalidate(
+                error: HardwareApplyError.unknownWheelReadback(fields: [.scrollMode])
+            )
+        )
+    }
+
+    func testWheelCapabilityRefreshPolicyPreservesKnownCapabilityWithoutFreshProbe() {
+        let cached = WheelHardwareCapability(
+            scrollMode: .supported,
+            acceleration: .notSupported,
+            smartReel: .supported
+        )
+
+        XCTAssertEqual(
+            WheelCapabilityRefreshPolicy.resolvedCapability(fresh: nil, cached: cached),
+            cached
+        )
+    }
+
+    func testWheelCapabilityRefreshPolicyUsesFreshProbeWhenAvailable() {
+        let cached = WheelHardwareCapability(scrollMode: .unknown)
+        let fresh = WheelHardwareCapability(scrollMode: .supported)
+
+        XCTAssertEqual(
+            WheelCapabilityRefreshPolicy.resolvedCapability(fresh: fresh, cached: cached),
+            fresh
+        )
+    }
+
+    func testWheelCapabilityRefreshPolicyReprobesOnlyRequestedUnknownFields() {
+        var profile = baseProfile()
+        profile.wheelSettings.hardware = HardwareWheelSettings(scrollMode: .freeSpin)
+
+        XCTAssertTrue(
+            WheelCapabilityRefreshPolicy.requiresProbe(
+                profile: profile,
+                capability: .init(scrollMode: .unknown)
+            )
+        )
+        XCTAssertFalse(
+            WheelCapabilityRefreshPolicy.requiresProbe(
+                profile: profile,
+                capability: .init(scrollMode: .supported)
+            )
+        )
+        XCTAssertFalse(
+            WheelCapabilityRefreshPolicy.requiresProbe(
+                profile: profile,
+                capability: .init(scrollMode: .notSupported)
             )
         )
     }

@@ -49,7 +49,7 @@ private struct MenuBarContent: View {
         if model.isConnected {
             Text("Battery: \(model.batteryPercent)%\(model.isCharging ? " (charging)" : "")")
             Text("Profile: \(model.profileName)")
-            Text("DPI: \(model.activeDPI) • \(model.pollingRateHz) Hz")
+            Text("DPI: \(model.activeDPI) • Polling: \(model.pollingRateHz.map { "\($0) Hz" } ?? "Unknown")")
         } else {
             Text(model.statusMessage)
         }

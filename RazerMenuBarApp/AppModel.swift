@@ -10,7 +10,7 @@ final class AppModel: ObservableObject {
     @Published var isCharging = false
     @Published var profileName = "—"
     @Published var activeDPI = 0
-    @Published var pollingRateHz = 1000
+    @Published var pollingRateHz: Int?
     @Published var statusMessage = "Waiting for mouse…"
     @Published var warningMessage: String?
     @Published var persistenceWarning: String?
@@ -87,6 +87,7 @@ final class AppModel: ObservableObject {
     private let hardwareApplyGate = LatestHardwareApplyGate()
     private let deviceLifecycleGate = DeviceLifecycleGate()
     private var lastAppliedHardwareSettings: HardwareProfileSettings?
+    private var hardwareVerificationWarning: String?
     /// Event-tap-safe diagnostic bridge; avoids per-event MainActor `Task` hops.
     private let remapDiagnosticSink = InputCaptureDiagnosticSink()
     private var monitorTimer: Timer?
@@ -114,6 +115,8 @@ final class AppModel: ObservableObject {
         let disconnected: Bool
         let applyWarning: String?
         let profileAppliedSuccessfully: Bool
+        /// Apply generation whose result may update retry/baseline/warning state.
+        let applyGeneration: UInt64?
         /// Exact hardware snapshot that was written; never derived from a later selection.
         let appliedHardwareSettings: HardwareProfileSettings?
     }
@@ -405,6 +408,7 @@ final class AppModel: ObservableObject {
         let selectedProfile = selectedProfile
         let shouldAutoApply = selectedProfile?.autoReapplyEnabled ?? false
         let autoApplySnapshot = autoApplyState
+        let cachedWheelCapability = wheelCapability
         let applyGate = hardwareApplyGate
         let lifecycleGate = deviceLifecycleGate
         // Observe only — never issue() here, or reconnect would supersede a newer Apply.
@@ -418,6 +422,7 @@ final class AppModel: ObservableObject {
                 selectedProfile: selectedProfile,
                 shouldAutoApply: shouldAutoApply,
                 autoApplySnapshot: autoApplySnapshot,
+                cachedWheelCapability: cachedWheelCapability,
                 applyGate: applyGate,
                 generationAtSchedule: generationAtSchedule,
                 lifecycleGate: lifecycleGate,
@@ -449,6 +454,7 @@ final class AppModel: ObservableObject {
         selectedProfile: MouseProfile?,
         shouldAutoApply: Bool,
         autoApplySnapshot: AutoApplyCoordinator.State,
+        cachedWheelCapability: WheelHardwareCapability,
         applyGate: LatestHardwareApplyGate,
         generationAtSchedule: UInt64,
         lifecycleGate: DeviceLifecycleGate,
@@ -461,6 +467,7 @@ final class AppModel: ObservableObject {
                 selectedProfile: selectedProfile,
                 shouldAutoApply: shouldAutoApply,
                 autoApplySnapshot: autoApplySnapshot,
+                cachedWheelCapability: cachedWheelCapability,
                 forceReconnect: false,
                 applyGate: applyGate,
                 generationAtSchedule: generationAtSchedule,
@@ -484,6 +491,7 @@ final class AppModel: ObservableObject {
                         selectedProfile: selectedProfile,
                         shouldAutoApply: shouldAutoApply,
                         autoApplySnapshot: autoApplySnapshot,
+                        cachedWheelCapability: cachedWheelCapability,
                         forceReconnect: true,
                         applyGate: applyGate,
                         generationAtSchedule: generationAtSchedule,
@@ -506,6 +514,7 @@ final class AppModel: ObservableObject {
                         disconnected: true,
                         applyWarning: nil,
                         profileAppliedSuccessfully: false,
+                        applyGeneration: nil,
                         appliedHardwareSettings: nil
                     )
                 } catch {
@@ -521,6 +530,7 @@ final class AppModel: ObservableObject {
                         disconnected: true,
                         applyWarning: nil,
                         profileAppliedSuccessfully: false,
+                        applyGeneration: nil,
                         appliedHardwareSettings: nil
                     )
                 }
@@ -534,6 +544,7 @@ final class AppModel: ObservableObject {
                 disconnected: true,
                 applyWarning: nil,
                 profileAppliedSuccessfully: false,
+                applyGeneration: nil,
                 appliedHardwareSettings: nil
             )
         } catch {
@@ -549,6 +560,7 @@ final class AppModel: ObservableObject {
                 disconnected: true,
                 applyWarning: nil,
                 profileAppliedSuccessfully: false,
+                applyGeneration: nil,
                 appliedHardwareSettings: nil
             )
         }
@@ -559,6 +571,7 @@ final class AppModel: ObservableObject {
         selectedProfile: MouseProfile?,
         shouldAutoApply: Bool,
         autoApplySnapshot: AutoApplyCoordinator.State,
+        cachedWheelCapability: WheelHardwareCapability,
         forceReconnect: Bool,
         applyGate: LatestHardwareApplyGate,
         generationAtSchedule: UInt64,
@@ -578,7 +591,11 @@ final class AppModel: ObservableObject {
             throw DeviceRefreshCancellation.staleLifecycle
         }
         let becameConnected = !wasConnectedBefore || forceReconnect
-        let probeReport = becameConnected ? WheelCapabilityProbe.probe(client: client) : nil
+        var probeReport = becameConnected ? WheelCapabilityProbe.probe(client: client) : nil
+        var effectiveWheelCapability = WheelCapabilityRefreshPolicy.resolvedCapability(
+            fresh: probeReport?.capability,
+            cached: cachedWheelCapability
+        )
         guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
             throw DeviceRefreshCancellation.staleLifecycle
         }
@@ -590,6 +607,7 @@ final class AppModel: ObservableObject {
 
         var applyWarning: String?
         var profileAppliedSuccessfully = false
+        var applyGeneration: UInt64?
         var appliedHardwareSettings: HardwareProfileSettings?
         if AutoApplyCoordinator.shouldAttemptApply(
             state: applyState,
@@ -597,6 +615,21 @@ final class AppModel: ObservableObject {
             hasProfile: selectedProfile != nil
         ),
            let profile = selectedProfile {
+            applyGeneration = generationAtSchedule
+            if probeReport == nil,
+               WheelCapabilityRefreshPolicy.requiresProbe(
+                   profile: profile,
+                   capability: effectiveWheelCapability
+               ) {
+                probeReport = WheelCapabilityProbe.probe(client: client)
+                effectiveWheelCapability = WheelCapabilityRefreshPolicy.resolvedCapability(
+                    fresh: probeReport?.capability,
+                    cached: cachedWheelCapability
+                )
+                guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
+                    throw DeviceRefreshCancellation.staleLifecycle
+                }
+            }
             // Skip if a newer explicit/DPI/selection apply claimed the gate since scheduling.
             // Still connected with a valid lifecycle token for a read-only snapshot; only the
             // apply generation is stale. If lifecycle itself went stale, retire instead.
@@ -613,28 +646,50 @@ final class AppModel: ObservableObject {
                     disconnected: false,
                     applyWarning: nil,
                     profileAppliedSuccessfully: false,
+                    applyGeneration: applyGeneration,
                     appliedHardwareSettings: nil
                 )
             }
             let settings = HardwareProfileSettings(profile: profile)
             do {
-                let didApply = try session.apply(
+                let result = try session.apply(
                     profile: profile,
                     to: client,
-                    wheelCapability: probeReport?.capability ?? .init(),
+                    wheelCapability: effectiveWheelCapability,
                     isStillCurrent: {
                         applyGate.isCurrent(generationAtSchedule)
                             && lifecycleGate.isCurrentAndAwake(lifecycleToken)
                     }
                 )
+                guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
+                    throw DeviceRefreshCancellation.staleLifecycle
+                }
+                guard applyGate.isCurrent(generationAtSchedule) else {
+                    return DeviceRefreshSnapshot(
+                        state: state,
+                        probeReport: probeReport,
+                        becameConnected: becameConnected,
+                        commandError: nil,
+                        disconnected: false,
+                        applyWarning: nil,
+                        profileAppliedSuccessfully: false,
+                        applyGeneration: applyGeneration,
+                        appliedHardwareSettings: nil
+                    )
+                }
                 if let recorded = HardwareApplyBaseline.settingsToRecord(
-                    didComplete: didApply,
+                    result: result,
                     applied: settings
                 ) {
                     profileAppliedSuccessfully = true
                     appliedHardwareSettings = recorded
+                } else if let warning = result.verificationWarning {
+                    applyWarning = warning
                 }
             } catch {
+                if HardwareApplyFailurePolicy.shouldInvalidate(error: error) {
+                    throw error
+                }
                 applyWarning = error.localizedDescription
             }
         }
@@ -651,6 +706,7 @@ final class AppModel: ObservableObject {
             disconnected: false,
             applyWarning: applyWarning,
             profileAppliedSuccessfully: profileAppliedSuccessfully,
+            applyGeneration: applyGeneration,
             appliedHardwareSettings: appliedHardwareSettings
         )
     }
@@ -659,19 +715,22 @@ final class AppModel: ObservableObject {
         if snapshot.disconnected {
             applyDisconnectedState(commandError: snapshot.commandError)
         } else if let state = snapshot.state {
+            let acceptsApplyResult = snapshot.applyGeneration.map(hardwareApplyGate.isCurrent) ?? false
             if snapshot.becameConnected {
                 AutoApplyCoordinator.onConnect(autoReapplyEnabled: shouldAutoApply, state: &autoApplyState)
             }
-            if snapshot.profileAppliedSuccessfully {
+            if acceptsApplyResult && snapshot.profileAppliedSuccessfully {
                 AutoApplyCoordinator.onApplySuccess(&autoApplyState)
+                hardwareVerificationWarning = nil
                 if let recorded = HardwareApplyBaseline.settingsToRecord(
-                    didComplete: true,
+                    result: .verified,
                     applied: snapshot.appliedHardwareSettings
                 ) {
                     lastAppliedHardwareSettings = recorded
                 }
-            } else if snapshot.applyWarning != nil {
+            } else if acceptsApplyResult, let applyWarning = snapshot.applyWarning {
                 AutoApplyCoordinator.onApplyFailure(&autoApplyState)
+                hardwareVerificationWarning = "Auto-apply not verified: \(applyWarning)"
             }
 
             wasConnected = true
@@ -680,26 +739,33 @@ final class AppModel: ObservableObject {
             isCharging = state.isCharging
             activeDPI = state.dpiX
             pollingRateHz = state.pollingRateHz
+            let monitoringWarning: String?
+            let monitoringStatus: String
             switch session.removalMonitoringStatus {
             case .active:
-                warningMessage = nil
-                statusMessage = "Connected"
+                monitoringWarning = nil
+                monitoringStatus = "Connected"
             case .degradedNoStableIdentity:
-                warningMessage = "Immediate device-removal detection is unavailable; using 5-second polling."
-                statusMessage = "Connected (5-second disconnect polling)"
+                monitoringWarning = "Immediate device-removal detection is unavailable; using 5-second polling."
+                monitoringStatus = "Connected (5-second disconnect polling)"
             case let .unavailable(reason):
-                warningMessage = "Device-removal monitoring is unavailable; using 5-second polling. \(reason)"
-                statusMessage = "Connected (5-second disconnect polling)"
+                monitoringWarning = "Device-removal monitoring is unavailable; using 5-second polling. \(reason)"
+                monitoringStatus = "Connected (5-second disconnect polling)"
             }
-            if let applyWarning = snapshot.applyWarning {
-                warningMessage = "Auto-apply failed: \(applyWarning)"
-                statusMessage = "Connected (profile not applied)"
+            warningMessage = [monitoringWarning, hardwareVerificationWarning]
+                .compactMap { $0 }
+                .joined(separator: "\n")
+            if warningMessage?.isEmpty == true {
+                warningMessage = nil
             }
+            statusMessage = hardwareVerificationWarning == nil
+                ? monitoringStatus
+                : "Connected (profile not verified)"
             if let probeReport = snapshot.probeReport {
                 wheelCapability = probeReport.capability
                 wheelProbeSummary = probeReport.summary
             }
-            if snapshot.profileAppliedSuccessfully {
+            if acceptsApplyResult && snapshot.profileAppliedSuccessfully {
                 refreshProfileSummary()
             }
         }
@@ -708,6 +774,7 @@ final class AppModel: ObservableObject {
 
     private func applyDisconnectedState(commandError: RazerCommandError?) {
         AutoApplyCoordinator.onDisconnect(&autoApplyState)
+        hardwareVerificationWarning = nil
         wasConnected = false
         isConnected = false
         batteryPercent = 0
@@ -749,7 +816,7 @@ final class AppModel: ObservableObject {
                     return
                 }
                 guard gate.isCurrent(token) else { return }
-                let didApply = try self.session.apply(
+                let result = try self.session.apply(
                     profile: profile,
                     to: client,
                     wheelCapability: capability,
@@ -761,11 +828,23 @@ final class AppModel: ObservableObject {
                 guard self.session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
                     return
                 }
+                guard gate.isCurrent(token) else { return }
                 guard let recorded = HardwareApplyBaseline.settingsToRecord(
-                    didComplete: didApply,
+                    result: result,
                     applied: settings
-                ),
-                gate.isCurrent(token) else {
+                ) else {
+                    guard let warning = result.verificationWarning else { return }
+                    Task { @MainActor in
+                        guard !self.isSleeping,
+                              gate.isCurrent(token),
+                              lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                            return
+                        }
+                        self.statusMessage = "Profile applied but not verified"
+                        self.hardwareVerificationWarning = warning
+                        self.warningMessage = warning
+                        self.syncRemapper()
+                    }
                     return
                 }
                 Task { @MainActor in
@@ -778,6 +857,7 @@ final class AppModel: ObservableObject {
                     self.activeDPI = profile.activeDPI
                     self.pollingRateHz = profile.pollingRateHz
                     self.statusMessage = "Applied profile \(profile.name)"
+                    self.hardwareVerificationWarning = nil
                     self.warningMessage = nil
                     AutoApplyCoordinator.onApplySuccess(&self.autoApplyState)
                     self.syncRemapper()
@@ -798,6 +878,7 @@ final class AppModel: ObservableObject {
                     }
                     self.statusMessage = error.localizedDescription
                     if let applyError = error as? HardwareApplyError {
+                        self.hardwareVerificationWarning = applyError.localizedDescription
                         self.warningMessage = applyError.localizedDescription
                     } else if let commandError = error as? RazerCommandError,
                        commandError.isPermissionIssue || commandError.isConflictIssue {

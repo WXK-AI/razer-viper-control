@@ -3,6 +3,9 @@ import XCTest
 @testable import RazerCore
 
 final class RazerCommandClientTransportTests: XCTestCase {
+    func testDeviceStateDefaultsPollingToUnknown() {
+        XCTAssertNil(DeviceState().pollingRateHz)
+    }
     func testBusyResponsesRetryThenSucceed() throws {
         let request = RazerReport.getBatteryLevel()
         let transport = FakeRazerReportTransport(
@@ -128,6 +131,48 @@ final class RazerCommandClientTransportTests: XCTestCase {
             transport.sleeps.reduce(UInt64(0), +),
             DeviceDescriptor.responseDeadlineMilliseconds
         )
+    }
+
+    func testReadStatePreservesUnknownPollingAndBothDPIStageAxes() throws {
+        var battery = response(for: .getBatteryLevel(), status: .successful)
+        battery.arguments[1] = 255
+        battery.refreshCRC()
+
+        var charging = response(for: .getChargingStatus(), status: .successful)
+        charging.arguments[1] = 1
+        charging.refreshCRC()
+
+        var dpi = response(for: .getDPI(), status: .successful)
+        dpi.arguments[1] = 0x03
+        dpi.arguments[2] = 0x20
+        dpi.arguments[3] = 0x06
+        dpi.arguments[4] = 0x40
+        dpi.refreshCRC()
+
+        var stages = response(for: .getDPIStages(), status: .successful)
+        stages.arguments[1] = 1
+        stages.arguments[2] = 1
+        stages.arguments[3] = 0
+        stages.arguments[4] = 0x03
+        stages.arguments[5] = 0x20
+        stages.arguments[6] = 0x06
+        stages.arguments[7] = 0x40
+        stages.refreshCRC()
+
+        var polling = response(for: .getPollingRate(), status: .successful)
+        polling.arguments[0] = 0xFF
+        polling.refreshCRC()
+
+        let transport = FakeRazerReportTransport(
+            getResponses: [battery, charging, dpi, stages, polling].map { .success($0.bytes) }
+        )
+        let client = RazerCommandClient(transport: transport)
+
+        let state = try client.readState()
+
+        XCTAssertNil(state.pollingRateHz)
+        XCTAssertEqual(state.dpiStages, [800])
+        XCTAssertEqual(state.dpiStagesY, [1600])
     }
 
     private func response(for request: RazerReport, status: RazerReportStatus) -> RazerReport {

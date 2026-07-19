@@ -101,6 +101,23 @@ private final class FakeHardwareClient: RazerHardwareMutating {
 }
 
 final class HardwareStateTransactionTests: XCTestCase {
+    func testUnknownOriginalPollingFailsBeforeAnyMutation() {
+        let client = FakeHardwareClient()
+        client.state.pollingRateHz = nil
+
+        XCTAssertThrowsError(
+            try HardwareStateTransaction.runIntegration(
+                client: client,
+                temporaryDPI: 1800,
+                temporaryPollingHz: 500
+            )
+        ) { error in
+            XCTAssertEqual(error as? HardwareTransactionError, .unknownOriginal("polling rate"))
+        }
+        XCTAssertTrue(client.setDPICalls.isEmpty)
+        XCTAssertTrue(client.setPollingCalls.isEmpty)
+    }
+
     func testIntegrationRestoresAsymmetricDPI() throws {
         let client = FakeHardwareClient()
         let result = try HardwareStateTransaction.runIntegration(

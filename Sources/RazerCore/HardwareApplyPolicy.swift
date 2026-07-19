@@ -36,12 +36,12 @@ public enum HardwarePendingDetector {
 
 /// Rules for updating the last-applied hardware baseline after an apply attempt.
 public enum HardwareApplyBaseline {
-    /// Incomplete, superseded, or failed applies must not advance the baseline.
+    /// Unverified, superseded, or failed applies must not advance the baseline.
     public static func settingsToRecord(
-        didComplete: Bool,
+        result: HardwareApplyResult,
         applied: HardwareProfileSettings?
     ) -> HardwareProfileSettings? {
-        guard didComplete else { return nil }
+        guard result == .verified else { return nil }
         return applied
     }
 }
@@ -52,10 +52,34 @@ public enum HardwareApplyFailurePolicy {
         if let commandError = error as? RazerCommandError {
             return commandError.shouldInvalidateSession
         }
+        if error is HardwareApplyError {
+            return false
+        }
         if error is RazerValidationError {
             return false
         }
         return true
+    }
+}
+
+/// Keeps wheel capability evidence across ordinary refreshes and requests a
+/// bounded re-probe only when an apply needs a field whose support is unknown.
+public enum WheelCapabilityRefreshPolicy {
+    public static func resolvedCapability(
+        fresh: WheelHardwareCapability?,
+        cached: WheelHardwareCapability
+    ) -> WheelHardwareCapability {
+        fresh ?? cached
+    }
+
+    public static func requiresProbe(
+        profile: MouseProfile,
+        capability: WheelHardwareCapability
+    ) -> Bool {
+        let requested = profile.wheelSettings.hardware
+        return (requested.scrollMode != nil && capability.scrollMode == .unknown)
+            || (requested.accelerationEnabled != nil && capability.acceleration == .unknown)
+            || (requested.smartReelEnabled != nil && capability.smartReel == .unknown)
     }
 }
 

@@ -100,11 +100,14 @@ public enum HardwareStateTransaction {
         }
 
         let originalState = try client.readState()
+        guard let originalPollingRateHz = originalState.pollingRateHz else {
+            throw HardwareTransactionError.unknownOriginal("polling rate")
+        }
         try maybeFail(after: .captureOriginal, failAfter)
         let original = HardwareStateSnapshot(
             dpiX: originalState.dpiX,
             dpiY: originalState.dpiY,
-            pollingRateHz: originalState.pollingRateHz
+            pollingRateHz: originalPollingRateHz
         )
 
         var primaryError: Error?
@@ -158,10 +161,14 @@ public enum HardwareStateTransaction {
             throw finalizeErrors(primary: primaryError, restoration: restorationErrors)
         }
 
+        guard let restoredPollingRateHz = restoredState.pollingRateHz else {
+            restorationErrors.append("restored polling readback is unknown")
+            throw finalizeErrors(primary: primaryError, restoration: restorationErrors)
+        }
         let restored = HardwareStateSnapshot(
             dpiX: restoredState.dpiX,
             dpiY: restoredState.dpiY,
-            pollingRateHz: restoredState.pollingRateHz
+            pollingRateHz: restoredPollingRateHz
         )
 
         do {
