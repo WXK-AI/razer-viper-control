@@ -90,12 +90,44 @@ public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
 }
 
 public struct ProfileBundle: Codable, Equatable, Sendable {
+    /// On-disk schema version written by this build. Bump when the bundle shape changes.
+    public static let currentSchemaVersion = 2
+    /// Legacy files without `schemaVersion` decode as this value before load-time upgrade.
+    public static let legacySchemaVersion = 1
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, selectedProfileID, profiles
+    }
+
+    public var schemaVersion: Int
     public var selectedProfileID: UUID?
     public var profiles: [MouseProfile]
 
-    public init(selectedProfileID: UUID? = nil, profiles: [MouseProfile] = []) {
+    public init(
+        selectedProfileID: UUID? = nil,
+        profiles: [MouseProfile] = [],
+        schemaVersion: Int = ProfileBundle.currentSchemaVersion
+    ) {
+        self.schemaVersion = schemaVersion
         self.selectedProfileID = selectedProfileID
         self.profiles = profiles
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Only schemaVersion is missing-key compatible (pre-versioning files → legacy v1).
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+            ?? ProfileBundle.legacySchemaVersion
+        selectedProfileID = try container.decodeIfPresent(UUID.self, forKey: .selectedProfileID)
+        // profiles remains required, matching the pre-schema synthesized Codable contract.
+        profiles = try container.decode([MouseProfile].self, forKey: .profiles)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(selectedProfileID, forKey: .selectedProfileID)
+        try container.encode(profiles, forKey: .profiles)
     }
 
     public var selectedProfile: MouseProfile? {
@@ -369,9 +401,23 @@ public final class ProfileStore {
             )
         }
 
+        // Unsupported versions fail closed: future (> current) and sub-legacy (< 1).
+        // Missing schemaVersion decodes as legacy v1 and is upgraded below; explicit 0/negative are not legacy.
+        if decoded.schemaVersion > ProfileBundle.currentSchemaVersion
+            || decoded.schemaVersion < ProfileBundle.legacySchemaVersion {
+            return quarantineAndRecover(
+                directoryFD: directoryFD,
+                reason: "unsupported profile schema version \(decoded.schemaVersion) (supported \(ProfileBundle.legacySchemaVersion)...\(ProfileBundle.currentSchemaVersion))"
+            )
+        }
+
         var bundle = decoded
         for index in bundle.profiles.indices {
             bundle.profiles[index].migrateButton2Alias()
+        }
+        // Upgrade known legacy (explicit or missing-key v1) bundles to the current schema.
+        if bundle.schemaVersion < ProfileBundle.currentSchemaVersion {
+            bundle.schemaVersion = ProfileBundle.currentSchemaVersion
         }
 
         let validated: (bundle: ProfileBundle, repairWarnings: [String])
@@ -415,9 +461,22 @@ public final class ProfileStore {
             throw ProfileStoreError.writeBlockedCorruptSource(fileURL.path)
         }
 
+        // Reject unsupported versions; only known legacy (v1) is normalized up to current.
+        // Do not silently upgrade impossible versions (0/negative) or accept future schemas.
+        var normalized = bundle
+        if normalized.schemaVersion > ProfileBundle.currentSchemaVersion
+            || normalized.schemaVersion < ProfileBundle.legacySchemaVersion {
+            throw ProfileStoreError.writeFailed(
+                "unsupported profile schema version \(normalized.schemaVersion) (supported \(ProfileBundle.legacySchemaVersion)...\(ProfileBundle.currentSchemaVersion))"
+            )
+        }
+        if normalized.schemaVersion < ProfileBundle.currentSchemaVersion {
+            normalized.schemaVersion = ProfileBundle.currentSchemaVersion
+        }
+
         let validated: (bundle: ProfileBundle, repairWarnings: [String])
         do {
-            validated = try ProfileSafetyValidator.validateAndRepair(bundle, fileManager: fileManager)
+            validated = try ProfileSafetyValidator.validateAndRepair(normalized, fileManager: fileManager)
         } catch let error as ProfileSafetyValidationError {
             if case let .invalidHardware(validationError) = error {
                 throw ProfileStoreError.validation(validationError)

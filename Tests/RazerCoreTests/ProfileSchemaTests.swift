@@ -93,4 +93,114 @@ final class ProfileSchemaTests: XCTestCase {
         profile.buttonMappings[.sideButton1] = .mouseButton(.left)
         XCTAssertTrue(ProfileMappingValidator.warnings(for: profile).isEmpty)
     }
+
+    // MARK: - Explicit schema version (Task 15)
+
+    func testCurrentSchemaVersionIsTwo() {
+        XCTAssertEqual(ProfileBundle.currentSchemaVersion, 2)
+    }
+
+    func testNewBundleDefaultsToCurrentSchemaVersion() {
+        let profile = MouseProfile(
+            name: "New",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        let bundle = ProfileBundle(selectedProfileID: profile.id, profiles: [profile])
+        XCTAssertEqual(bundle.schemaVersion, ProfileBundle.currentSchemaVersion)
+    }
+
+    func testEncodedBundleIncludesCurrentSchemaVersion() throws {
+        let profile = MouseProfile(
+            name: "Encode",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        let bundle = ProfileBundle(selectedProfileID: profile.id, profiles: [profile])
+        let data = try JSONEncoder().encode(bundle)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(object["schemaVersion"] as? Int, 2)
+    }
+
+    func testMissingSchemaVersionDecodesAsLegacyVersionOne() throws {
+        let profileID = UUID()
+        let profile = MouseProfile(
+            id: profileID,
+            name: "Legacy",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        let v1 = ProfileBundle(selectedProfileID: profileID, profiles: [profile], schemaVersion: 1)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(v1)) as? [String: Any]
+        )
+        object.removeValue(forKey: "schemaVersion")
+        let json = try JSONSerialization.data(withJSONObject: object)
+
+        let bundle = try JSONDecoder().decode(ProfileBundle.self, from: json)
+        XCTAssertEqual(bundle.schemaVersion, 1)
+        XCTAssertEqual(bundle.profiles.count, 1)
+        XCTAssertEqual(bundle.profiles[0].name, "Legacy")
+    }
+
+    func testExplicitSchemaVersionOneRoundTripsWithoutUpgradeOnDecode() throws {
+        let profileID = UUID()
+        let profile = MouseProfile(
+            id: profileID,
+            name: "V1",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        let bundle = ProfileBundle(
+            selectedProfileID: profileID,
+            profiles: [profile],
+            schemaVersion: 1
+        )
+        let data = try JSONEncoder().encode(bundle)
+        let decoded = try JSONDecoder().decode(ProfileBundle.self, from: data)
+        XCTAssertEqual(decoded.schemaVersion, 1)
+    }
+
+    func testMissingProfilesKeyRemainsInvalid() throws {
+        let json = """
+        {
+          "schemaVersion": 2,
+          "selectedProfileID": null
+        }
+        """.data(using: .utf8)!
+
+        XCTAssertThrowsError(try JSONDecoder().decode(ProfileBundle.self, from: json)) { error in
+            guard case let DecodingError.keyNotFound(key, _) = error else {
+                return XCTFail("Expected keyNotFound for profiles, got \(error)")
+            }
+            XCTAssertEqual(key.stringValue, "profiles")
+        }
+    }
+
+    func testSchemaVersionZeroIsDecodableButUnsupportedByContract() throws {
+        // Decode itself may succeed; load/save policy rejects sub-legacy versions.
+        let profileID = UUID()
+        let profile = MouseProfile(
+            id: profileID,
+            name: "Zero",
+            dpiStages: [800],
+            activeStage: 1,
+            pollingRateHz: 1000
+        )
+        let bundle = ProfileBundle(
+            selectedProfileID: profileID,
+            profiles: [profile],
+            schemaVersion: 0
+        )
+        let data = try JSONEncoder().encode(bundle)
+        let decoded = try JSONDecoder().decode(ProfileBundle.self, from: data)
+        XCTAssertEqual(decoded.schemaVersion, 0)
+        XCTAssertLessThan(decoded.schemaVersion, ProfileBundle.legacySchemaVersion)
+    }
 }
