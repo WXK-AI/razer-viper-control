@@ -205,7 +205,7 @@ make release-dmg    # unsigned release + DMG in build/Release/
 
 Active plan: [`docs/plans/2026-07-11-cgevent-remapper-continuation.md`](docs/plans/2026-07-11-cgevent-remapper-continuation.md).
 
-Manual acceptance for the CGEvent remapper (button/drag/scroll/pause/permissions/session-wide scope/diagnostics): [`docs/testing/cgevent-remapper-acceptance.md`](docs/testing/cgevent-remapper-acceptance.md). DriverKit physical matrix remains in [`docs/testing/driverkit-spike.md`](docs/testing/driverkit-spike.md).
+Manual acceptance for the CGEvent remapper (button/drag/scroll/pause/permissions/session-wide scope/diagnostics): [`docs/testing/cgevent-remapper-acceptance.md`](docs/testing/cgevent-remapper-acceptance.md). Reliability / reconnect / status UX physical matrix (Task 19): [`docs/testing/reliability-acceptance.md`](docs/testing/reliability-acceptance.md). DriverKit physical matrix remains in [`docs/testing/driverkit-spike.md`](docs/testing/driverkit-spike.md).
 
 ## Scope and limitations
 
