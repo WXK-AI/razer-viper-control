@@ -243,8 +243,10 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(mappings: mappings))
         var nextDPI = 0
         var previousDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
-        remapper.callbacks.onPreviousDPIStage = { previousDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        callbacks.onPreviousDPIStage = { previousDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         let upLike = try requireScrollEvent(axis2Line: 3)
         let downLike = try requireScrollEvent(axis2Line: -3)
@@ -264,8 +266,10 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(mappings: mappings))
         var nextDPI = 0
         var previousDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
-        remapper.callbacks.onPreviousDPIStage = { previousDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        callbacks.onPreviousDPIStage = { previousDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         let up = try requireScrollEvent(axis1Line: 1, axis2Line: 9)
         let down = try requireScrollEvent(axis1Line: -1, axis2Line: -9)
@@ -291,7 +295,9 @@ final class InputRemapperScrollTests: XCTestCase {
         let remapper = InputRemapper()
         remapper.updateProfile(makeProfile(multiplier: 2.0, mappings: mappings))
         var nextDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         let event = try requireScrollEvent(
             axis1Line: 1,
@@ -321,7 +327,9 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.monotonicTime = { time }
         remapper.updateProfile(makeProfile(multiplier: 2.0, mappings: mappings))
         var nextDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         time = 1.0
         XCTAssertNotNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1, axis2Line: 2)))
@@ -354,7 +362,9 @@ final class InputRemapperScrollTests: XCTestCase {
         let remapper = InputRemapper()
         remapper.updateProfile(makeProfile(mappings: mappings))
         var nextDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
         XCTAssertEqual(nextDPI, 1)
@@ -369,7 +379,9 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.monotonicTime = { time }
         remapper.updateProfile(makeProfile(mappings: mappings))
         var nextDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         for index in 0..<10 {
             time = Double(index) * 0.002
@@ -388,7 +400,9 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.monotonicTime = { time }
         remapper.updateProfile(makeProfile(mappings: mappings))
         var nextDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         time = 1.0
         XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
@@ -411,8 +425,10 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(mappings: mappings))
         var nextDPI = 0
         var previousDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
-        remapper.callbacks.onPreviousDPIStage = { previousDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        callbacks.onPreviousDPIStage = { previousDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         time = 2.0
         XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
@@ -447,7 +463,9 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.monotonicTime = { time }
         remapper.updateProfile(makeProfile(mappings: mappings))
         var nextDPI = 0
-        remapper.callbacks.onNextDPIStage = { nextDPI += 1 }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         time = 5.0
         XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))

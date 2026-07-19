@@ -31,9 +31,28 @@ public final class InputRemapper: @unchecked Sendable {
         public init() {}
     }
 
-    public private(set) var isRunning = false
-    public private(set) var isPaused = false
-    public var callbacks = Callbacks()
+    /// Synchronized snapshot; internal code must use `runningState` under `lock` (non-recursive).
+    public var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return runningState
+    }
+
+    /// Synchronized snapshot; internal code must use `pausedState` under `lock` (non-recursive).
+    public var isPaused: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return pausedState
+    }
+
+    /// Synchronized snapshot; internal code must use `installedCallbacks` under `lock` (non-recursive).
+    /// Callbacks are set-once before `start()`. Mutation while running is rejected.
+    public var callbacks: Callbacks {
+        lock.lock()
+        defer { lock.unlock() }
+        return installedCallbacks
+    }
+
     var monotonicTime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     var scheduleWorkspaceAction: (DeferredWorkspaceAction) -> Void = { action in
         DispatchQueue.main.async {
@@ -45,8 +64,14 @@ public final class InputRemapper: @unchecked Sendable {
             }
         }
     }
+    /// Injectable keyboard-event posting seam used by production (default posts CGEvents).
+    /// Tests replace this to observe order/flags without a window server.
+    var postKeyboardEvent: (UInt16, Bool, CGEventFlags) -> Void = InputRemapper.defaultPostKeyboardEvent
 
     private let lock = NSLock()
+    private var runningState = false
+    private var pausedState = false
+    private var installedCallbacks = Callbacks()
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private lazy var syntheticEventSource: CGEventSource? = {
@@ -82,6 +107,16 @@ public final class InputRemapper: @unchecked Sendable {
 
     deinit {
         stop()
+    }
+
+    /// Installs callbacks before the remapper is running. Returns `false` if already running.
+    @discardableResult
+    public func setCallbacks(_ newCallbacks: Callbacks) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !runningState else { return false }
+        installedCallbacks = newCallbacks
+        return true
     }
 
     public func updateProfile(_ profile: MouseProfile) {
@@ -122,7 +157,7 @@ public final class InputRemapper: @unchecked Sendable {
     public func pause() {
         let release = commitRecoveryTransition(reason: .pause, notifyIfEmpty: false) {
             let targets = buttonSession.releaseAllHeldOutputs()
-            isPaused = true
+            pausedState = true
             suppressMappedDowns = false
             resetScrollAccumulatorsLocked()
             return targets
@@ -130,12 +165,17 @@ public final class InputRemapper: @unchecked Sendable {
         publishHeldOutputRelease(release)
     }
 
-    public func resume() {
+    /// Clears pause when the circuit is closed. Returns `false` while the circuit is open
+    /// (caller must keep UI paused).
+    @discardableResult
+    public func resume() -> Bool {
         lock.lock()
-        if !tapDisableCircuitBreaker.isOpen {
-            isPaused = false
+        defer { lock.unlock() }
+        guard !tapDisableCircuitBreaker.isOpen else {
+            return false
         }
-        lock.unlock()
+        pausedState = false
+        return true
     }
 
     /// Releases any remapped mouse holds after Accessibility/Input Monitoring is lost.
@@ -152,11 +192,12 @@ public final class InputRemapper: @unchecked Sendable {
     public func start() throws {
         lock.lock()
         let circuitOpen = tapDisableCircuitBreaker.isOpen
+        let alreadyRunning = runningState
         lock.unlock()
         guard !circuitOpen else {
             throw InputRemapperError.circuitOpen
         }
-        guard !isRunning else { return }
+        guard !alreadyRunning else { return }
         let permissions = PermissionStatus.current()
         guard permissions.remapperReady else {
             throw InputRemapperError.missingPermissions(permissions)
@@ -189,13 +230,23 @@ public final class InputRemapper: @unchecked Sendable {
         }
 
         lock.lock()
+        // Re-check under the same lock before publishing running state (concurrent start/stop).
+        if runningState || tapDisableCircuitBreaker.isOpen {
+            let circuitOpenNow = tapDisableCircuitBreaker.isOpen
+            lock.unlock()
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if circuitOpenNow {
+                throw InputRemapperError.circuitOpen
+            }
+            return
+        }
         eventTap = tap
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         if let runLoopSource {
             CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
         CGEvent.tapEnable(tap: tap, enable: true)
-        isRunning = true
+        runningState = true
         lock.unlock()
     }
 
@@ -255,7 +306,7 @@ public final class InputRemapper: @unchecked Sendable {
     func recoveryStateSnapshot() -> (isPaused: Bool, heldTargets: [MouseButtonTarget]) {
         lock.lock()
         defer { lock.unlock() }
-        return (isPaused, buttonSession.snapshotHeldMouseTargets())
+        return (pausedState, buttonSession.snapshotHeldMouseTargets())
     }
 
     /// Mirrors the live down path (respects pause / remapperEnabled / profile-transition gate).
@@ -263,7 +314,7 @@ public final class InputRemapper: @unchecked Sendable {
     func processMappedButtonDown(_ control: PhysicalControl) -> RemapButtonOutcome? {
         lock.lock()
         defer { lock.unlock() }
-        guard !isPaused, !suppressMappedDowns, profile.remapperEnabled else {
+        guard !pausedState, !suppressMappedDowns, profile.remapperEnabled else {
             return nil
         }
         return buttonSession.handle(
@@ -290,13 +341,13 @@ public final class InputRemapper: @unchecked Sendable {
     func processScrollWheelEvent(_ event: CGEvent) -> Unmanaged<CGEvent>? {
         lock.lock()
         let currentProfile = profile
-        let callbacks = callbacks
-        let paused = isPaused
+        let callbacksSnapshot = installedCallbacks
+        let paused = pausedState
         lock.unlock()
         guard !paused, currentProfile.remapperEnabled else {
             return Unmanaged.passUnretained(event)
         }
-        return handleScrollEvent(event: event, profile: currentProfile, callbacks: callbacks)
+        return handleScrollEvent(event: event, profile: currentProfile, callbacks: callbacksSnapshot)
     }
 
     /// Invoked after synthetic ups are posted and before deferred finalize work
@@ -320,7 +371,7 @@ public final class InputRemapper: @unchecked Sendable {
             shouldReenable = true
         case .trip:
             let targets = buttonSession.releaseAllHeldOutputs()
-            isPaused = true
+            pausedState = true
             tearDownEventTapLocked()
             release = makeReleaseLocked(
                 targets: targets,
@@ -332,7 +383,8 @@ public final class InputRemapper: @unchecked Sendable {
         lock.unlock()
         if shouldReenable {
             publishHeldOutputRelease(release) {
-                guard let tap = self.eventTap else { return }
+                // Finalize runs under lock: only re-enable if still running with a live tap.
+                guard self.runningState, let tap = self.eventTap else { return }
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
         } else {
@@ -380,7 +432,7 @@ public final class InputRemapper: @unchecked Sendable {
             targets: targets,
             reason: reason,
             shouldNotify: shouldNotify,
-            callback: callbacks.onHeldOutputsReleased
+            callback: installedCallbacks.onHeldOutputsReleased
         )
     }
 
@@ -418,7 +470,7 @@ public final class InputRemapper: @unchecked Sendable {
         }
         eventTap = nil
         runLoopSource = nil
-        isRunning = false
+        runningState = false
         suppressMappedDowns = false
     }
 
@@ -440,12 +492,12 @@ public final class InputRemapper: @unchecked Sendable {
 
         lock.lock()
         let currentProfile = profile
-        let callbacks = callbacks
+        let callbacksSnapshot = installedCallbacks
         lock.unlock()
 
         if type == .keyDown, matchesEmergencyPause(event) {
             pause()
-            callbacks.onEmergencyPause?()
+            callbacksSnapshot.onEmergencyPause?()
             return nil
         }
 
@@ -471,13 +523,13 @@ public final class InputRemapper: @unchecked Sendable {
                     outcome,
                     control: control,
                     event: event,
-                    callbacks: callbacks
+                    callbacks: callbacksSnapshot
                 )
             }
 
             // Re-check pause/enabled/transition gate under the same lock as hold creation.
             lock.lock()
-            if isPaused || suppressMappedDowns || !profile.remapperEnabled {
+            if pausedState || suppressMappedDowns || !profile.remapperEnabled {
                 lock.unlock()
                 return Unmanaged.passUnretained(event)
             }
@@ -491,7 +543,7 @@ public final class InputRemapper: @unchecked Sendable {
                 outcome,
                 control: control,
                 event: event,
-                callbacks: callbacks
+                callbacks: callbacksSnapshot
             )
 
         case .scrollWheel:
@@ -551,8 +603,7 @@ public final class InputRemapper: @unchecked Sendable {
     func executeOneShotAction(_ action: ButtonAction, callbacks: Callbacks) {
         switch action {
         case let .keyboardShortcut(shortcut):
-            postKeyboardShortcut(shortcut, keyDown: true)
-            postKeyboardShortcut(shortcut, keyDown: false)
+            postKeyboardShortcut(shortcut)
         case .nextDPIStage:
             callbacks.onNextDPIStage?()
         case .previousDPIStage:
@@ -731,7 +782,12 @@ public final class InputRemapper: @unchecked Sendable {
         event: CGEvent,
         callbacks: Callbacks
     ) -> Unmanaged<CGEvent>? {
+        // Re-check pause under the same lock as throttle/consume (mirrors button-down).
         lock.lock()
+        if pausedState {
+            lock.unlock()
+            return Unmanaged.passUnretained(event)
+        }
         let shouldFire = scrollActionThrottle.shouldFire(direction: direction, at: monotonicTime())
         lock.unlock()
 
@@ -866,16 +922,32 @@ public final class InputRemapper: @unchecked Sendable {
         }
     }
 
-    private func postKeyboardShortcut(_ shortcut: KeyboardShortcut, keyDown: Bool) {
-        let source = syntheticEventSource ?? CGEventSource(stateID: .hidSystemState)
-        guard let source else { return }
-        source.userData = InputRemapperEngine.syntheticMarker
-        let flags = CGEventFlags(rawValue: shortcut.modifierFlags)
-        guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(shortcut.keyCode), keyDown: keyDown) else {
+    /// Posts key-down then key-up via the keyboard seam. Skips both while paused.
+    /// Key-down carries shortcut modifiers; key-up clears flags so modifiers cannot stick.
+    private func postKeyboardShortcut(_ shortcut: KeyboardShortcut) {
+        lock.lock()
+        let paused = pausedState
+        lock.unlock()
+        guard !paused else { return }
+
+        let downFlags = CGEventFlags(rawValue: shortcut.modifierFlags)
+        postKeyboardEvent(shortcut.keyCode, true, downFlags)
+        postKeyboardEvent(shortcut.keyCode, false, [])
+    }
+
+    private static func defaultPostKeyboardEvent(keyCode: UInt16, keyDown: Bool, flags: CGEventFlags) {
+        let source = CGEventSource(stateID: .privateState)
+        source?.userData = InputRemapperEngine.syntheticMarker
+        guard let source,
+              let event = CGEvent(
+                  keyboardEventSource: source,
+                  virtualKey: CGKeyCode(keyCode),
+                  keyDown: keyDown
+              ) else {
             return
         }
         event.flags = flags
-        markSynthetic(event)
+        event.setIntegerValueField(.eventSourceUserData, value: InputRemapperEngine.syntheticMarker)
         event.post(tap: .cghidEventTap)
     }
 }

@@ -181,4 +181,9 @@ final class ControlModelsTests: XCTestCase {
         XCTAssertEqual(status.detail, "Remapper paused after repeated event-tap timeouts.")
         XCTAssertEqual(status.recoveryAction, .armRemapper)
     }
+
+    func testUIPausedFlagStaysTrueWhenResumeFails() {
+        XCTAssertTrue(RemapperPausePolicy.uiPaused(afterResumeSucceeded: false))
+        XCTAssertFalse(RemapperPausePolicy.uiPaused(afterResumeSucceeded: true))
+    }
 }

@@ -88,7 +88,9 @@ final class InputRemapperRecoveryTests: XCTestCase {
     func testTapDisableNotifiesEvenWhenNoButtonsAreHeld() {
         let remapper = InputRemapper()
         var notified: [HeldOutputRecoveryReason] = []
-        remapper.callbacks.onHeldOutputsReleased = { notified.append($0) }
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onHeldOutputsReleased = { notified.append($0) }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         remapper.recoverAfterTapDisable()
 
@@ -96,6 +98,178 @@ final class InputRemapperRecoveryTests: XCTestCase {
         XCTAssertEqual(remapper.lastRecoveryReason(), .tapDisable)
         XCTAssertEqual(remapper.releasedSyntheticMouseUpCount(), 0)
         XCTAssertTrue(remapper.heldMouseTargets().isEmpty)
+    }
+
+    func testSetCallbacksSucceedsBeforeRunningAndIsReadable() {
+        let remapper = InputRemapper()
+        var fired = false
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { fired = true }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
+        remapper.callbacks.onNextDPIStage?()
+        XCTAssertTrue(fired)
+    }
+
+    func testPublicStateGettersRemainConsistentUnderConcurrentAccess() {
+        let remapper = InputRemapper()
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = {}
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
+
+        DispatchQueue.concurrentPerform(iterations: 400) { index in
+            if index % 3 == 0 {
+                remapper.pause()
+            } else if index % 3 == 1 {
+                _ = remapper.resume()
+            } else {
+                _ = remapper.isPaused
+                _ = remapper.isRunning
+                _ = remapper.callbacks
+            }
+        }
+
+        // Final pause must be visible through the synchronized getter.
+        remapper.pause()
+        XCTAssertTrue(remapper.isPaused)
+        XCTAssertFalse(remapper.isRunning)
+        XCTAssertNotNil(remapper.callbacks.onNextDPIStage)
+    }
+
+    func testSetCallbacksRejectedWhileRunning() throws {
+        let remapper = InputRemapper()
+        do {
+            try remapper.start()
+        } catch {
+            throw XCTSkip("Cannot create event tap in this environment: \(error)")
+        }
+        defer { remapper.stop() }
+        XCTAssertTrue(remapper.isRunning)
+        XCTAssertFalse(remapper.setCallbacks(InputRemapper.Callbacks()))
+    }
+
+    func testResumeReturnsFalseWhileCircuitOpenAndLeavesPaused() {
+        let remapper = InputRemapper()
+        var time: TimeInterval = 0
+        remapper.monotonicTime = { time }
+        remapper.recoverAfterTapDisable()
+        time = 1
+        remapper.recoverAfterTapDisable()
+        time = 2
+        remapper.recoverAfterTapDisable()
+        XCTAssertTrue(remapper.isCircuitOpen)
+        XCTAssertTrue(remapper.isPaused)
+
+        XCTAssertFalse(remapper.resume())
+        XCTAssertTrue(remapper.isPaused, "Resume must leave isPaused true while the circuit is open")
+
+        remapper.resetTapDisableCircuit()
+        XCTAssertTrue(remapper.resume())
+        XCTAssertFalse(remapper.isPaused)
+    }
+
+    func testResumeReturnsTrueWhenNotPausedAndCircuitClosed() {
+        let remapper = InputRemapper()
+        remapper.pause()
+        XCTAssertTrue(remapper.isPaused)
+        XCTAssertTrue(remapper.resume())
+        XCTAssertFalse(remapper.isPaused)
+    }
+
+    func testScrollMappedActionSkippedWhenPaused() throws {
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .line,
+            wheelCount: 1,
+            wheel1: 1,
+            wheel2: 0,
+            wheel3: 0
+        ) else {
+            throw XCTSkip("CGEvent scroll construction unavailable in this environment")
+        }
+
+        var mappings = PhysicalControl.defaultButtonMappings()
+        mappings[.wheelUp] = .nextDPIStage
+        var profile = MouseProfile(name: "Scroll Pause", dpiStages: [800], activeStage: 1, pollingRateHz: 1000)
+        profile.remapperEnabled = true
+        profile.buttonMappings = mappings
+
+        let remapper = InputRemapper()
+        remapper.updateProfile(profile)
+        var nextDPI = 0
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { nextDPI += 1 }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
+
+        remapper.pause()
+        let result = remapper.processScrollWheelEvent(event)
+        XCTAssertNotNil(result, "Paused scroll must passthrough, not consume")
+        XCTAssertEqual(nextDPI, 0)
+    }
+
+    func testScrollMappedActionNeverFiresWhilePausedUnderRace() throws {
+        let makeScrollEvent: () -> CGEvent? = {
+            CGEvent(
+                scrollWheelEvent2Source: nil,
+                units: .line,
+                wheelCount: 1,
+                wheel1: 1,
+                wheel2: 0,
+                wheel3: 0
+            )
+        }
+        guard makeScrollEvent() != nil else {
+            throw XCTSkip("CGEvent scroll construction unavailable in this environment")
+        }
+
+        var mappings = PhysicalControl.defaultButtonMappings()
+        mappings[.wheelUp] = .nextDPIStage
+        var profile = MouseProfile(name: "Scroll Race", dpiStages: [800], activeStage: 1, pollingRateHz: 1000)
+        profile.remapperEnabled = true
+        profile.buttonMappings = mappings
+
+        let remapper = InputRemapper()
+        remapper.updateProfile(profile)
+        let dpiLock = NSLock()
+        var nextDPI = 0
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = {
+            dpiLock.lock()
+            nextDPI += 1
+            dpiLock.unlock()
+        }
+        XCTAssertTrue(remapper.setCallbacks(callbacks))
+
+        // Concurrent resume/scroll/pause stress (no sleeps). After the join, a paused
+        // remapper must not fire further scroll-mapped actions.
+        DispatchQueue.concurrentPerform(iterations: 400) { _ in
+            _ = remapper.resume()
+            if let event = makeScrollEvent() {
+                _ = remapper.processScrollWheelEvent(event)
+            }
+            remapper.pause()
+        }
+
+        let final = remapper.recoveryStateSnapshot()
+        XCTAssertTrue(final.isPaused)
+        dpiLock.lock()
+        let firesWhileSettling = nextDPI
+        dpiLock.unlock()
+
+        if let event = makeScrollEvent() {
+            _ = remapper.processScrollWheelEvent(event)
+        }
+        if let event = makeScrollEvent() {
+            _ = remapper.processScrollWheelEvent(event)
+        }
+
+        dpiLock.lock()
+        let firesAfterPausedScrolls = nextDPI
+        dpiLock.unlock()
+        XCTAssertEqual(
+            firesAfterPausedScrolls,
+            firesWhileSettling,
+            "Scroll-mapped actions must re-check pause before consuming/posting"
+        )
     }
 
     func testProfileReplacementReleasesHeldOutputs() {

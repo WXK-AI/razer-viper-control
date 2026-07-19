@@ -990,11 +990,15 @@ final class AppModel: ObservableObject {
     }
 
     func setRemapperPaused(_ paused: Bool) {
-        remapperPaused = paused
         if paused {
+            remapperPaused = true
             remapper.pause()
-        } else {
-            remapper.resume()
+            return
+        }
+        // Keep UI paused when resume is blocked (e.g. open circuit breaker).
+        let resumeSucceeded = remapper.resume()
+        remapperPaused = RemapperPausePolicy.uiPaused(afterResumeSucceeded: resumeSucceeded)
+        if resumeSucceeded {
             remapperRecovering = false
         }
     }
@@ -1171,25 +1175,26 @@ final class AppModel: ObservableObject {
     }
 
     private func configureRemapperCallbacks() {
-        remapper.callbacks.onNextDPIStage = { [weak self] in
+        var callbacks = InputRemapper.Callbacks()
+        callbacks.onNextDPIStage = { [weak self] in
             Task { @MainActor in self?.advanceDPIStage(by: 1) }
         }
-        remapper.callbacks.onPreviousDPIStage = { [weak self] in
+        callbacks.onPreviousDPIStage = { [weak self] in
             Task { @MainActor in self?.advanceDPIStage(by: -1) }
         }
-        remapper.callbacks.onNextProfile = { [weak self] in
+        callbacks.onNextProfile = { [weak self] in
             Task { @MainActor in self?.advanceProfile(by: 1) }
         }
-        remapper.callbacks.onPreviousProfile = { [weak self] in
+        callbacks.onPreviousProfile = { [weak self] in
             Task { @MainActor in self?.advanceProfile(by: -1) }
         }
-        remapper.callbacks.onEmergencyPause = { [weak self] in
+        callbacks.onEmergencyPause = { [weak self] in
             Task { @MainActor in
                 self?.setRemapperPaused(true)
                 self?.statusMessage = "Remapper paused (⌃⌥⌘R)"
             }
         }
-        remapper.callbacks.onHeldOutputsReleased = { [weak self] reason in
+        callbacks.onHeldOutputsReleased = { [weak self] reason in
             Task { @MainActor in
                 switch reason {
                 case .pause:
@@ -1216,10 +1221,11 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        remapper.callbacks.onInputDiagnostic = { [remapDiagnosticSink] control, disposition, detail in
+        callbacks.onInputDiagnostic = { [remapDiagnosticSink] control, disposition, detail in
             // Hot path: record directly on the capture session. Do not spawn a Task per event.
             remapDiagnosticSink.record(control: control, disposition: disposition, detail: detail)
         }
+        remapper.setCallbacks(callbacks)
     }
 
     private func advanceDPIStage(by delta: Int) {
@@ -1261,7 +1267,8 @@ final class AppModel: ObservableObject {
         if remapperPaused {
             remapper.pause()
         } else {
-            remapper.resume()
+            let resumeSucceeded = remapper.resume()
+            remapperPaused = RemapperPausePolicy.uiPaused(afterResumeSucceeded: resumeSucceeded)
         }
 
         if remapper.isRunning {

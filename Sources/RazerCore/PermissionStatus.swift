@@ -170,3 +170,11 @@ public enum RemapperRuntimeStatusResolver {
         return .active
     }
 }
+
+/// Pure UI pause decision after a remapper `resume()` attempt.
+public enum RemapperPausePolicy {
+    /// UI must stay paused when resume fails (e.g. open circuit breaker).
+    public static func uiPaused(afterResumeSucceeded succeeded: Bool) -> Bool {
+        !succeeded
+    }
+}

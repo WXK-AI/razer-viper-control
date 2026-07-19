@@ -199,6 +199,142 @@ final class InputCaptureSessionTests: XCTestCase {
         XCTAssertEqual(session.snapshotEntries().map(\.summary), ["after-clear"])
     }
 
+    /// Placeholder mach port used only as an identity for enable/disable linearization tests.
+    private func makePlaceholderPort() throws -> CFMachPort {
+        guard let port = CFMachPortCreate(kCFAllocatorDefault, { _, _, _, _ in }, nil, nil) else {
+            throw XCTSkip("CFMachPortCreate unavailable")
+        }
+        return port
+    }
+
+    /// Starts a session through production `start()` with injected permission + tap factory.
+    @discardableResult
+    private func startSessionForLockTests(
+        _ session: InputCaptureSession,
+        onTapEnable: ((Bool) -> Void)? = nil
+    ) throws -> CFMachPort {
+        let port = try makePlaceholderPort()
+        session.isInputMonitoringGranted = { true }
+        session.createListenOnlyEventTap = { _, _ in port }
+        session.applyTapEnable = { _, enabled in
+            onTapEnable?(enabled)
+        }
+        try session.start()
+        XCTAssertTrue(session.isRunning)
+        return port
+    }
+
+    func testStopIsIdempotentAndLeavesNotRunning() {
+        let session = InputCaptureSession()
+        session.stop()
+        session.stop()
+        XCTAssertFalse(session.isRunning)
+    }
+
+    func testIsRunningGetterIsSynchronizedUnderConcurrentStop() throws {
+        let session = InputCaptureSession(maxEntries: 10)
+        try startSessionForLockTests(session)
+
+        DispatchQueue.concurrentPerform(iterations: 400) { index in
+            if index % 2 == 0 {
+                session.stop()
+            } else {
+                _ = session.isRunning
+            }
+        }
+        XCTAssertFalse(session.isRunning)
+    }
+
+    func testReenableAfterStopDoesNotEnableTap() throws {
+        let session = InputCaptureSession(maxEntries: 10)
+        let logLock = NSLock()
+        var enables: [Bool] = []
+        try startSessionForLockTests(session) { enabled in
+            logLock.lock()
+            enables.append(enabled)
+            logLock.unlock()
+        }
+        session.stop()
+        XCTAssertFalse(session.isRunning)
+
+        logLock.lock()
+        let countAfterStop = enables.count
+        logLock.unlock()
+
+        // Production callback path for tap-disable re-enable.
+        session.reenableEventTapIfPresent()
+
+        logLock.lock()
+        let afterReenable = enables
+        logLock.unlock()
+        XCTAssertEqual(
+            afterReenable.count,
+            countAfterStop,
+            "reenable must not call tapEnable after stop cleared running state"
+        )
+    }
+
+    func testReenableWhileRunningEnablesUnderLock() throws {
+        let session = InputCaptureSession(maxEntries: 10)
+        let logLock = NSLock()
+        var enables: [Bool] = []
+        try startSessionForLockTests(session) { enabled in
+            logLock.lock()
+            enables.append(enabled)
+            logLock.unlock()
+        }
+
+        logLock.lock()
+        enables.removeAll()
+        logLock.unlock()
+
+        session.reenableEventTapIfPresent()
+
+        logLock.lock()
+        let log = enables
+        logLock.unlock()
+        XCTAssertEqual(log, [true], "Production reenable path must enable while still running")
+        XCTAssertTrue(session.isRunning)
+        session.stop()
+    }
+
+    func testStopLinearizesAgainstConcurrentReenable() throws {
+        let session = InputCaptureSession(maxEntries: 10)
+        let logLock = NSLock()
+        var enables: [Bool] = []
+        try startSessionForLockTests(session) { enabled in
+            logLock.lock()
+            enables.append(enabled)
+            logLock.unlock()
+        }
+
+        DispatchQueue.concurrentPerform(iterations: 300) { _ in
+            session.reenableEventTapIfPresent()
+            session.stop()
+        }
+
+        XCTAssertFalse(session.isRunning)
+        // After the race settles, a production reenable must not resurrect the stopped tap.
+        logLock.lock()
+        let countBefore = enables.count
+        logLock.unlock()
+        session.reenableEventTapIfPresent()
+        logLock.lock()
+        let countAfter = enables.count
+        let log = enables
+        logLock.unlock()
+        XCTAssertEqual(countAfter, countBefore)
+        // stop must have disabled if a tap was present; never end with a post-stop enable.
+        if let lastTrueIndex = log.lastIndex(of: true),
+           let lastFalseIndex = log.lastIndex(of: false) {
+            XCTAssertLessThan(
+                lastTrueIndex,
+                lastFalseIndex,
+                "No enable may win after the final disable for a stopped session"
+            )
+        }
+    }
+
     func testClearWinsOverQueuedPublication() {
         let session = InputCaptureSession(maxEntries: 50)
         let lock = NSLock()

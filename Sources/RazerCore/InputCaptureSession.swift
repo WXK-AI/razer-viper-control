@@ -92,10 +92,16 @@ public final class InputCaptureSession: @unchecked Sendable {
 
     public var onEntriesChanged: (([Entry]) -> Void)?
 
-    public private(set) var isRunning = false
+    public var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
     public let maxEntries: Int
 
     private let lock = NSLock()
+    private var running = false
     private var entries: [Entry] = []
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -107,6 +113,25 @@ public final class InputCaptureSession: @unchecked Sendable {
     private(set) var publicationEnqueueCount = 0
     /// Coalesce window so continuous input cannot enqueue denser than one publish per interval.
     private static let publicationCoalesceInterval: DispatchTimeInterval = .milliseconds(16)
+    /// Injectable enable/disable seam used by production (default calls `CGEvent.tapEnable`).
+    var applyTapEnable: (CFMachPort, Bool) -> Void = { tap, enabled in
+        CGEvent.tapEnable(tap: tap, enable: enabled)
+    }
+    /// Injectable Input Monitoring gate used by production `start()`.
+    var isInputMonitoringGranted: () -> Bool = {
+        PermissionStatus.current().inputMonitoringGranted
+    }
+    /// Injectable listen-only tap factory used by production `start()`.
+    var createListenOnlyEventTap: (CGEventMask, UnsafeMutableRawPointer) -> CFMachPort? = { mask, userInfo in
+        CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: InputCaptureSession.eventCallback,
+            userInfo: userInfo
+        )
+    }
 
     public init(maxEntries: Int = 250) {
         self.maxEntries = max(1, maxEntries)
@@ -123,14 +148,16 @@ public final class InputCaptureSession: @unchecked Sendable {
     }
 
     public func start() throws {
-        guard !isRunning else { return }
-        let permissions = PermissionStatus.current()
-        guard permissions.inputMonitoringGranted else {
+        lock.lock()
+        let alreadyRunning = running
+        lock.unlock()
+        guard !alreadyRunning else { return }
+        guard isInputMonitoringGranted() else {
             throw InputCaptureError.missingInputMonitoring
         }
 
         // Mouse/scroll only — no keyboard character capture in this session.
-        let mask = (
+        let maskBits =
             (1 << CGEventType.leftMouseDown.rawValue) |
             (1 << CGEventType.leftMouseUp.rawValue) |
             (1 << CGEventType.rightMouseDown.rawValue) |
@@ -138,39 +165,56 @@ public final class InputCaptureSession: @unchecked Sendable {
             (1 << CGEventType.otherMouseDown.rawValue) |
             (1 << CGEventType.otherMouseUp.rawValue) |
             (1 << CGEventType.scrollWheel.rawValue)
-        )
+        let mask = CGEventMask(maskBits)
 
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: CGEventMask(mask),
-            callback: InputCaptureSession.eventCallback,
-            userInfo: userInfo
-        ) else {
+        guard let tap = createListenOnlyEventTap(mask, userInfo) else {
             throw InputCaptureError.tapCreationFailed
         }
 
-        eventTap = tap
-        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        if let runLoopSource {
-            CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        lock.lock()
+        if running {
+            lock.unlock()
+            applyTapEnable(tap, false)
+            return
         }
-        CGEvent.tapEnable(tap: tap, enable: true)
-        isRunning = true
+        eventTap = tap
+        // Real CGEvent taps attach a run-loop source; some injected ports may not provide one.
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        runLoopSource = source
+        if let source {
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        applyTapEnable(tap, true)
+        running = true
+        lock.unlock()
     }
 
     public func stop() {
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
+        lock.lock()
+        let tap = eventTap
+        let source = runLoopSource
         eventTap = nil
         runLoopSource = nil
-        isRunning = false
+        running = false
+        // Disable under the same lock as the running/eventTap clear so reenable cannot win.
+        if let tap {
+            applyTapEnable(tap, false)
+        }
+        lock.unlock()
+
+        if let source {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+    }
+
+    /// Re-enables the listen-only tap after a timeout disable.
+    /// Active-tap validation (`running` + `eventTap`) and `tapEnable` are atomic w.r.t. `stop()`.
+    func reenableEventTapIfPresent() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard running, let tap = eventTap else { return }
+        applyTapEnable(tap, true)
     }
 
     public func clear() {
@@ -218,13 +262,11 @@ public final class InputCaptureSession: @unchecked Sendable {
 
     private static let eventCallback: CGEventTapCallBack = { _, type, event, userInfo in
         guard let userInfo else { return Unmanaged.passUnretained(event) }
+        let session = Unmanaged<InputCaptureSession>.fromOpaque(userInfo).takeUnretainedValue()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = Unmanaged<InputCaptureSession>.fromOpaque(userInfo).takeUnretainedValue().eventTap {
-                CGEvent.tapEnable(tap: tap, enable: true)
-            }
+            session.reenableEventTapIfPresent()
             return Unmanaged.passUnretained(event)
         }
-        let session = Unmanaged<InputCaptureSession>.fromOpaque(userInfo).takeUnretainedValue()
         session.record(type: type, event: event)
         return Unmanaged.passUnretained(event)
     }
