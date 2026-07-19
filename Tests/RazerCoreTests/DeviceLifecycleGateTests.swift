@@ -48,4 +48,5 @@ final class DeviceLifecycleGateTests: XCTestCase {
             apply.isCurrent(applyToken) && lifecycle.isCurrentAndAwake(lifecycleToken)
         )
     }
+
 }

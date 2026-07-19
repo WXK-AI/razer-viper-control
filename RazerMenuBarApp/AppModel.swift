@@ -298,7 +298,13 @@ final class AppModel: ObservableObject {
     /// Session cache mutation is lock-protected in `DeviceSession`. All UI and
     /// workspace lifecycle reactions explicitly hop to this model's main actor.
     private func configureDeviceLifecycleMonitoring() {
+        // Gates are thread-safe; bump them on the removal delivery path before any
+        // MainActor hop so in-flight HID work cannot treat a removed device as current.
+        let lifecycleGate = deviceLifecycleGate
+        let applyGate = hardwareApplyGate
         session.onDeviceRemoved = { [weak self] in
+            lifecycleGate.invalidateForRemoval()
+            _ = applyGate.issue()
             Task { @MainActor in
                 self?.handleCachedDeviceRemoval()
             }
@@ -327,11 +333,15 @@ final class AppModel: ObservableObject {
     }
 
     private func handleCachedDeviceRemoval() {
-        deviceLifecycleGate.invalidateForRemoval()
-        _ = hardwareApplyGate.issue()
+        // Generations were already advanced in `onDeviceRemoved`; do not bump again.
         deviceRefreshRequested = false
         applyDisconnectedState(commandError: nil)
         syncRemapper()
+        // DeviceSession retires the matched client before this handler runs, but a
+        // raced reconnect on hidQueue can re-cache; retire behind in-flight HID work.
+        hidQueue.async { [session] in
+            session.invalidate()
+        }
     }
 
     private func handleWillSleep() {
@@ -458,9 +468,13 @@ final class AppModel: ObservableObject {
                 lifecycleToken: lifecycleToken
             )
         } catch DeviceRefreshCancellation.staleLifecycle {
+            // Belt-and-suspenders: post-connect throws already retire; nested paths too.
+            session.disconnect()
             return nil
         } catch let error as RazerCommandError {
-            guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
+            guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
+                return nil
+            }
             if error.shouldInvalidateSession {
                 session.disconnect()
                 guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
@@ -477,9 +491,12 @@ final class AppModel: ObservableObject {
                         lifecycleToken: lifecycleToken
                     )
                 } catch DeviceRefreshCancellation.staleLifecycle {
+                    session.disconnect()
                     return nil
                 } catch let retryError as RazerCommandError {
-                    guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
+                    guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
+                        return nil
+                    }
                     session.disconnect()
                     return DeviceRefreshSnapshot(
                         state: nil,
@@ -492,7 +509,9 @@ final class AppModel: ObservableObject {
                         appliedHardwareSettings: nil
                     )
                 } catch {
-                    guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
+                    guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
+                        return nil
+                    }
                     session.disconnect()
                     return DeviceRefreshSnapshot(
                         state: nil,
@@ -518,7 +537,9 @@ final class AppModel: ObservableObject {
                 appliedHardwareSettings: nil
             )
         } catch {
-            guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
+            guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
+                return nil
+            }
             session.disconnect()
             return DeviceRefreshSnapshot(
                 state: nil,
@@ -548,16 +569,17 @@ final class AppModel: ObservableObject {
             throw DeviceRefreshCancellation.staleLifecycle
         }
         let client = forceReconnect ? try session.reconnect() : try session.connect()
-        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+        // Every post-connect/reconnect stale exit must retire the cached client.
+        guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
             throw DeviceRefreshCancellation.staleLifecycle
         }
         let state = try client.readState()
-        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+        guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
             throw DeviceRefreshCancellation.staleLifecycle
         }
         let becameConnected = !wasConnectedBefore || forceReconnect
         let probeReport = becameConnected ? WheelCapabilityProbe.probe(client: client) : nil
-        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+        guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
             throw DeviceRefreshCancellation.staleLifecycle
         }
 
@@ -576,8 +598,13 @@ final class AppModel: ObservableObject {
         ),
            let profile = selectedProfile {
             // Skip if a newer explicit/DPI/selection apply claimed the gate since scheduling.
-            guard applyGate.isCurrent(generationAtSchedule),
-                  lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+            // Still connected with a valid lifecycle token for a read-only snapshot; only the
+            // apply generation is stale. If lifecycle itself went stale, retire instead.
+            guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                session.disconnect()
+                throw DeviceRefreshCancellation.staleLifecycle
+            }
+            guard applyGate.isCurrent(generationAtSchedule) else {
                 return DeviceRefreshSnapshot(
                     state: state,
                     probeReport: probeReport,
@@ -612,7 +639,7 @@ final class AppModel: ObservableObject {
             }
         }
 
-        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+        guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
             throw DeviceRefreshCancellation.staleLifecycle
         }
 
@@ -716,10 +743,12 @@ final class AppModel: ObservableObject {
             }
             do {
                 let client = try self.session.connect()
-                guard gate.isCurrent(token),
-                      lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                // Lifecycle stale after connect must retire; apply-generation-only
+                // stale keeps the session for a newer explicit apply on hidQueue.
+                guard self.session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
                     return
                 }
+                guard gate.isCurrent(token) else { return }
                 let didApply = try self.session.apply(
                     profile: profile,
                     to: client,
@@ -729,12 +758,14 @@ final class AppModel: ObservableObject {
                             && lifecycleGate.isCurrentAndAwake(lifecycleToken)
                     }
                 )
+                guard self.session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
+                    return
+                }
                 guard let recorded = HardwareApplyBaseline.settingsToRecord(
                     didComplete: didApply,
                     applied: settings
                 ),
-                gate.isCurrent(token),
-                lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                gate.isCurrent(token) else {
                     return
                 }
                 Task { @MainActor in
@@ -752,10 +783,10 @@ final class AppModel: ObservableObject {
                     self.syncRemapper()
                 }
             } catch {
-                guard gate.isCurrent(token),
-                      lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                guard self.session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
                     return
                 }
+                guard gate.isCurrent(token) else { return }
                 if HardwareApplyFailurePolicy.shouldInvalidate(error: error) {
                     self.session.disconnect()
                 }
@@ -984,19 +1015,36 @@ final class AppModel: ObservableObject {
     }
 
     func probeWheelHardware() {
+        guard !isSleeping,
+              let lifecycleToken = deviceLifecycleGate.currentAwakeToken() else {
+            return
+        }
+        let lifecycleGate = deviceLifecycleGate
         hidQueue.async { [weak self] in
             guard let self else { return }
+            guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return }
             do {
                 let client = try self.session.connect()
+                guard self.session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
+                    return
+                }
                 let probeReport = WheelCapabilityProbe.probe(client: client)
                 let readback = client.readWheelHardwareState(capability: probeReport.capability)
                 let summary = WheelCapabilityProbe.summary(probeReport: probeReport, readback: readback)
                 Task { @MainActor in
+                    guard !self.isSleeping,
+                          lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                        return
+                    }
                     self.wheelCapability = probeReport.capability
                     self.wheelProbeSummary = summary
                 }
             } catch {
                 Task { @MainActor in
+                    guard !self.isSleeping,
+                          lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                        return
+                    }
                     self.wheelProbeSummary = error.localizedDescription
                 }
             }

@@ -396,6 +396,21 @@ public final class DeviceSession: @unchecked Sendable {
         invalidate()
     }
 
+    /// After `connect()` / `reconnect()`, drop the cache when `token` is no longer
+    /// current and awake so sleep/removal cannot leave a connected session while
+    /// UI is forced disconnected. Returns whether work may continue.
+    @discardableResult
+    public func retainIfLifecycleCurrent(
+        _ gate: DeviceLifecycleGate,
+        token: DeviceLifecycleGate.Token
+    ) -> Bool {
+        guard gate.isCurrentAndAwake(token) else {
+            disconnect()
+            return false
+        }
+        return true
+    }
+
     public func reconnect() throws -> RazerCommandClient {
         invalidate()
         return try connect()

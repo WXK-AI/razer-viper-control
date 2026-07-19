@@ -216,6 +216,34 @@ final class DeviceSessionTests: XCTestCase {
         XCTAssertEqual(notificationCount.value, 1)
         XCTAssertEqual(harness.transports[0].closeCount, 1)
     }
+
+    func testRetainIfLifecycleCurrentKeepsSessionWhileTokenIsAwake() throws {
+        let harness = DeviceSessionHarness(deviceIDs: [1])
+        let session = harness.makeSession()
+        let gate = DeviceLifecycleGate()
+        let token = try XCTUnwrap(gate.currentAwakeToken())
+        _ = try session.connect()
+
+        XCTAssertTrue(session.retainIfLifecycleCurrent(gate, token: token))
+        XCTAssertTrue(session.isConnected)
+        XCTAssertEqual(harness.transports[0].closeCount, 0)
+    }
+
+    func testRetainIfLifecycleCurrentRetiresSessionWhenTokenIsStale() throws {
+        let harness = DeviceSessionHarness(deviceIDs: [1])
+        let session = harness.makeSession()
+        let gate = DeviceLifecycleGate()
+        let token = try XCTUnwrap(gate.currentAwakeToken())
+        _ = try session.connect()
+
+        // Mirrors AppModel: bump lifecycle on the removal delivery path, then
+        // post-connect work must retire rather than leave a cached client.
+        gate.invalidateForRemoval()
+        XCTAssertFalse(session.retainIfLifecycleCurrent(gate, token: token))
+        XCTAssertFalse(session.isConnected)
+        XCTAssertEqual(harness.transports[0].closeCount, 1)
+    }
+
 }
 
 private func successfulResponse(for request: RazerReport) -> RazerReport {
