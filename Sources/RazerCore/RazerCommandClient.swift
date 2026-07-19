@@ -179,8 +179,11 @@ public struct DeviceState: Equatable, Sendable {
     }
 }
 
-public final class RazerCommandClient {
+public final class RazerCommandClient: @unchecked Sendable {
     private let transport: any RazerReportTransport
+    /// Recursive because high-level operations compose lower-level public commands.
+    /// Open/close and feature-report I/O can never overlap across this boundary.
+    private let lifecycleLock = NSRecursiveLock()
 
     public init(device: IOHIDDevice) {
         transport = IOHIDReportTransport(device: device)
@@ -191,136 +194,168 @@ public final class RazerCommandClient {
     }
 
     public func open(nonSeizing: Bool = true) throws {
-        try transport.open(nonSeizing: nonSeizing)
+        try withLifecycleBoundary {
+            try transport.open(nonSeizing: nonSeizing)
+        }
     }
 
     public func close() {
-        transport.close()
+        withLifecycleBoundary {
+            transport.close()
+        }
     }
 
     @discardableResult
     public func send(_ request: RazerReport) throws -> RazerReport {
-        var lastError: Error?
+        try withLifecycleBoundary {
+            var lastError: Error?
 
-        for attempt in 1...DeviceDescriptor.maxCommandRetries {
-            do {
-                return try performRoundTrip(request)
-            } catch RazerCommandError.deviceBusy {
-                lastError = RazerCommandError.deviceBusy
-                if attempt < DeviceDescriptor.maxCommandRetries {
-                    transport.sleep(milliseconds: UInt64(50 * attempt))
+            for attempt in 1...DeviceDescriptor.maxCommandRetries {
+                do {
+                    return try performRoundTrip(request)
+                } catch RazerCommandError.deviceBusy {
+                    lastError = RazerCommandError.deviceBusy
+                    if attempt < DeviceDescriptor.maxCommandRetries {
+                        transport.sleep(milliseconds: UInt64(50 * attempt))
+                    }
+                } catch {
+                    throw error
                 }
-            } catch {
-                throw error
             }
-        }
 
-        throw lastError ?? RazerCommandError.deviceBusy
+            throw lastError ?? RazerCommandError.deviceBusy
+        }
     }
 
     public func readState() throws -> DeviceState {
-        let battery = try send(.getBatteryLevel())
-        let charging = try send(.getChargingStatus())
-        let dpi = try send(.getDPI())
-        let stages = try send(.getDPIStages())
-        let polling = try send(.getPollingRate())
+        try withLifecycleBoundary {
+            let battery = try send(.getBatteryLevel())
+            let charging = try send(.getChargingStatus())
+            let dpi = try send(.getDPI())
+            let stages = try send(.getDPIStages())
+            let polling = try send(.getPollingRate())
 
-        let decodedStages = try stages.decodeDPIStages()
-        let stageValues = decodedStages.stages.map(\.x)
+            let decodedStages = try stages.decodeDPIStages()
+            let stageValues = decodedStages.stages.map(\.x)
 
-        return DeviceState(
-            batteryPercent: battery.decodeBatteryPercent(),
-            isCharging: charging.decodeCharging(),
-            dpiX: dpi.decodeDPI().x,
-            dpiY: dpi.decodeDPI().y,
-            activeDPIStage: decodedStages.activeStage,
-            dpiStages: stageValues.isEmpty ? [dpi.decodeDPI().x] : stageValues,
-            pollingRateHz: polling.decodePollingRateHz() ?? 1000
-        )
+            return DeviceState(
+                batteryPercent: battery.decodeBatteryPercent(),
+                isCharging: charging.decodeCharging(),
+                dpiX: dpi.decodeDPI().x,
+                dpiY: dpi.decodeDPI().y,
+                activeDPIStage: decodedStages.activeStage,
+                dpiStages: stageValues.isEmpty ? [dpi.decodeDPI().x] : stageValues,
+                pollingRateHz: polling.decodePollingRateHz() ?? 1000
+            )
+        }
     }
 
     public func setDPI(_ dpi: Int) throws {
-        try setDPI(x: dpi, y: dpi)
+        try withLifecycleBoundary {
+            try setDPI(x: dpi, y: dpi)
+        }
     }
 
     public func setDPI(x: Int, y: Int) throws {
-        _ = try send(try .setDPI(x: x, y: y))
+        try withLifecycleBoundary {
+            _ = try send(try .setDPI(x: x, y: y))
+        }
     }
 
     public func setDPIStages(activeStage: Int, stages: [Int]) throws {
-        _ = try send(try .setDPIStages(activeStage: activeStage, stages: stages))
+        try withLifecycleBoundary {
+            _ = try send(try .setDPIStages(activeStage: activeStage, stages: stages))
+        }
     }
 
     public func setPollingRate(hz: Int) throws {
-        try ProfileValidator.validatePollingRate(hz)
-        _ = try send(try .setPollingRate(hz: hz))
+        try withLifecycleBoundary {
+            try ProfileValidator.validatePollingRate(hz)
+            _ = try send(try .setPollingRate(hz: hz))
+        }
     }
 
     public func sendAllowingUnsupported(_ request: RazerReport) throws -> CommandSendResult {
-        var lastError: Error?
+        try withLifecycleBoundary {
+            var lastError: Error?
 
-        for attempt in 1...DeviceDescriptor.maxCommandRetries {
-            do {
-                let report = try performRoundTripAllowingUnsupported(request)
-                return report
-            } catch RazerCommandError.deviceBusy {
-                lastError = RazerCommandError.deviceBusy
-                if attempt < DeviceDescriptor.maxCommandRetries {
-                    transport.sleep(milliseconds: UInt64(50 * attempt))
+            for attempt in 1...DeviceDescriptor.maxCommandRetries {
+                do {
+                    let report = try performRoundTripAllowingUnsupported(request)
+                    return report
+                } catch RazerCommandError.deviceBusy {
+                    lastError = RazerCommandError.deviceBusy
+                    if attempt < DeviceDescriptor.maxCommandRetries {
+                        transport.sleep(milliseconds: UInt64(50 * attempt))
+                    }
+                } catch {
+                    throw error
                 }
-            } catch {
-                throw error
             }
-        }
 
-        throw lastError ?? RazerCommandError.deviceBusy
+            throw lastError ?? RazerCommandError.deviceBusy
+        }
     }
 
     public func probeScrollMode() throws -> CommandSendResult {
-        try sendAllowingUnsupported(.getScrollMode())
+        try withLifecycleBoundary {
+            try sendAllowingUnsupported(.getScrollMode())
+        }
     }
 
     public func probeScrollAcceleration() throws -> CommandSendResult {
-        try sendAllowingUnsupported(.getScrollAcceleration())
+        try withLifecycleBoundary {
+            try sendAllowingUnsupported(.getScrollAcceleration())
+        }
     }
 
     public func probeScrollSmartReel() throws -> CommandSendResult {
-        try sendAllowingUnsupported(.getScrollSmartReel())
+        try withLifecycleBoundary {
+            try sendAllowingUnsupported(.getScrollSmartReel())
+        }
     }
 
     public func setScrollMode(_ mode: ScrollWheelMode) throws -> CommandSendResult {
-        try sendAllowingUnsupported(.setScrollMode(mode))
+        try withLifecycleBoundary {
+            try sendAllowingUnsupported(.setScrollMode(mode))
+        }
     }
 
     public func setScrollAcceleration(_ enabled: Bool) throws -> CommandSendResult {
-        try sendAllowingUnsupported(.setScrollAcceleration(enabled))
+        try withLifecycleBoundary {
+            try sendAllowingUnsupported(.setScrollAcceleration(enabled))
+        }
     }
 
     public func setScrollSmartReel(_ enabled: Bool) throws -> CommandSendResult {
-        try sendAllowingUnsupported(.setScrollSmartReel(enabled))
+        try withLifecycleBoundary {
+            try sendAllowingUnsupported(.setScrollSmartReel(enabled))
+        }
     }
 
     public func readWheelHardwareState() throws -> HardwareWheelSettings {
-        var settings = HardwareWheelSettings()
-        switch try probeScrollMode() {
-        case let .success(report):
-            settings.scrollMode = report.decodeScrollMode()
-        case .notSupported:
-            break
+        try withLifecycleBoundary {
+            var settings = HardwareWheelSettings()
+            switch try probeScrollMode() {
+            case let .success(report):
+                settings.scrollMode = report.decodeScrollMode()
+            case .notSupported:
+                break
+            }
+            switch try probeScrollAcceleration() {
+            case let .success(report):
+                settings.accelerationEnabled = report.decodeBoolArgument()
+            case .notSupported:
+                break
+            }
+            switch try probeScrollSmartReel() {
+            case let .success(report):
+                settings.smartReelEnabled = report.decodeBoolArgument()
+            case .notSupported:
+                break
+            }
+            return settings
         }
-        switch try probeScrollAcceleration() {
-        case let .success(report):
-            settings.accelerationEnabled = report.decodeBoolArgument()
-        case .notSupported:
-            break
-        }
-        switch try probeScrollSmartReel() {
-        case let .success(report):
-            settings.smartReelEnabled = report.decodeBoolArgument()
-        case .notSupported:
-            break
-        }
-        return settings
     }
 
     public struct WheelHardwareReadback: Equatable, Sendable {
@@ -334,49 +369,51 @@ public final class RazerCommandClient {
     }
 
     public func readWheelHardwareState(capability: WheelHardwareCapability) -> WheelHardwareReadback {
-        var settings = HardwareWheelSettings()
-        var errors: [String] = []
+        withLifecycleBoundary {
+            var settings = HardwareWheelSettings()
+            var errors: [String] = []
 
-        if capability.scrollMode == .supported {
-            do {
-                switch try probeScrollMode() {
-                case let .success(report):
-                    settings.scrollMode = report.decodeScrollMode()
-                case .notSupported:
-                    break
+            if capability.scrollMode == .supported {
+                do {
+                    switch try probeScrollMode() {
+                    case let .success(report):
+                        settings.scrollMode = report.decodeScrollMode()
+                    case .notSupported:
+                        break
+                    }
+                } catch {
+                    errors.append("scroll mode readback: \(error.localizedDescription)")
                 }
-            } catch {
-                errors.append("scroll mode readback: \(error.localizedDescription)")
             }
-        }
 
-        if capability.acceleration == .supported {
-            do {
-                switch try probeScrollAcceleration() {
-                case let .success(report):
-                    settings.accelerationEnabled = report.decodeBoolArgument()
-                case .notSupported:
-                    break
+            if capability.acceleration == .supported {
+                do {
+                    switch try probeScrollAcceleration() {
+                    case let .success(report):
+                        settings.accelerationEnabled = report.decodeBoolArgument()
+                    case .notSupported:
+                        break
+                    }
+                } catch {
+                    errors.append("acceleration readback: \(error.localizedDescription)")
                 }
-            } catch {
-                errors.append("acceleration readback: \(error.localizedDescription)")
             }
-        }
 
-        if capability.smartReel == .supported {
-            do {
-                switch try probeScrollSmartReel() {
-                case let .success(report):
-                    settings.smartReelEnabled = report.decodeBoolArgument()
-                case .notSupported:
-                    break
+            if capability.smartReel == .supported {
+                do {
+                    switch try probeScrollSmartReel() {
+                    case let .success(report):
+                        settings.smartReelEnabled = report.decodeBoolArgument()
+                    case .notSupported:
+                        break
+                    }
+                } catch {
+                    errors.append("smart reel readback: \(error.localizedDescription)")
                 }
-            } catch {
-                errors.append("smart reel readback: \(error.localizedDescription)")
             }
-        }
 
-        return WheelHardwareReadback(settings: settings, errors: errors)
+            return WheelHardwareReadback(settings: settings, errors: errors)
+        }
     }
 
     private func performRoundTripAllowingUnsupported(_ request: RazerReport) throws -> CommandSendResult {
@@ -427,4 +464,9 @@ public final class RazerCommandClient {
         }
     }
 
+    private func withLifecycleBoundary<T>(_ operation: () throws -> T) rethrows -> T {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return try operation()
+    }
 }

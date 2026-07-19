@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import RazerCore
 import SwiftUI
@@ -71,18 +72,29 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private let session = DeviceSession()
+    typealias DelayedActionScheduler = (
+        _ delay: TimeInterval,
+        _ action: @escaping () -> Void
+    ) -> Void
+
+    private let session: DeviceSession
     private let profileStore: ProfileStore
+    private let workspaceNotificationCenter: NotificationCenter
+    private let scheduleDelayedAction: DelayedActionScheduler
     private let remapper = InputRemapper()
     private let systemExtensionManager = SystemExtensionManager()
     private let hidQueue = DispatchQueue(label: "com.razermenubar.hid", qos: .utility)
     private let hardwareApplyGate = LatestHardwareApplyGate()
+    private let deviceLifecycleGate = DeviceLifecycleGate()
     private var lastAppliedHardwareSettings: HardwareProfileSettings?
     /// Event-tap-safe diagnostic bridge; avoids per-event MainActor `Task` hops.
     private let remapDiagnosticSink = InputCaptureDiagnosticSink()
     private var monitorTimer: Timer?
     private var wasConnected = false
+    private var isSleeping = false
     private var isRefreshInFlight = false
+    private var deviceRefreshRequested = false
+    private var workspaceObserverTokens: [NSObjectProtocol] = []
     private var autoApplyState = AutoApplyCoordinator.State()
     private var saveWorkItem: DispatchWorkItem?
     private let saveDebounceInterval: TimeInterval = 0.4
@@ -106,8 +118,23 @@ final class AppModel: ObservableObject {
         let appliedHardwareSettings: HardwareProfileSettings?
     }
 
-    init(profileStore: ProfileStore = ProfileStore()) {
+    private enum DeviceRefreshCancellation: Error {
+        case staleLifecycle
+    }
+
+    init(
+        profileStore: ProfileStore = ProfileStore(),
+        session: DeviceSession = DeviceSession(),
+        workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+        scheduleDelayedAction: @escaping DelayedActionScheduler = { delay, action in
+            let workItem = DispatchWorkItem(block: action)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
+    ) {
         self.profileStore = profileStore
+        self.session = session
+        self.workspaceNotificationCenter = workspaceNotificationCenter
+        self.scheduleDelayedAction = scheduleDelayedAction
         let outcome = profileStore.loadOutcome()
         bundle = outcome.bundle
 
@@ -153,6 +180,7 @@ final class AppModel: ObservableObject {
         configureRemapperCallbacks()
         configureCaptureSession()
         bindSystemExtensionManager()
+        configureDeviceLifecycleMonitoring()
         refreshProfileSummary()
         refreshMappingWarning()
         reloadDraftFromSelectedProfile()
@@ -247,6 +275,8 @@ final class AppModel: ObservableObject {
     deinit {
         monitorTimer?.invalidate()
         saveWorkItem?.cancel()
+        session.onDeviceRemoved = nil
+        workspaceObserverTokens.forEach(workspaceNotificationCenter.removeObserver)
         remapper.stop()
     }
 
@@ -265,6 +295,75 @@ final class AppModel: ObservableObject {
         refreshPermissions()
     }
 
+    /// Session cache mutation is lock-protected in `DeviceSession`. All UI and
+    /// workspace lifecycle reactions explicitly hop to this model's main actor.
+    private func configureDeviceLifecycleMonitoring() {
+        session.onDeviceRemoved = { [weak self] in
+            Task { @MainActor in
+                self?.handleCachedDeviceRemoval()
+            }
+        }
+
+        guard workspaceObserverTokens.isEmpty else { return }
+        let willSleepToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleWillSleep()
+            }
+        }
+        let didWakeToken = workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.scheduleWakeRefresh()
+            }
+        }
+        workspaceObserverTokens = [willSleepToken, didWakeToken]
+    }
+
+    private func handleCachedDeviceRemoval() {
+        deviceLifecycleGate.invalidateForRemoval()
+        _ = hardwareApplyGate.issue()
+        deviceRefreshRequested = false
+        applyDisconnectedState(commandError: nil)
+        syncRemapper()
+    }
+
+    private func handleWillSleep() {
+        isSleeping = true
+        deviceLifecycleGate.transitionToSleep()
+        _ = hardwareApplyGate.issue()
+        deviceRefreshRequested = false
+        applyDisconnectedState(commandError: nil)
+        syncRemapper()
+
+        // Queue retirement behind any in-flight HID operation. DeviceSession's
+        // own lock also orders close before a later replacement open.
+        hidQueue.async { [session] in
+            session.invalidate()
+        }
+    }
+
+    private func scheduleWakeRefresh() {
+        isSleeping = false
+        let lifecycleToken = deviceLifecycleGate.transitionToWake()
+        scheduleDelayedAction(2) { [weak self] in
+            Task { @MainActor in
+                guard let self,
+                      !self.isSleeping,
+                      self.deviceLifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                    return
+                }
+                self.refreshDeviceState()
+            }
+        }
+    }
+
     func refreshPermissions() {
         let wasReady = permissions.remapperReady
         permissions = PermissionStatus.current()
@@ -279,15 +378,25 @@ final class AppModel: ObservableObject {
     }
 
     func refreshDeviceState() {
+        guard !isSleeping,
+              let lifecycleToken = deviceLifecycleGate.currentAwakeToken() else {
+            deviceRefreshRequested = false
+            return
+        }
         refreshPermissions()
-        guard !isRefreshInFlight else { return }
+        guard !isRefreshInFlight else {
+            deviceRefreshRequested = true
+            return
+        }
         isRefreshInFlight = true
+        deviceRefreshRequested = false
 
         let wasConnectedBefore = wasConnected
         let selectedProfile = selectedProfile
         let shouldAutoApply = selectedProfile?.autoReapplyEnabled ?? false
         let autoApplySnapshot = autoApplyState
         let applyGate = hardwareApplyGate
+        let lifecycleGate = deviceLifecycleGate
         // Observe only — never issue() here, or reconnect would supersede a newer Apply.
         let generationAtSchedule = applyGate.currentGeneration()
 
@@ -300,12 +409,25 @@ final class AppModel: ObservableObject {
                 shouldAutoApply: shouldAutoApply,
                 autoApplySnapshot: autoApplySnapshot,
                 applyGate: applyGate,
-                generationAtSchedule: generationAtSchedule
+                generationAtSchedule: generationAtSchedule,
+                lifecycleGate: lifecycleGate,
+                lifecycleToken: lifecycleToken
             )
 
             Task { @MainActor in
                 self.isRefreshInFlight = false
-                self.applyRefreshSnapshot(snapshot, shouldAutoApply: shouldAutoApply)
+                if let snapshot,
+                   !self.isSleeping,
+                   lifecycleGate.isCurrentAndAwake(lifecycleToken) {
+                    self.applyRefreshSnapshot(snapshot, shouldAutoApply: shouldAutoApply)
+                }
+                if self.deviceRefreshRequested,
+                   !self.isSleeping,
+                   lifecycleGate.currentAwakeToken() != nil {
+                    self.refreshDeviceState()
+                } else {
+                    self.deviceRefreshRequested = false
+                }
             }
         }
     }
@@ -318,8 +440,11 @@ final class AppModel: ObservableObject {
         shouldAutoApply: Bool,
         autoApplySnapshot: AutoApplyCoordinator.State,
         applyGate: LatestHardwareApplyGate,
-        generationAtSchedule: UInt64
-    ) -> DeviceRefreshSnapshot {
+        generationAtSchedule: UInt64,
+        lifecycleGate: DeviceLifecycleGate,
+        lifecycleToken: DeviceLifecycleGate.Token
+    ) -> DeviceRefreshSnapshot? {
+        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
         do {
             return try readRefreshSnapshot(
                 wasConnectedBefore: wasConnectedBefore,
@@ -328,11 +453,17 @@ final class AppModel: ObservableObject {
                 autoApplySnapshot: autoApplySnapshot,
                 forceReconnect: false,
                 applyGate: applyGate,
-                generationAtSchedule: generationAtSchedule
+                generationAtSchedule: generationAtSchedule,
+                lifecycleGate: lifecycleGate,
+                lifecycleToken: lifecycleToken
             )
+        } catch DeviceRefreshCancellation.staleLifecycle {
+            return nil
         } catch let error as RazerCommandError {
+            guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
             if error.shouldInvalidateSession {
                 session.disconnect()
+                guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
                 do {
                     return try readRefreshSnapshot(
                         wasConnectedBefore: wasConnectedBefore,
@@ -341,9 +472,14 @@ final class AppModel: ObservableObject {
                         autoApplySnapshot: autoApplySnapshot,
                         forceReconnect: true,
                         applyGate: applyGate,
-                        generationAtSchedule: generationAtSchedule
+                        generationAtSchedule: generationAtSchedule,
+                        lifecycleGate: lifecycleGate,
+                        lifecycleToken: lifecycleToken
                     )
+                } catch DeviceRefreshCancellation.staleLifecycle {
+                    return nil
                 } catch let retryError as RazerCommandError {
+                    guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
                     session.disconnect()
                     return DeviceRefreshSnapshot(
                         state: nil,
@@ -356,6 +492,7 @@ final class AppModel: ObservableObject {
                         appliedHardwareSettings: nil
                     )
                 } catch {
+                    guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
                     session.disconnect()
                     return DeviceRefreshSnapshot(
                         state: nil,
@@ -381,6 +518,7 @@ final class AppModel: ObservableObject {
                 appliedHardwareSettings: nil
             )
         } catch {
+            guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
             session.disconnect()
             return DeviceRefreshSnapshot(
                 state: nil,
@@ -402,12 +540,26 @@ final class AppModel: ObservableObject {
         autoApplySnapshot: AutoApplyCoordinator.State,
         forceReconnect: Bool,
         applyGate: LatestHardwareApplyGate,
-        generationAtSchedule: UInt64
+        generationAtSchedule: UInt64,
+        lifecycleGate: DeviceLifecycleGate,
+        lifecycleToken: DeviceLifecycleGate.Token
     ) throws -> DeviceRefreshSnapshot {
+        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+            throw DeviceRefreshCancellation.staleLifecycle
+        }
         let client = forceReconnect ? try session.reconnect() : try session.connect()
+        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+            throw DeviceRefreshCancellation.staleLifecycle
+        }
         let state = try client.readState()
+        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+            throw DeviceRefreshCancellation.staleLifecycle
+        }
         let becameConnected = !wasConnectedBefore || forceReconnect
         let probeReport = becameConnected ? WheelCapabilityProbe.probe(client: client) : nil
+        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+            throw DeviceRefreshCancellation.staleLifecycle
+        }
 
         var applyState = autoApplySnapshot
         if becameConnected && shouldAutoApply {
@@ -424,7 +576,8 @@ final class AppModel: ObservableObject {
         ),
            let profile = selectedProfile {
             // Skip if a newer explicit/DPI/selection apply claimed the gate since scheduling.
-            guard applyGate.isCurrent(generationAtSchedule) else {
+            guard applyGate.isCurrent(generationAtSchedule),
+                  lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
                 return DeviceRefreshSnapshot(
                     state: state,
                     probeReport: probeReport,
@@ -442,7 +595,10 @@ final class AppModel: ObservableObject {
                     profile: profile,
                     to: client,
                     wheelCapability: probeReport?.capability ?? .init(),
-                    isStillCurrent: { applyGate.isCurrent(generationAtSchedule) }
+                    isStillCurrent: {
+                        applyGate.isCurrent(generationAtSchedule)
+                            && lifecycleGate.isCurrentAndAwake(lifecycleToken)
+                    }
                 )
                 if let recorded = HardwareApplyBaseline.settingsToRecord(
                     didComplete: didApply,
@@ -454,6 +610,10 @@ final class AppModel: ObservableObject {
             } catch {
                 applyWarning = error.localizedDescription
             }
+        }
+
+        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+            throw DeviceRefreshCancellation.staleLifecycle
         }
 
         return DeviceRefreshSnapshot(
@@ -470,17 +630,7 @@ final class AppModel: ObservableObject {
 
     private func applyRefreshSnapshot(_ snapshot: DeviceRefreshSnapshot, shouldAutoApply: Bool) {
         if snapshot.disconnected {
-            AutoApplyCoordinator.onDisconnect(&autoApplyState)
-            wasConnected = false
-            isConnected = false
-            if let error = snapshot.commandError {
-                statusMessage = error.localizedDescription
-                if error.isPermissionIssue || error.isConflictIssue {
-                    warningMessage = error.localizedDescription
-                }
-            } else {
-                statusMessage = "Disconnected"
-            }
+            applyDisconnectedState(commandError: snapshot.commandError)
         } else if let state = snapshot.state {
             if snapshot.becameConnected {
                 AutoApplyCoordinator.onConnect(autoReapplyEnabled: shouldAutoApply, state: &autoApplyState)
@@ -503,8 +653,17 @@ final class AppModel: ObservableObject {
             isCharging = state.isCharging
             activeDPI = state.dpiX
             pollingRateHz = state.pollingRateHz
-            warningMessage = nil
-            statusMessage = "Connected"
+            switch session.removalMonitoringStatus {
+            case .active:
+                warningMessage = nil
+                statusMessage = "Connected"
+            case .degradedNoStableIdentity:
+                warningMessage = "Immediate device-removal detection is unavailable; using 5-second polling."
+                statusMessage = "Connected (5-second disconnect polling)"
+            case let .unavailable(reason):
+                warningMessage = "Device-removal monitoring is unavailable; using 5-second polling. \(reason)"
+                statusMessage = "Connected (5-second disconnect polling)"
+            }
             if let applyWarning = snapshot.applyWarning {
                 warningMessage = "Auto-apply failed: \(applyWarning)"
                 statusMessage = "Connected (profile not applied)"
@@ -520,30 +679,70 @@ final class AppModel: ObservableObject {
         syncRemapper()
     }
 
+    private func applyDisconnectedState(commandError: RazerCommandError?) {
+        AutoApplyCoordinator.onDisconnect(&autoApplyState)
+        wasConnected = false
+        isConnected = false
+        batteryPercent = 0
+        isCharging = false
+        if let error = commandError {
+            statusMessage = error.localizedDescription
+            if error.isPermissionIssue || error.isConflictIssue {
+                warningMessage = error.localizedDescription
+            }
+        } else {
+            statusMessage = "Disconnected"
+            warningMessage = nil
+        }
+    }
+
     func applySelectedProfile(reason: HardwareApplyReason = .explicitApply) {
         _ = reason
-        guard let profile = selectedProfile else { return }
+        guard !isSleeping,
+              let profile = selectedProfile,
+              let lifecycleToken = deviceLifecycleGate.currentAwakeToken() else {
+            return
+        }
         let capability = wheelCapability
         let token = hardwareApplyGate.issue()
         let gate = hardwareApplyGate
+        let lifecycleGate = deviceLifecycleGate
         let settings = HardwareProfileSettings(profile: profile)
         hidQueue.async { [weak self] in
             guard let self else { return }
-            guard gate.isCurrent(token) else { return }
+            guard gate.isCurrent(token),
+                  lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                return
+            }
             do {
                 let client = try self.session.connect()
-                guard gate.isCurrent(token) else { return }
+                guard gate.isCurrent(token),
+                      lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                    return
+                }
                 let didApply = try self.session.apply(
                     profile: profile,
                     to: client,
                     wheelCapability: capability,
-                    isStillCurrent: { gate.isCurrent(token) }
+                    isStillCurrent: {
+                        gate.isCurrent(token)
+                            && lifecycleGate.isCurrentAndAwake(lifecycleToken)
+                    }
                 )
                 guard let recorded = HardwareApplyBaseline.settingsToRecord(
                     didComplete: didApply,
                     applied: settings
-                ) else { return }
+                ),
+                gate.isCurrent(token),
+                lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                    return
+                }
                 Task { @MainActor in
+                    guard !self.isSleeping,
+                          gate.isCurrent(token),
+                          lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                        return
+                    }
                     self.lastAppliedHardwareSettings = recorded
                     self.activeDPI = profile.activeDPI
                     self.pollingRateHz = profile.pollingRateHz
@@ -553,10 +752,19 @@ final class AppModel: ObservableObject {
                     self.syncRemapper()
                 }
             } catch {
+                guard gate.isCurrent(token),
+                      lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                    return
+                }
                 if HardwareApplyFailurePolicy.shouldInvalidate(error: error) {
                     self.session.disconnect()
                 }
                 Task { @MainActor in
+                    guard !self.isSleeping,
+                          gate.isCurrent(token),
+                          lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
+                        return
+                    }
                     self.statusMessage = error.localizedDescription
                     if let applyError = error as? HardwareApplyError {
                         self.warningMessage = applyError.localizedDescription
