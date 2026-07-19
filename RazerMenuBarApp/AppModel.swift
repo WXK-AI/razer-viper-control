@@ -102,7 +102,7 @@ final class AppModel: ObservableObject {
         _ action: @escaping () -> Void
     ) -> Void
 
-    private let session: DeviceSession
+    private let session: any DeviceSessionProtocol
     private let profileStore: ProfileStore
     private let workspaceNotificationCenter: NotificationCenter
     private let scheduleDelayedAction: DelayedActionScheduler
@@ -141,27 +141,9 @@ final class AppModel: ObservableObject {
     @Published var confirmArmRemapper = false
     private var pendingRemapperEnableDraft: ProfileDraft?
 
-    private struct DeviceRefreshSnapshot {
-        let state: DeviceState?
-        let probeReport: WheelCapabilityProbe.ProbeReport?
-        let becameConnected: Bool
-        let commandError: RazerCommandError?
-        let disconnected: Bool
-        let applyWarning: String?
-        let profileAppliedSuccessfully: Bool
-        /// Apply generation whose result may update retry/baseline/warning state.
-        let applyGeneration: UInt64?
-        /// Exact hardware snapshot that was written; never derived from a later selection.
-        let appliedHardwareSettings: HardwareProfileSettings?
-    }
-
-    private enum DeviceRefreshCancellation: Error {
-        case staleLifecycle
-    }
-
     init(
         profileStore: ProfileStore = ProfileStore(),
-        session: DeviceSession = DeviceSession(),
+        session: any DeviceSessionProtocol = DeviceSession(),
         workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
         scheduleDelayedAction: @escaping DelayedActionScheduler = { delay, action in
             let workItem = DispatchWorkItem(block: action)
@@ -487,16 +469,20 @@ final class AppModel: ObservableObject {
         hidQueue.async { [weak self] in
             guard let self else { return }
 
-            let snapshot = self.performDeviceRefresh(
+            let request = DeviceRefreshRequest(
                 wasConnectedBefore: wasConnectedBefore,
                 selectedProfile: selectedProfile,
                 shouldAutoApply: shouldAutoApply,
                 autoApplySnapshot: autoApplySnapshot,
                 cachedWheelCapability: cachedWheelCapability,
-                applyGate: applyGate,
                 generationAtSchedule: generationAtSchedule,
-                lifecycleGate: lifecycleGate,
                 lifecycleToken: lifecycleToken
+            )
+            let snapshot = DeviceRefreshCoordinator.performRefresh(
+                session: self.session,
+                request: request,
+                applyGate: applyGate,
+                lifecycleGate: lifecycleGate
             )
 
             Task { @MainActor in
@@ -517,280 +503,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Runs on `hidQueue`. On recoverable HID failures, clears the cached session
-    /// and retries once with a fresh device open (sleep/wake / stale handle).
-    private nonisolated func performDeviceRefresh(
-        wasConnectedBefore: Bool,
-        selectedProfile: MouseProfile?,
-        shouldAutoApply: Bool,
-        autoApplySnapshot: AutoApplyCoordinator.State,
-        cachedWheelCapability: WheelHardwareCapability,
-        applyGate: LatestHardwareApplyGate,
-        generationAtSchedule: UInt64,
-        lifecycleGate: DeviceLifecycleGate,
-        lifecycleToken: DeviceLifecycleGate.Token
-    ) -> DeviceRefreshSnapshot? {
-        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
-        do {
-            return try readRefreshSnapshot(
-                wasConnectedBefore: wasConnectedBefore,
-                selectedProfile: selectedProfile,
-                shouldAutoApply: shouldAutoApply,
-                autoApplySnapshot: autoApplySnapshot,
-                cachedWheelCapability: cachedWheelCapability,
-                forceReconnect: false,
-                applyGate: applyGate,
-                generationAtSchedule: generationAtSchedule,
-                lifecycleGate: lifecycleGate,
-                lifecycleToken: lifecycleToken
-            )
-        } catch DeviceRefreshCancellation.staleLifecycle {
-            // Belt-and-suspenders: post-connect throws already retire; nested paths too.
-            session.disconnect()
-            return nil
-        } catch let error as RazerCommandError {
-            guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-                return nil
-            }
-            if error.shouldInvalidateSession {
-                session.disconnect()
-                guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return nil }
-                do {
-                    return try readRefreshSnapshot(
-                        wasConnectedBefore: wasConnectedBefore,
-                        selectedProfile: selectedProfile,
-                        shouldAutoApply: shouldAutoApply,
-                        autoApplySnapshot: autoApplySnapshot,
-                        cachedWheelCapability: cachedWheelCapability,
-                        forceReconnect: true,
-                        applyGate: applyGate,
-                        generationAtSchedule: generationAtSchedule,
-                        lifecycleGate: lifecycleGate,
-                        lifecycleToken: lifecycleToken
-                    )
-                } catch DeviceRefreshCancellation.staleLifecycle {
-                    session.disconnect()
-                    return nil
-                } catch let retryError as RazerCommandError {
-                    guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-                        return nil
-                    }
-                    session.disconnect()
-                    return DeviceRefreshSnapshot(
-                        state: nil,
-                        probeReport: nil,
-                        becameConnected: false,
-                        commandError: retryError,
-                        disconnected: true,
-                        applyWarning: nil,
-                        profileAppliedSuccessfully: false,
-                        applyGeneration: nil,
-                        appliedHardwareSettings: nil
-                    )
-                } catch {
-                    guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-                        return nil
-                    }
-                    session.disconnect()
-                    return DeviceRefreshSnapshot(
-                        state: nil,
-                        probeReport: nil,
-                        becameConnected: false,
-                        commandError: nil,
-                        disconnected: true,
-                        applyWarning: nil,
-                        profileAppliedSuccessfully: false,
-                        applyGeneration: nil,
-                        appliedHardwareSettings: nil
-                    )
-                }
-            }
-
-            return DeviceRefreshSnapshot(
-                state: nil,
-                probeReport: nil,
-                becameConnected: false,
-                commandError: error,
-                disconnected: true,
-                applyWarning: nil,
-                profileAppliedSuccessfully: false,
-                applyGeneration: nil,
-                appliedHardwareSettings: nil
-            )
-        } catch {
-            guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-                return nil
-            }
-            session.disconnect()
-            return DeviceRefreshSnapshot(
-                state: nil,
-                probeReport: nil,
-                becameConnected: false,
-                commandError: nil,
-                disconnected: true,
-                applyWarning: nil,
-                profileAppliedSuccessfully: false,
-                applyGeneration: nil,
-                appliedHardwareSettings: nil
-            )
-        }
-    }
-
-    private nonisolated func readRefreshSnapshot(
-        wasConnectedBefore: Bool,
-        selectedProfile: MouseProfile?,
-        shouldAutoApply: Bool,
-        autoApplySnapshot: AutoApplyCoordinator.State,
-        cachedWheelCapability: WheelHardwareCapability,
-        forceReconnect: Bool,
-        applyGate: LatestHardwareApplyGate,
-        generationAtSchedule: UInt64,
-        lifecycleGate: DeviceLifecycleGate,
-        lifecycleToken: DeviceLifecycleGate.Token
-    ) throws -> DeviceRefreshSnapshot {
-        guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
-            throw DeviceRefreshCancellation.staleLifecycle
-        }
-        let client = forceReconnect ? try session.reconnect() : try session.connect()
-        // Every post-connect/reconnect stale exit must retire the cached client.
-        guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-            throw DeviceRefreshCancellation.staleLifecycle
-        }
-        let state = try client.readState()
-        guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-            throw DeviceRefreshCancellation.staleLifecycle
-        }
-        let becameConnected = !wasConnectedBefore || forceReconnect
-        var probeReport = becameConnected ? WheelCapabilityProbe.probe(client: client) : nil
-        var effectiveWheelCapability = WheelCapabilityRefreshPolicy.resolvedCapability(
-            fresh: probeReport?.capability,
-            cached: cachedWheelCapability
-        )
-        guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-            throw DeviceRefreshCancellation.staleLifecycle
-        }
-
-        var applyState = autoApplySnapshot
-        if becameConnected && shouldAutoApply {
-            AutoApplyCoordinator.onConnect(autoReapplyEnabled: true, state: &applyState)
-        }
-
-        var applyWarning: String?
-        var profileAppliedSuccessfully = false
-        var applyGeneration: UInt64?
-        var appliedHardwareSettings: HardwareProfileSettings?
-        if AutoApplyCoordinator.shouldAttemptApply(
-            state: applyState,
-            autoReapplyEnabled: shouldAutoApply,
-            hasProfile: selectedProfile != nil
-        ),
-           let profile = selectedProfile {
-            applyGeneration = generationAtSchedule
-            if probeReport == nil,
-               WheelCapabilityRefreshPolicy.requiresProbe(
-                   profile: profile,
-                   capability: effectiveWheelCapability
-               ) {
-                probeReport = WheelCapabilityProbe.probe(client: client)
-                effectiveWheelCapability = WheelCapabilityRefreshPolicy.resolvedCapability(
-                    fresh: probeReport?.capability,
-                    cached: cachedWheelCapability
-                )
-                guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-                    throw DeviceRefreshCancellation.staleLifecycle
-                }
-            }
-            // Skip if a newer explicit/DPI/selection apply claimed the gate since scheduling.
-            // Still connected with a valid lifecycle token for a read-only snapshot; only the
-            // apply generation is stale. If lifecycle itself went stale, retire instead.
-            guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else {
-                session.disconnect()
-                throw DeviceRefreshCancellation.staleLifecycle
-            }
-            guard applyGate.isCurrent(generationAtSchedule) else {
-                return DeviceRefreshSnapshot(
-                    state: state,
-                    probeReport: probeReport,
-                    becameConnected: becameConnected,
-                    commandError: nil,
-                    disconnected: false,
-                    applyWarning: nil,
-                    profileAppliedSuccessfully: false,
-                    applyGeneration: applyGeneration,
-                    appliedHardwareSettings: nil
-                )
-            }
-            let settings = HardwareProfileSettings(profile: profile)
-            do {
-                let result = try session.apply(
-                    profile: profile,
-                    to: client,
-                    wheelCapability: effectiveWheelCapability,
-                    isStillCurrent: {
-                        applyGate.isCurrent(generationAtSchedule)
-                            && lifecycleGate.isCurrentAndAwake(lifecycleToken)
-                    }
-                )
-                guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-                    throw DeviceRefreshCancellation.staleLifecycle
-                }
-                guard applyGate.isCurrent(generationAtSchedule) else {
-                    return DeviceRefreshSnapshot(
-                        state: state,
-                        probeReport: probeReport,
-                        becameConnected: becameConnected,
-                        commandError: nil,
-                        disconnected: false,
-                        applyWarning: nil,
-                        profileAppliedSuccessfully: false,
-                        applyGeneration: applyGeneration,
-                        appliedHardwareSettings: nil
-                    )
-                }
-                if let recorded = HardwareApplyBaseline.settingsToRecord(
-                    result: result,
-                    applied: settings
-                ) {
-                    profileAppliedSuccessfully = true
-                    appliedHardwareSettings = recorded
-                } else if let warning = result.verificationWarning {
-                    applyWarning = warning
-                }
-            } catch {
-                if HardwareApplyFailurePolicy.shouldInvalidate(error: error) {
-                    throw error
-                }
-                applyWarning = error.localizedDescription
-            }
-        }
-
-        guard session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
-            throw DeviceRefreshCancellation.staleLifecycle
-        }
-
-        return DeviceRefreshSnapshot(
-            state: state,
-            probeReport: probeReport,
-            becameConnected: becameConnected,
-            commandError: nil,
-            disconnected: false,
-            applyWarning: applyWarning,
-            profileAppliedSuccessfully: profileAppliedSuccessfully,
-            applyGeneration: applyGeneration,
-            appliedHardwareSettings: appliedHardwareSettings
-        )
-    }
-
     private func applyRefreshSnapshot(_ snapshot: DeviceRefreshSnapshot, shouldAutoApply: Bool) {
         if snapshot.disconnected {
-            applyDisconnectedState(commandError: snapshot.commandError)
+            // Coordinator already applied onDisconnect into autoApplyState (authoritative).
+            adoptAutoApplyState(from: snapshot, shouldAutoApply: shouldAutoApply, acceptsApplyResult: false)
+            applyDisconnectedState(commandError: snapshot.commandError, adoptAutoApplyFromSnapshot: false)
         } else if let state = snapshot.state {
             let acceptsApplyResult = snapshot.applyGeneration.map(hardwareApplyGate.isCurrent) ?? false
-            if snapshot.becameConnected {
-                AutoApplyCoordinator.onConnect(autoReapplyEnabled: shouldAutoApply, state: &autoApplyState)
-            }
+            adoptAutoApplyState(
+                from: snapshot,
+                shouldAutoApply: shouldAutoApply,
+                acceptsApplyResult: acceptsApplyResult
+            )
             if acceptsApplyResult && snapshot.profileAppliedSuccessfully {
-                AutoApplyCoordinator.onApplySuccess(&autoApplyState)
                 hardwareVerificationWarning = nil
                 if let recorded = HardwareApplyBaseline.settingsToRecord(
                     result: .verified,
@@ -799,7 +524,6 @@ final class AppModel: ObservableObject {
                     lastAppliedHardwareSettings = recorded
                 }
             } else if acceptsApplyResult, let applyWarning = snapshot.applyWarning {
-                AutoApplyCoordinator.onApplyFailure(&autoApplyState)
                 hardwareVerificationWarning = "Auto-apply not verified: \(applyWarning)"
             }
 
@@ -857,8 +581,42 @@ final class AppModel: ObservableObject {
         syncRemapper()
     }
 
-    private func applyDisconnectedState(commandError: RazerCommandError?) {
-        AutoApplyCoordinator.onDisconnect(&autoApplyState)
+    /// Adopts coordinator-owned auto-apply transitions when the apply generation is publishable.
+    /// Does not re-run success/failure accounting in AppModel.
+    private func adoptAutoApplyState(
+        from snapshot: DeviceRefreshSnapshot,
+        shouldAutoApply: Bool,
+        acceptsApplyResult: Bool
+    ) {
+        if snapshot.disconnected {
+            autoApplyState = snapshot.autoApplyState
+            return
+        }
+        if snapshot.applyOutcomeCommitted {
+            if acceptsApplyResult {
+                autoApplyState = snapshot.autoApplyState
+            } else if snapshot.becameConnected {
+                // HID committed an apply outcome under a generation that is no longer
+                // publishable — drop success/failure, keep only connect re-arm.
+                AutoApplyCoordinator.onConnect(
+                    autoReapplyEnabled: shouldAutoApply,
+                    state: &autoApplyState
+                )
+            }
+            return
+        }
+        // Superseded-before-write or no attempt: safe to adopt (may include onConnect only).
+        autoApplyState = snapshot.autoApplyState
+    }
+
+    private func applyDisconnectedState(
+        commandError: RazerCommandError?,
+        adoptAutoApplyFromSnapshot: Bool = true
+    ) {
+        if adoptAutoApplyFromSnapshot {
+            // Non-coordinator disconnect paths (sleep/removal) still reset here.
+            AutoApplyCoordinator.onDisconnect(&autoApplyState)
+        }
         hardwareVerificationWarning = nil
         wasConnected = false
         isConnected = false
@@ -911,14 +669,14 @@ final class AppModel: ObservableObject {
                 return
             }
             do {
-                let client = try self.session.connect()
+                let client = try self.session.connectForRefresh()
                 // Lifecycle stale after connect must retire; apply-generation-only
                 // stale keeps the session for a newer explicit apply on hidQueue.
                 guard self.session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
                     return
                 }
                 guard gate.isCurrent(token) else { return }
-                let result = try self.session.apply(
+                let result = try self.session.applyForRefresh(
                     profile: profile,
                     to: client,
                     wheelCapability: capability,
@@ -1236,13 +994,12 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             guard lifecycleGate.isCurrentAndAwake(lifecycleToken) else { return }
             do {
-                let client = try self.session.connect()
+                let client = try self.session.connectForRefresh()
                 guard self.session.retainIfLifecycleCurrent(lifecycleGate, token: lifecycleToken) else {
                     return
                 }
-                let probeReport = WheelCapabilityProbe.probe(client: client)
-                let readback = client.readWheelHardwareState(capability: probeReport.capability)
-                let summary = WheelCapabilityProbe.summary(probeReport: probeReport, readback: readback)
+                let probeReport = client.probeWheelCapability()
+                let summary = client.wheelProbeSummary(for: probeReport)
                 Task { @MainActor in
                     guard !self.isSleeping,
                           lifecycleGate.isCurrentAndAwake(lifecycleToken) else {

@@ -182,7 +182,7 @@ public struct DeviceState: Equatable, Sendable {
     }
 }
 
-public final class RazerCommandClient: @unchecked Sendable {
+public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable {
     private let transport: any RazerReportTransport
     /// Recursive because high-level operations compose lower-level public commands.
     /// Open/close and feature-report I/O can never overlap across this boundary.
@@ -194,6 +194,15 @@ public final class RazerCommandClient: @unchecked Sendable {
 
     public init(transport: any RazerReportTransport) {
         self.transport = transport
+    }
+
+    public func probeWheelCapability() -> WheelCapabilityProbe.ProbeReport {
+        WheelCapabilityProbe.probe(client: self)
+    }
+
+    public func wheelProbeSummary(for report: WheelCapabilityProbe.ProbeReport) -> String {
+        let readback = readWheelHardwareState(capability: report.capability)
+        return WheelCapabilityProbe.summary(probeReport: report, readback: readback)
     }
 
     public func open(nonSeizing: Bool = true) throws {

@@ -1,6 +1,57 @@
 import Foundation
 import IOKit.hid
 
+// MARK: - Session / client seams (refresh tests + production)
+
+/// Minimal command surface used by refresh/reconnect and auto-apply.
+/// Production uses `RazerCommandClient`; tests inject deterministic fakes.
+/// `Sendable` so clients can cross the MainActor → HID-queue boundary safely
+/// (production `RazerCommandClient` is `@unchecked Sendable`).
+public protocol DeviceCommandClient: AnyObject, Sendable {
+    func readState() throws -> DeviceState
+    func probeWheelCapability() -> WheelCapabilityProbe.ProbeReport
+    /// Diagnostics line for a probe report (production may append live readback).
+    func wheelProbeSummary(for report: WheelCapabilityProbe.ProbeReport) -> String
+}
+
+extension DeviceCommandClient {
+    public func wheelProbeSummary(for report: WheelCapabilityProbe.ProbeReport) -> String {
+        report.summary
+    }
+}
+
+/// Session lifecycle used by AppModel and `DeviceRefreshCoordinator`.
+///
+/// Refresh witnesses (`connectForRefresh` / `reconnectForRefresh` / `applyForRefresh`)
+/// keep production `connect()` / `reconnect()` / `apply(to: RazerCommandClient, …)`
+/// signatures and nonescaping closure semantics intact for concrete callers.
+///
+/// Refines `Sendable` so `any DeviceSessionProtocol` can be captured by `hidQueue`
+/// without erasing production `DeviceSession: @unchecked Sendable`.
+public protocol DeviceSessionProtocol: AnyObject, Sendable {
+    var onDeviceRemoved: (() -> Void)? { get set }
+    var isConnected: Bool { get }
+    var removalMonitoringStatus: DeviceRemovalMonitoringStatus { get }
+
+    func connectForRefresh() throws -> any DeviceCommandClient
+    func reconnectForRefresh() throws -> any DeviceCommandClient
+    func invalidate()
+    func disconnect()
+
+    @discardableResult
+    func retainIfLifecycleCurrent(
+        _ gate: DeviceLifecycleGate,
+        token: DeviceLifecycleGate.Token
+    ) -> Bool
+
+    func applyForRefresh(
+        profile: MouseProfile,
+        to client: any DeviceCommandClient,
+        wheelCapability: WheelHardwareCapability?,
+        isStillCurrent: @escaping () -> Bool
+    ) throws -> HardwareApplyResult
+}
+
 /// A registry entry identifies the exact HID interface for the lifetime of the
 /// current I/O Registry. Product, serial, and location properties are not used
 /// because they are absent or non-unique on some receiver/device combinations.
@@ -416,6 +467,17 @@ public final class DeviceSession: @unchecked Sendable {
         return try connect()
     }
 
+    /// Protocol witness for refresh/coordinator paths (existential-friendly).
+    public func connectForRefresh() throws -> any DeviceCommandClient {
+        try connect()
+    }
+
+    /// Protocol witness for refresh/coordinator paths (existential-friendly).
+    public func reconnectForRefresh() throws -> any DeviceCommandClient {
+        try reconnect()
+    }
+
+    /// Concrete production apply API — preserves nonescaping `isStillCurrent`.
     public func apply(
         profile: MouseProfile,
         to client: RazerCommandClient,
@@ -426,6 +488,33 @@ public final class DeviceSession: @unchecked Sendable {
         return try HardwareProfileApplier.apply(
             target: profile,
             using: RazerCommandClientHardwareApplier(client: client),
+            capability: capability,
+            isStillCurrent: isStillCurrent
+        )
+    }
+
+    /// Protocol witness for refresh/coordinator apply against `any DeviceCommandClient`.
+    public func applyForRefresh(
+        profile: MouseProfile,
+        to client: any DeviceCommandClient,
+        wheelCapability: WheelHardwareCapability? = nil,
+        isStillCurrent: @escaping () -> Bool = { true }
+    ) throws -> HardwareApplyResult {
+        if let razer = client as? RazerCommandClient {
+            return try apply(
+                profile: profile,
+                to: razer,
+                wheelCapability: wheelCapability,
+                isStillCurrent: isStillCurrent
+            )
+        }
+        guard let hardwareClient = client as? HardwareProfileApplying else {
+            throw RazerCommandError.unsupportedCommand
+        }
+        let capability = wheelCapability ?? WheelHardwareCapability()
+        return try HardwareProfileApplier.apply(
+            target: profile,
+            using: hardwareClient,
             capability: capability,
             isStillCurrent: isStillCurrent
         )
@@ -473,6 +562,8 @@ public final class DeviceSession: @unchecked Sendable {
         removalHandler?()
     }
 }
+
+extension DeviceSession: DeviceSessionProtocol {}
 
 /// Adapts `RazerCommandClient` to the apply planner without colliding on return types.
 final class RazerCommandClientHardwareApplier: HardwareProfileApplying {
