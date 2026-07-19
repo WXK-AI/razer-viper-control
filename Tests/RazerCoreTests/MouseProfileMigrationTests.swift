@@ -91,7 +91,7 @@ final class MouseProfileMigrationTests: XCTestCase {
         )
         try store.save(bundle)
 
-        let loaded = store.load()
+        let loaded = store.loadOutcome().bundle
         let migrated = try XCTUnwrap(loaded.profiles.first)
         XCTAssertEqual(migrated.buttonMappings[.wheelClick], .mouseButton(.right))
         XCTAssertNil(migrated.buttonMappings[.middleClick])

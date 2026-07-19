@@ -720,6 +720,98 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         XCTAssertFalse(listed.contains(where: { $0.lastPathComponent.contains("directory") }))
     }
 
+    func testConcurrentSaveLoadListStressKeepsValidBundles() throws {
+        let stressRoot = tempDirectory.appendingPathComponent("concurrent-stress", isDirectory: true)
+        try FileManager.default.createDirectory(at: stressRoot, withIntermediateDirectories: true)
+        let stressStore = ProfileStore(
+            deviceKey: "stress",
+            applicationSupportDirectory: stressRoot,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+
+        let idA = UUID()
+        let idB = UUID()
+        let bundleA = ProfileBundle(
+            selectedProfileID: idA,
+            profiles: [makeValidProfile(name: "Alpha", id: idA)]
+        )
+        let bundleB = ProfileBundle(
+            selectedProfileID: idB,
+            profiles: [makeValidProfile(name: "Beta", id: idB)]
+        )
+        try stressStore.save(bundleA)
+
+        let errorLock = NSLock()
+        var failures: [String] = []
+        func recordFailure(_ message: String) {
+            errorLock.lock()
+            failures.append(message)
+            errorLock.unlock()
+        }
+
+        let iterations = 120
+        DispatchQueue.concurrentPerform(iterations: iterations) { index in
+            do {
+                switch index % 5 {
+                case 0:
+                    try stressStore.save(index % 2 == 0 ? bundleA : bundleB)
+                case 1:
+                    let outcome = stressStore.loadOutcome()
+                    switch outcome {
+                    case let .loaded(bundle, _), let .firstRun(bundle, _):
+                        _ = try ProfileSafetyValidator.validateAndRepair(bundle)
+                        guard bundle.profiles.count == 1,
+                              ["Alpha", "Beta", "Default"].contains(bundle.profiles[0].name) else {
+                            recordFailure("unexpected loaded profile set: \(bundle.profiles.map(\.name))")
+                            return
+                        }
+                    case let .recovered(_, _, reason, _):
+                        recordFailure("unexpected recovered under concurrent valid ops: \(reason)")
+                    case let .corruptPreserved(_, _, reason):
+                        recordFailure("unexpected corruptPreserved under concurrent valid ops: \(reason)")
+                    }
+                case 2:
+                    _ = try stressStore.listQuarantineArtifacts()
+                    _ = stressStore.writesBlockedForCorruptSource
+                    _ = stressStore.areWritesBlocked
+                    _ = stressStore.allowsCorruptSourceRecoveryActions
+                case 3:
+                    try stressStore.save(bundleA)
+                    let outcome = stressStore.loadOutcome()
+                    if case .recovered = outcome {
+                        recordFailure("save+load pair produced recovered")
+                    } else if case .corruptPreserved = outcome {
+                        recordFailure("save+load pair produced corruptPreserved")
+                    } else {
+                        _ = try ProfileSafetyValidator.validateAndRepair(outcome.bundle)
+                    }
+                default:
+                    _ = stressStore.refreshSupportDirectorySafety()
+                    _ = try stressStore.uniqueQuarantineURL()
+                }
+            } catch {
+                recordFailure("iteration \(index) threw: \(error)")
+            }
+        }
+
+        XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
+
+        let finalOutcome = stressStore.loadOutcome()
+        guard case let .loaded(finalBundle, warning) = finalOutcome else {
+            return XCTFail("Expected final loaded outcome, got \(finalOutcome)")
+        }
+        XCTAssertNil(warning)
+        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(finalBundle))
+        let onDisk = try JSONDecoder().decode(
+            ProfileBundle.self,
+            from: Data(contentsOf: stressStore.storageURL)
+        )
+        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(onDisk))
+        XCTAssertEqual(onDisk.schemaVersion, ProfileBundle.currentSchemaVersion)
+        XCTAssertEqual(onDisk.profiles.count, 1)
+        XCTAssertTrue(["Alpha", "Beta"].contains(onDisk.profiles[0].name))
+    }
+
     func testListQuarantineDoesNotFollowPathnameSwapViaDirectoryReadyProbe() throws {
         let supportRoot = tempDirectory.appendingPathComponent("list-swap-root", isDirectory: true)
         try FileManager.default.createDirectory(at: supportRoot, withIntermediateDirectories: true)

@@ -221,30 +221,51 @@ public final class ProfileStore {
     private let unlinkEntry: (Int32, String) throws -> Void
     /// Test seam: invoked after the support directory FD is validated and before mutation via that FD.
     private let directoryReadyProbe: ((Int32) -> Void)?
+    /// Serializes all store operations that touch shared mutable state, encoder/decoder, or files.
+    /// Recursive so nested public APIs (e.g. load → save defaults) cannot deadlock.
+    private let storeLock = NSRecursiveLock()
     /// Cached result of the latest support-directory check. Revalidated before mutations and
     /// app-facing recovery gates so a post-init pathname swap cannot stay trusted.
     private var supportDirectoryError: ProfileSafetyValidationError?
 
     /// When true, `save` refuses to write the primary path so a corrupt source cannot be overwritten.
-    public private(set) var writesBlockedForCorruptSource = false
+    private var writesBlockedForCorruptSourceStorage = false
+
+    /// Thread-safe view of the durable corrupt-source write block.
+    public var writesBlockedForCorruptSource: Bool {
+        withStoreLock { writesBlockedForCorruptSourceStorage }
+    }
 
     /// When true, support-directory validation failed and no profile files may be created.
     public var writesBlockedForUnsafeSupportDirectory: Bool {
-        refreshSupportDirectorySafety()
-        return supportDirectoryError != nil
+        withStoreLock {
+            _ = refreshSupportDirectorySafetyLocked()
+            return supportDirectoryError != nil
+        }
     }
 
     /// Combined write gate used by the app UI and recovery paths.
     public var areWritesBlocked: Bool {
-        writesBlockedForCorruptSource || writesBlockedForUnsafeSupportDirectory
+        withStoreLock {
+            writesBlockedForCorruptSourceStorage
+                || (refreshSupportDirectorySafetyLocked() != nil)
+        }
     }
 
     /// Corrupt-file quarantine/discard UI is only valid when the support directory itself is safe.
     /// Revalidates the directory so AppModel/SettingsView cannot offer destructive actions after a
     /// post-initialization swap to an unsafe path.
     public var allowsCorruptSourceRecoveryActions: Bool {
-        refreshSupportDirectorySafety()
-        return writesBlockedForCorruptSource && supportDirectoryError == nil
+        withStoreLock {
+            _ = refreshSupportDirectorySafetyLocked()
+            return writesBlockedForCorruptSourceStorage && supportDirectoryError == nil
+        }
+    }
+
+    private func withStoreLock<T>(_ body: () throws -> T) rethrows -> T {
+        storeLock.lock()
+        defer { storeLock.unlock() }
+        return try body()
     }
 
     public init(
@@ -293,12 +314,18 @@ public final class ProfileStore {
         fileURL = folder.appendingPathComponent(profileFileName)
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
-        refreshSupportDirectorySafety()
+        // Single-threaded init path; still goes through the locked helper for consistency.
+        _ = refreshSupportDirectorySafety()
     }
 
     /// Re-runs FD-based support-directory hardening and updates the cached safety error.
     @discardableResult
     public func refreshSupportDirectorySafety() -> ProfileSafetyValidationError? {
+        withStoreLock { refreshSupportDirectorySafetyLocked() }
+    }
+
+    @discardableResult
+    private func refreshSupportDirectorySafetyLocked() -> ProfileSafetyValidationError? {
         do {
             try ProfileSafetyValidator.prepareSupportDirectory(
                 at: directoryURL,
@@ -318,6 +345,7 @@ public final class ProfileStore {
 
     /// Opens and hardens the support directory, keeps that FD for `body`, then closes it.
     /// Pathname swaps after validation cannot redirect `body`'s `*at` mutations.
+    /// Caller must already hold `storeLock` (public entry points lock first).
     private func withSafeSupportDirectoryFD<T>(_ body: (Int32) throws -> T) throws -> T {
         let fd: Int32
         do {
@@ -340,6 +368,8 @@ public final class ProfileStore {
         }
         defer { close(fd) }
         supportDirectoryError = nil
+        // Probe runs while the store lock is held (reentrant). Injected callbacks must not
+        // wait on a different lock that could invert with this one; re-entering ProfileStore is OK.
         directoryReadyProbe?(fd)
         return try body(fd)
     }
@@ -347,30 +377,34 @@ public final class ProfileStore {
     public var storageURL: URL { fileURL }
     public var storageDirectoryURL: URL { directoryURL }
 
+    /// Prefer `loadOutcome()` so callers retain recovery / persistence metadata.
+    @available(*, deprecated, message: "Use loadOutcome().bundle to preserve recovery metadata")
     public func load() -> ProfileBundle {
         loadOutcome().bundle
     }
 
     public func loadOutcome() -> ProfileLoadOutcome {
-        do {
-            return try withSafeSupportDirectoryFD { directoryFD in
-                try loadOutcome(directoryFD: directoryFD)
+        withStoreLock {
+            do {
+                return try withSafeSupportDirectoryFD { directoryFD in
+                    try loadOutcome(directoryFD: directoryFD)
+                }
+            } catch let error as ProfileStoreError {
+                if case let .unsafeSupportDirectory(validationError) = error {
+                    return .firstRun(
+                        defaultBundle(),
+                        persistenceWarning: validationError.localizedDescription
+                    )
+                }
+                return .firstRun(defaultBundle(), persistenceWarning: error.localizedDescription)
+            } catch {
+                return .firstRun(defaultBundle(), persistenceWarning: error.localizedDescription)
             }
-        } catch let error as ProfileStoreError {
-            if case let .unsafeSupportDirectory(validationError) = error {
-                return .firstRun(
-                    defaultBundle(),
-                    persistenceWarning: validationError.localizedDescription
-                )
-            }
-            return .firstRun(defaultBundle(), persistenceWarning: error.localizedDescription)
-        } catch {
-            return .firstRun(defaultBundle(), persistenceWarning: error.localizedDescription)
         }
     }
 
     private func loadOutcome(directoryFD: Int32) throws -> ProfileLoadOutcome {
-        writesBlockedForCorruptSource = false
+        writesBlockedForCorruptSourceStorage = false
 
         if !ProfileSafetyValidator.entryExists(directoryFD: directoryFD, fileName: profileFileName) {
             let defaults = defaultBundle()
@@ -455,13 +489,15 @@ public final class ProfileStore {
     }
 
     public func save(_ bundle: ProfileBundle) throws {
-        try withSafeSupportDirectoryFD { directoryFD in
-            try save(bundle, directoryFD: directoryFD)
+        try withStoreLock {
+            try withSafeSupportDirectoryFD { directoryFD in
+                try save(bundle, directoryFD: directoryFD)
+            }
         }
     }
 
     private func save(_ bundle: ProfileBundle, directoryFD: Int32) throws {
-        if writesBlockedForCorruptSource {
+        if writesBlockedForCorruptSourceStorage {
             throw ProfileStoreError.writeBlockedCorruptSource(fileURL.path)
         }
 
@@ -509,41 +545,47 @@ public final class ProfileStore {
     /// Retries moving the corrupt primary file aside, then clears the write block.
     @discardableResult
     public func retryQuarantineCorruptSource() throws -> URL {
-        try withSafeSupportDirectoryFD { directoryFD in
-            do {
-                if ProfileSafetyValidator.entryExists(directoryFD: directoryFD, fileName: profileFileName) {
-                    let quarantineURL = try performQuarantineMove(directoryFD: directoryFD)
-                    writesBlockedForCorruptSource = false
-                    return quarantineURL
+        try withStoreLock {
+            try withSafeSupportDirectoryFD { directoryFD in
+                do {
+                    if ProfileSafetyValidator.entryExists(directoryFD: directoryFD, fileName: profileFileName) {
+                        let quarantineURL = try performQuarantineMove(directoryFD: directoryFD)
+                        writesBlockedForCorruptSourceStorage = false
+                        return quarantineURL
+                    }
+                    writesBlockedForCorruptSourceStorage = false
+                    return try uniqueQuarantineURL(directoryFD: directoryFD)
+                } catch let error as ProfileStoreError {
+                    throw error
+                } catch {
+                    throw ProfileStoreError.quarantineFailed(error.localizedDescription)
                 }
-                writesBlockedForCorruptSource = false
-                return try uniqueQuarantineURL(directoryFD: directoryFD)
-            } catch let error as ProfileStoreError {
-                throw error
-            } catch {
-                throw ProfileStoreError.quarantineFailed(error.localizedDescription)
             }
         }
     }
 
     /// Explicitly removes the corrupt primary file and allows subsequent saves.
     public func discardCorruptSourceAndAllowWrites() throws {
-        try withSafeSupportDirectoryFD { directoryFD in
-            do {
-                if ProfileSafetyValidator.entryExists(directoryFD: directoryFD, fileName: profileFileName) {
-                    try unlinkEntry(directoryFD, profileFileName)
+        try withStoreLock {
+            try withSafeSupportDirectoryFD { directoryFD in
+                do {
+                    if ProfileSafetyValidator.entryExists(directoryFD: directoryFD, fileName: profileFileName) {
+                        try unlinkEntry(directoryFD, profileFileName)
+                    }
+                    writesBlockedForCorruptSourceStorage = false
+                } catch {
+                    throw ProfileStoreError.writeFailed(error.localizedDescription)
                 }
-                writesBlockedForCorruptSource = false
-            } catch {
-                throw ProfileStoreError.writeFailed(error.localizedDescription)
             }
         }
     }
 
     /// Lists this device's quarantine artifacts (newest first). Ignores other devices and the primary file.
     public func listQuarantineArtifacts() throws -> [URL] {
-        try withSafeSupportDirectoryFD { directoryFD in
-            try listQuarantineArtifacts(directoryFD: directoryFD)
+        try withStoreLock {
+            try withSafeSupportDirectoryFD { directoryFD in
+                try listQuarantineArtifacts(directoryFD: directoryFD)
+            }
         }
     }
 
@@ -551,8 +593,10 @@ public final class ProfileStore {
     /// Does not create a new quarantine entry. Leaves primary + artifact untouched on failure.
     @discardableResult
     public func attemptRestore(from url: URL) throws -> ProfileBundle {
-        try withSafeSupportDirectoryFD { directoryFD in
-            try attemptRestore(from: url, directoryFD: directoryFD)
+        try withStoreLock {
+            try withSafeSupportDirectoryFD { directoryFD in
+                try attemptRestore(from: url, directoryFD: directoryFD)
+            }
         }
     }
 
@@ -571,7 +615,7 @@ public final class ProfileStore {
         let defaults = defaultBundle()
         do {
             let quarantineURL = try performQuarantineMove(directoryFD: directoryFD)
-            writesBlockedForCorruptSource = false
+            writesBlockedForCorruptSourceStorage = false
             do {
                 try save(defaults, directoryFD: directoryFD)
                 return .recovered(defaults, quarantinedURL: quarantineURL, reason: reason, persistenceWarning: nil)
@@ -584,14 +628,15 @@ public final class ProfileStore {
                 )
             }
         } catch {
-            writesBlockedForCorruptSource = true
+            writesBlockedForCorruptSourceStorage = true
             let combined = "\(reason); quarantine failed: \(error.localizedDescription)"
             return .corruptPreserved(defaults, sourceURL: fileURL, reason: combined)
         }
     }
 
     private func performQuarantineMove(directoryFD: Int32) throws -> URL {
-        let quarantineURL = try uniqueQuarantineURL(directoryFD: directoryFD)
+        // Already under storeLock from public entry points; use locked helper directly.
+        let quarantineURL = try uniqueQuarantineURLLocked(directoryFD: directoryFD)
         do {
             try renameEntry(directoryFD, profileFileName, quarantineURL.lastPathComponent)
         } catch {
@@ -601,7 +646,17 @@ public final class ProfileStore {
     }
 
     /// Picks a quarantine path that does not already exist. Never deletes prior artifacts.
+    /// Public-ish for tests; serializes with the store lock for race-free allocation.
     func uniqueQuarantineURL(
+        directoryFD: Int32? = nil,
+        uuid: @escaping () -> UUID = UUID.init
+    ) throws -> URL {
+        try withStoreLock {
+            try uniqueQuarantineURLLocked(directoryFD: directoryFD, uuid: uuid)
+        }
+    }
+
+    private func uniqueQuarantineURLLocked(
         directoryFD: Int32? = nil,
         uuid: @escaping () -> UUID = UUID.init
     ) throws -> URL {
@@ -729,7 +784,7 @@ public final class ProfileStore {
 
     private func attemptRestore(from url: URL, directoryFD: Int32) throws -> ProfileBundle {
         // Durable fail-closed gate: never replace an unquarantined corrupt primary.
-        if writesBlockedForCorruptSource {
+        if writesBlockedForCorruptSourceStorage {
             throw ProfileStoreError.writeBlockedCorruptSource(fileURL.path)
         }
 
