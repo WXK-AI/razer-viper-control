@@ -1,5 +1,7 @@
 # Reliability and Status UX Improvements Implementation Plan
 
+> **Status (2026-07-22): IMPLEMENTATION COMPLETE.** All 19 tasks are implemented and verified in code (commits `8c13fa3`..`1cebd98`). Only the Phase 5 Task 19 **physical acceptance run** remains (needs the real mouse); the matrix is authored at `docs/testing/reliability-acceptance.md` and awaits operator sign-off.
+
 > **For Claude/Cursor:** Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` to implement this plan task-by-task.
 
 **Goal:** Make DPI/profile apply and reconnect provably reliable, close the highest-risk remapper edge cases, and make the menu bar tell the truth about device, remapper, and persistence state.
@@ -341,18 +343,18 @@ Follow the checklist in phase order (Phase 1 first). TDD every task: write the f
 - [x] Task 2: Bounded response poll replaces fixed 60 ms sleep
 - [x] Task 3: BUSY exhaustion + explicit-apply failure invalidate session
 - [x] Task 4: Deterministic control-interface selection
-- [ ] Task 5: Removal callbacks + sleep/wake reconnect
-- [ ] Task 6: Post-apply readback verification + fail-closed polling decode
-- [ ] Task 7: Gate re-check between apply writes
-- [ ] Task 8: Axis-2 scroll handling
-- [ ] Task 9: Scroll-action momentum throttle
-- [ ] Task 10: Locking race fixes (remapper + capture session)
-- [ ] Task 11: Resume vs circuit-open UI consistency
-- [ ] Task 12: Shortcut posting safety
-- [ ] Task 13: Truthful menu status model
-- [ ] Task 14: Low-battery and charging indicators
-- [ ] Task 15: Profile schema version
-- [ ] Task 16: Quarantine restore UX
-- [ ] Task 17: ProfileStore concurrency guard
-- [ ] Task 18: AppModel refresh-flow tests
-- [ ] Task 19: Manual acceptance matrix (needs physical mouse)
+- [x] Task 5: Removal callbacks + sleep/wake reconnect
+- [x] Task 6: Post-apply readback verification + fail-closed polling decode
+- [x] Task 7: Gate re-check between apply writes
+- [x] Task 8: Axis-2 scroll handling
+- [x] Task 9: Scroll-action momentum throttle
+- [x] Task 10: Locking race fixes (remapper + capture session)
+- [x] Task 11: Resume vs circuit-open UI consistency
+- [x] Task 12: Shortcut posting safety
+- [x] Task 13: Truthful menu status model
+- [x] Task 14: Low-battery and charging indicators
+- [x] Task 15: Profile schema version
+- [x] Task 16: Quarantine restore UX
+- [x] Task 17: ProfileStore concurrency guard
+- [x] Task 18: AppModel refresh-flow tests
+- [x] Task 19: Manual acceptance matrix (doc added; physical run still pending sign-off)

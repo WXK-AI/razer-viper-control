@@ -1,5 +1,8 @@
 # Safety and Release Hardening Implementation Plan
 
+> **Status (2026-07-22, rev 2): Tasks 1–8 core work IMPLEMENTED.** Code safety (Tasks 1–6): commits `f1cf780`/`3a02354`/`8213da2`/`fc0d660`/`d2f72df`/`3d734f9`. CI quarantine (Task 7): `48f97ff` — top-level `contents: read`, `persist-credentials: false`, no tag push, no GitHub Release publisher, 5 new release-quarantine contracts. Credential-safe notarization (Task 8): `68ae22a` — `NOTARY_KEYCHAIN_PROFILE`/`--keychain-profile` only, safe early exit, 3 new credential contracts. Contracts verified green via `scripts/verify-release-contract.sh`.
+> **Still OPEN:** Task 9 entirely (no `.github/dependabot.yml`, no `docs/testing/safety-hardening-acceptance.md`, SAF ledger not updated); Task 7 sub-items — actions not SHA-pinned (`actions/checkout@v4` mutable tag), XcodeGen fetched without SHA-256 verification, no `UNNOTARIZED_TEST_BUILD.txt` marker in archives; Task 8 sub-items — no `spctl --assess` step or spctl/stapler contract, README signing docs still show `APPLE_ID`/`APPLE_APP_PASSWORD`; plus the manual physical-device rows.
+
 > **For Claude:** Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` to implement this plan task-by-task.
 
 **Goal:** Eliminate unintended persistent HID writes, require explicit session-wide remapper consent, validate privileged profile actions, keep event-tap work bounded, and prevent unnotarized builds from being presented as trusted public releases.
@@ -106,13 +109,13 @@ public final class LatestHardwareApplyGate: @unchecked Sendable {
 }
 ```
 
-- [ ] Write tests proving name, mappings, software wheel, auto-reapply, and remapper-toggle changes leave `HardwareProfileSettings` equal.
-- [ ] Write tests proving DPI stages, active stage, polling, and hardware wheel change it.
-- [ ] Write concurrency tests proving only the latest issued token is current.
-- [ ] Run `swift test --disable-sandbox --filter HardwareApplyPolicyTests`; expect RED.
-- [ ] Implement the two types without AppKit.
-- [ ] Run the targeted tests; expect GREEN.
-- [ ] Commit: `test(core): define hardware apply policy`.
+- [x] Write tests proving name, mappings, software wheel, auto-reapply, and remapper-toggle changes leave `HardwareProfileSettings` equal.
+- [x] Write tests proving DPI stages, active stage, polling, and hardware wheel change it.
+- [x] Write concurrency tests proving only the latest issued token is current.
+- [x] Run `swift test --disable-sandbox --filter HardwareApplyPolicyTests`; expect RED.
+- [x] Implement the two types without AppKit.
+- [x] Run the targeted tests; expect GREEN.
+- [x] Commit: `test(core): define hardware apply policy`.
 
 ### Task 2: Stop editing from applying hardware and discard stale queued applies
 
@@ -132,12 +135,12 @@ Implementation requirements:
 6. Track `HardwareProfileSettings` last applied successfully and show `Hardware changes pending` when the selected profile differs.
 7. Button/software-wheel edits still update the live remapper immediately.
 
-- [ ] Add policy tests first and confirm RED.
-- [ ] Implement routing changes.
-- [ ] Run `rg -n "applySelectedProfile" RazerMenuBarApp` and account for every call.
-- [ ] Build the app.
-- [ ] Manually type a name and drag software speed; verify no hardware apply status occurs.
-- [ ] Commit: `fix(app): separate profile edits from hardware apply`.
+- [x] Add policy tests first and confirm RED.
+- [x] Implement routing changes.
+- [x] Run `rg -n "applySelectedProfile" RazerMenuBarApp` and account for every call.
+- [x] Build the app.
+- [ ] Manually type a name and drag software speed; verify no hardware apply status occurs. *(manual — physical)*
+- [x] Commit: `fix(app): separate profile edits from hardware apply`.
 
 ### Task 3: Skip unchanged persistent hardware writes
 
@@ -165,12 +168,12 @@ public struct HardwareApplyPlan: Equatable, Sendable {
 
 Refactor `DeviceSession.apply` to read current state once, read requested/supported wheel state, build the plan, and execute deterministic writes. If all fields match, make zero setter calls. Do not add rollback: this applies intended durable state, unlike temporary CLI diagnostics.
 
-- [ ] Write one failing test per flag and capability case.
-- [ ] Add a fake mutator test proving an equal profile performs zero writes.
-- [ ] Run `swift test --disable-sandbox --filter HardwareProfileApplierTests`; expect RED.
-- [ ] Implement planner and integration.
-- [ ] Run targeted tests and `HardwareStateTransactionTests`.
-- [ ] Commit: `fix(hid): skip unchanged persistent settings`.
+- [x] Write one failing test per flag and capability case.
+- [x] Add a fake mutator test proving an equal profile performs zero writes.
+- [x] Run `swift test --disable-sandbox --filter HardwareProfileApplierTests`; expect RED.
+- [x] Implement planner and integration.
+- [x] Run targeted tests and `HardwareStateTransactionTests`.
+- [x] Commit: `fix(hid): skip unchanged persistent settings`.
 
 ### Task 4: Make remapping default-off and session-armed
 
@@ -197,11 +200,11 @@ Required behavior:
 - Relaunch resets arming while preserving mappings.
 - Pause/resume cannot bypass arming.
 
-- [ ] Update schema/migration/status tests first; confirm RED.
-- [ ] Implement model and resolver changes.
-- [ ] Add SwiftUI confirmation and `Arm Remapper` action.
-- [ ] Verify first run, legacy missing field, relaunch, and permission restoration stay inactive.
-- [ ] Commit: `fix(remapper): require explicit session arming`.
+- [x] Update schema/migration/status tests first; confirm RED.
+- [x] Implement model and resolver changes.
+- [x] Add SwiftUI confirmation and `Arm Remapper` action.
+- [x] Verify first run, legacy missing field, relaunch, and permission restoration stay inactive.
+- [x] Commit: `fix(remapper): require explicit session arming`.
 
 ### Task 5: Bound and semantically validate profile storage
 
@@ -239,11 +242,11 @@ Validation rules:
 - Never follow a symlink during quarantine. If safe quarantine fails, preserve it, block writes, and use in-memory defaults with remapping off.
 - Load and save must call the same semantic validator.
 
-- [ ] Add tests for every limit, duplicate IDs, invalid selection, shortcuts, URLs, app paths, symlinks, ownership, size, and POSIX modes.
-- [ ] Confirm RED.
-- [ ] Implement validator and store integration.
-- [ ] Run all profile schema/migration/recovery tests.
-- [ ] Commit: `fix(profiles): validate privileged configuration`.
+- [x] Add tests for every limit, duplicate IDs, invalid selection, shortcuts, URLs, app paths, symlinks, ownership, size, and POSIX modes.
+- [x] Confirm RED.
+- [x] Implement validator and store integration.
+- [x] Run all profile schema/migration/recovery tests.
+- [x] Commit: `fix(profiles): validate privileged configuration`.
 
 ### Task 6: Defer workspace actions and circuit-break repeated tap disables
 
@@ -266,7 +269,7 @@ For Open App/Open URL, validate and copy the URL in the callback, then `Dispatch
 - [x] Implement under the existing remapper lock.
 - [x] Add status: `Remapper paused after repeated event-tap timeouts.`
 - [x] Run engine/state/recovery tests.
-- [ ] Commit: `fix(remapper): bound event tap recovery`.
+- [x] Commit: `fix(remapper): bound event tap recovery`.
 
 ### Task 7: Replace public ad-hoc releases with read-only test artifacts
 
@@ -294,12 +297,12 @@ Extend release contracts to reject mutable action tags, write permission in buil
 
 Resolve exact official action SHAs and XcodeGen digest during implementation; commit reviewed exact values, never placeholders.
 
-- [ ] Add failing temporary-fixture shell contract cases.
-- [ ] Confirm `bash scripts/verify-release-contract.sh` is RED.
-- [ ] Harden workflows and tool installation.
-- [ ] Run contract checks and ShellCheck.
-- [ ] Audit with `rg -n "permissions:|contents:|persist-credentials|uses:" .github/workflows`.
-- [ ] Commit: `ci: quarantine unnotarized test artifacts`.
+- [x] Add failing temporary-fixture shell contract cases. *(5 quarantine contracts in `verify-release-contract.sh`)*
+- [x] Confirm `bash scripts/verify-release-contract.sh` is RED.
+- [x] Harden workflows and tool installation. *(partial: permissions/credentials/publisher done; SHA-pinning of actions, XcodeGen SHA-256 verification, and `UNNOTARIZED_TEST_BUILD.txt` marker still open)*
+- [x] Run contract checks and ShellCheck.
+- [x] Audit with `rg -n "permissions:|contents:|persist-credentials|uses:" .github/workflows`. *(note: `ci.yml` still has no top-level `permissions:` and its checkouts persist credentials)*
+- [x] Commit: `ci: quarantine unnotarized test artifacts`. *(`48f97ff`)*
 
 ### Task 8: Make future notarization credential-safe
 
@@ -323,11 +326,11 @@ xcrun stapler validate "$DMG"
 - Add contracts rejecting `notarytool ... --password` and requiring `spctl`/stapler verification.
 - Without credentials, exit before mutating release artifacts and print setup guidance.
 
-- [ ] Write failing contract assertions.
-- [ ] Implement Keychain-profile/API-key handling.
-- [ ] Run Bash syntax and ShellCheck.
-- [ ] Verify safe early exit without credentials.
-- [ ] Commit: `build: secure future notarization credentials`.
+- [x] Write failing contract assertions. *(3 credential contracts in `verify-release-contract.sh`; spctl/stapler-verification contract still open)*
+- [x] Implement Keychain-profile/API-key handling. *(`NOTARY_KEYCHAIN_PROFILE` + `--keychain-profile`; `spctl --assess` post-staple step and README credential docs still open)*
+- [x] Run Bash syntax and ShellCheck.
+- [x] Verify safe early exit without credentials.
+- [x] Commit: `build: secure future notarization credentials`. *(`68ae22a`)*
 
 ### Task 9: Document and verify the complete hardening
 

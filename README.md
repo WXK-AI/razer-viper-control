@@ -203,7 +203,7 @@ make release-dmg    # unsigned release + DMG in build/Release/
 | Software button and scroll remapping | Session-wide `CGEvent` tap — cannot identify which pointing device produced an event |
 | DriverKit exclusive ownership | Deferred future enhancement ([issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2)); scaffold only, disabled in normal builds |
 
-Active plan: [`docs/plans/2026-07-11-cgevent-remapper-continuation.md`](docs/plans/2026-07-11-cgevent-remapper-continuation.md).
+Active plan: [`docs/plans/2026-07-18-reliability-and-status-ux-improvements.md`](docs/plans/2026-07-18-reliability-and-status-ux-improvements.md).
 
 Manual acceptance for the CGEvent remapper (button/drag/scroll/pause/permissions/session-wide scope/diagnostics): [`docs/testing/cgevent-remapper-acceptance.md`](docs/testing/cgevent-remapper-acceptance.md). Reliability / reconnect / status UX physical matrix (Task 19): [`docs/testing/reliability-acceptance.md`](docs/testing/reliability-acceptance.md). DriverKit physical matrix remains in [`docs/testing/driverkit-spike.md`](docs/testing/driverkit-spike.md).
 
