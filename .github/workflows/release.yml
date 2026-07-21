@@ -7,13 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "New release tag matching MARKETING_VERSION (e.g. v1.0.2). Published tags are immutable unless they already point at this workflow commit."
+        description: "Existing tag matching MARKETING_VERSION (e.g. v1.0.2). This workflow validates an unnotarized test package and never creates or publishes a release."
         required: true
         # No default: forces an intentional tag that matches project.yml MARKETING_VERSION.
 
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   XCODEGEN_VERSION: "2.45.4"
@@ -28,6 +28,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Resolve release tag name
         id: tag
@@ -56,7 +57,6 @@ jobs:
       - name: Resolve release commit
         id: commit
         env:
-          RELEASE_EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ steps.tag.outputs.name }}
         run: |
           set -euo pipefail
@@ -70,7 +70,7 @@ jobs:
           INTENDED_SHA="$(git rev-parse HEAD)"
           TAG_REF="refs/tags/${TAG}"
 
-          if TAG_OBJECT="$(git rev-parse -q --verify "$TAG_REF")"; then
+          if git rev-parse -q --verify "$TAG_REF" >/dev/null; then
             TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
             echo "Tag ${TAG} already exists at ${TAG_SHA}"
             if [ "$TAG_SHA" != "$INTENDED_SHA" ]; then
@@ -80,21 +80,14 @@ jobs:
               echo "Cut a new version/tag from the commit you want to release." >&2
               exit 1
             fi
-            echo "Tag ${TAG} already matches this commit; will republish assets without moving the tag"
-            CREATE_TAG=false
+            echo "Tag ${TAG} matches this commit; continuing with a quarantined test package"
           else
-            if [ "$RELEASE_EVENT_NAME" != "workflow_dispatch" ]; then
-              echo "error: tag push event for missing tag ${TAG}" >&2
-              exit 1
-            fi
-            echo "New tag ${TAG} will be pushed at ${INTENDED_SHA} only after validation succeeds"
-            TAG_OBJECT=""
-            CREATE_TAG=true
+            echo "error: tag ${TAG} does not exist at this workflow commit" >&2
+            echo "This read-only test-package workflow never creates tags." >&2
+            exit 1
           fi
 
           printf 'sha=%s\n' "$INTENDED_SHA" >> "$GITHUB_OUTPUT"
-          printf 'create_tag=%s\n' "$CREATE_TAG" >> "$GITHUB_OUTPUT"
-          printf 'tag_object=%s\n' "$TAG_OBJECT" >> "$GITHUB_OUTPUT"
           echo "Building from $(git rev-parse HEAD) for tag ${TAG}"
 
       - name: Install pinned XcodeGen
@@ -131,179 +124,7 @@ jobs:
           shasum -a 256 RazerMenuBarApp-macOS.dmg *.zip > SHA256SUMS.txt
           ls -la
 
-      - name: Verify or push release tag
-        env:
-          CREATE_TAG: ${{ steps.commit.outputs.create_tag }}
-          ORIGINAL_TAG_OBJECT: ${{ steps.commit.outputs.tag_object }}
-          RELEASE_TAG: ${{ steps.tag.outputs.name }}
-          RELEASE_SHA: ${{ steps.commit.outputs.sha }}
+      - name: Confirm unnotarized outputs remain quarantined
         run: |
-          set -euo pipefail
-          TAG="$RELEASE_TAG"
-          SHA="$RELEASE_SHA"
-          bash scripts/validate-release-tag.sh "$TAG"
-
-          case "$CREATE_TAG" in
-            true|false) ;;
-            *)
-              printf 'error: invalid create_tag state: %q\n' "$CREATE_TAG" >&2
-              exit 1
-              ;;
-          esac
-
-          CURRENT_SHA="$(git rev-parse HEAD)"
-          if [ "$SHA" != "$CURRENT_SHA" ]; then
-            echo "error: intended release SHA ${SHA} no longer matches checkout ${CURRENT_SHA}" >&2
-            exit 1
-          fi
-
-          TAG_REF="refs/tags/${TAG}"
-
-          exact_remote_tag_object() {
-            local remote_records
-            local parsed_object
-            local parser_status
-
-            if ! remote_records="$(git ls-remote --refs origin "$TAG_REF")"; then
-              echo "error: unable to query remote tag ${TAG_REF}" >&2
-              return 3
-            fi
-
-            if parsed_object="$(printf '%s\n' "$remote_records" | bash scripts/parse-exact-ls-remote-ref.sh "$TAG_REF")"; then
-              printf '%s' "$parsed_object"
-              return 0
-            else
-              parser_status=$?
-              if [ "$parser_status" -eq 1 ]; then
-                return 1
-              fi
-              echo "error: unable to parse exact remote tag ${TAG_REF}" >&2
-              return "$parser_status"
-            fi
-          }
-
-          git fetch --tags --force origin
-          LOCAL_TAG_OBJECT="$(git rev-parse -q --verify "$TAG_REF" || true)"
-          REMOTE_TAG_OBJECT=""
-          REMOTE_TAG_PRESENT=false
-          if REMOTE_TAG_OBJECT="$(exact_remote_tag_object)"; then
-            REMOTE_TAG_PRESENT=true
-          else
-            REMOTE_TAG_STATUS=$?
-            if [ "$REMOTE_TAG_STATUS" -ne 1 ]; then
-              exit 1
-            fi
-          fi
-
-          if [ "$CREATE_TAG" = "false" ]; then
-            if [ -z "$ORIGINAL_TAG_OBJECT" ]; then
-              echo "error: existing-tag release is missing its original tag object" >&2
-              exit 1
-            fi
-            if [ -z "$LOCAL_TAG_OBJECT" ] || [ "$REMOTE_TAG_PRESENT" != "true" ]; then
-              echo "error: existing tag ${TAG} is missing locally or remotely" >&2
-              echo "  local object: ${LOCAL_TAG_OBJECT:-<missing>}" >&2
-              echo "  remote object: ${REMOTE_TAG_OBJECT:-<missing>}" >&2
-              exit 1
-            fi
-            if [ "$LOCAL_TAG_OBJECT" != "$ORIGINAL_TAG_OBJECT" ] || [ "$REMOTE_TAG_OBJECT" != "$ORIGINAL_TAG_OBJECT" ]; then
-              echo "error: existing tag object identity changed for ${TAG}" >&2
-              echo "  original object: ${ORIGINAL_TAG_OBJECT}" >&2
-              echo "  local object: ${LOCAL_TAG_OBJECT}" >&2
-              echo "  remote object: ${REMOTE_TAG_OBJECT}" >&2
-              exit 1
-            fi
-
-            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
-            if [ "$TAG_SHA" != "$SHA" ]; then
-              echo "error: published tag ${TAG} is immutable" >&2
-              echo "  tag commit: ${TAG_SHA}" >&2
-              echo "  intended commit: ${SHA}" >&2
-              exit 1
-            fi
-
-            echo "Verified existing tag object ${ORIGINAL_TAG_OBJECT} and commit ${TAG} -> ${SHA}"
-          else
-            if [ -n "$ORIGINAL_TAG_OBJECT" ]; then
-              echo "error: new-tag release unexpectedly has an original tag object" >&2
-              exit 1
-            fi
-            if [ "$REMOTE_TAG_PRESENT" = "true" ]; then
-              echo "error: tag ${TAG} appeared remotely after the initial absence decision" >&2
-              echo "  untrusted remote object: ${REMOTE_TAG_OBJECT}" >&2
-              exit 1
-            fi
-            if [ -n "$LOCAL_TAG_OBJECT" ]; then
-              echo "error: tag ${TAG} appeared locally after the initial absence decision" >&2
-              echo "  untrusted local object: ${LOCAL_TAG_OBJECT}" >&2
-              exit 1
-            fi
-
-            git tag "$TAG" "$SHA"
-            # Non-force: refuse to overwrite an unexpected remote tag.
-            git push origin "$TAG_REF"
-
-            git fetch --tags --force origin
-            LOCAL_TAG_OBJECT="$(git rev-parse -q --verify "$TAG_REF" || true)"
-            if REMOTE_TAG_OBJECT="$(exact_remote_tag_object)"; then
-              :
-            else
-              REMOTE_TAG_STATUS=$?
-              echo "error: exact remote tag ${TAG} missing or ambiguous after push (status ${REMOTE_TAG_STATUS})" >&2
-              exit 1
-            fi
-            if [ "$LOCAL_TAG_OBJECT" != "$SHA" ] || [ "$REMOTE_TAG_OBJECT" != "$SHA" ]; then
-              echo "error: pushed lightweight tag object identity mismatch for ${TAG}" >&2
-              echo "  expected object: ${SHA}" >&2
-              echo "  local object: ${LOCAL_TAG_OBJECT:-<missing>}" >&2
-              echo "  remote object: ${REMOTE_TAG_OBJECT:-<missing>}" >&2
-              exit 1
-            fi
-
-            TAG_SHA="$(git rev-list -n 1 "$TAG_REF")"
-            if [ "$TAG_SHA" != "$SHA" ]; then
-              echo "error: pushed tag ${TAG} resolves to ${TAG_SHA}, expected ${SHA}" >&2
-              exit 1
-            fi
-
-            echo "Pushed and verified lightweight tag object and commit ${TAG} -> ${SHA}"
-          fi
-
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          target_commitish: ${{ steps.commit.outputs.sha }}
-          name: Razer Viper Control ${{ steps.tag.outputs.name }}
-          generate_release_notes: true
-          files: |
-            build/Release/RazerMenuBarApp-macOS.dmg
-            build/Release/RazerMenuBarApp-macOS.zip
-            build/Release/RazerProbeCLI-macOS.zip
-            build/Release/SHA256SUMS.txt
-          body: |
-            ## Install RazerMenuBarApp
-
-            **Recommended:** download `RazerMenuBarApp-macOS.dmg`, open it, and drag **RazerMenuBarApp** to **Applications**.
-
-            Alternate: download `RazerMenuBarApp-macOS.zip`, unzip, and move the app to **Applications**.
-
-            ### Signing note
-
-            Official releases should be **Developer ID signed and notarized**. Current CI produces an **ad-hoc signed** arm64 build suitable for testing; use `scripts/sign-release.sh` locally for the notarized distribution path.
-
-            1. First launch of an ad-hoc build: right-click the app → **Open** (bypasses Gatekeeper).
-            2. Grant **Input Monitoring** and **Accessibility** in System Settings when prompted (or via Settings → Diagnostics).
-
-            ## Optional: RazerProbeCLI
-
-            Unzip `RazerProbeCLI-macOS.zip`, then in Terminal:
-
-            ```bash
-            chmod +x RazerProbeCLI
-            ./RazerProbeCLI list
-            ```
-
-            Requires **Input Monitoring** for `input-capture`.
-
-            **Platform:** macOS 13+, Apple Silicon (arm64).
+          echo "UNNOTARIZED TEST BUILD: artifacts remain runner-local and are not published."
+          echo "A future publisher must require Developer ID signing, notarization, and protected credentials."

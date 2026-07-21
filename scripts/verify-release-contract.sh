@@ -76,14 +76,48 @@ else
   fail "release workflow run scripts directly interpolate GitHub expressions"
 fi
 
-# 6) package-dmg path safety self-test
+# 6) Unnotarized CI output must remain quarantined from public release paths
+if grep -A1 '^permissions:$' "$RELEASE_WORKFLOW" \
+  | grep -Eq '^  contents:[[:space:]]*read[[:space:]]*$'; then
+  pass "release workflow top-level contents permission is read-only"
+else
+  fail "release workflow top-level contents permission must be read-only"
+fi
+
+if grep -Eq '^[[:space:]]*contents:[[:space:]]*write[[:space:]]*$' "$RELEASE_WORKFLOW"; then
+  fail "unnotarized workflow must not grant contents: write"
+else
+  pass "unnotarized workflow grants no contents: write permission"
+fi
+
+checkout_count="$(grep -Ec 'uses:[[:space:]]*actions/checkout@' "$RELEASE_WORKFLOW" || true)"
+non_persisting_checkout_count="$(grep -Ec 'persist-credentials:[[:space:]]*false' "$RELEASE_WORKFLOW" || true)"
+if [ "$checkout_count" -gt 0 ] && [ "$non_persisting_checkout_count" -eq "$checkout_count" ]; then
+  pass "release workflow disables credential persistence for every checkout"
+else
+  fail "release workflow must set persist-credentials: false for every checkout"
+fi
+
+if grep -Eq 'git[[:space:]]+push' "$RELEASE_WORKFLOW"; then
+  fail "unnotarized workflow must not push tags or refs"
+else
+  pass "unnotarized workflow cannot push tags or refs"
+fi
+
+if grep -Eq 'softprops/action-gh-release|actions/upload-release-asset|gh[[:space:]]+release' "$RELEASE_WORKFLOW"; then
+  fail "unnotarized workflow must not publish a GitHub Release"
+else
+  pass "unnotarized workflow has no GitHub Release publisher"
+fi
+
+# 7) package-dmg path safety self-test
 if bash "$ROOT/scripts/package-dmg.sh" --self-test; then
   pass "package-dmg rejects directory / non-.dmg paths and removes stale files with rm -f"
 else
   fail "package-dmg --self-test"
 fi
 
-# 7) Exact tag validation and marketing version equality when a release tag is provided
+# 8) Exact tag validation and marketing version equality when a release tag is provided
 TAG_RAW="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 if [ -n "$TAG_RAW" ]; then
   if bash "$ROOT/scripts/validate-release-tag.sh" "$TAG_RAW"; then
@@ -100,7 +134,7 @@ else
   echo "SKIP: no RELEASE_TAG/GITHUB_REF_NAME; tag equality not checked"
 fi
 
-# 8) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
+# 9) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
 #    (avoids false passes on stale/partial build/Release trees during pre-build).
 if [ "$VERIFY_ARTIFACTS" = "1" ]; then
   APP="$OUT/RazerMenuBarApp.app"
@@ -173,7 +207,7 @@ else
   echo "SKIP: artifact checks (set VERIFY_RELEASE_ARTIFACTS=1 after ci-release-build)"
 fi
 
-# 9) shellcheck when available (required in CI via workflow install)
+# 10) shellcheck when available (required in CI via workflow install)
 if command -v shellcheck >/dev/null 2>&1; then
   if shellcheck -x "$ROOT"/scripts/*.sh; then
     pass "shellcheck scripts/*.sh"
