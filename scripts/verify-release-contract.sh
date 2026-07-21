@@ -110,14 +110,39 @@ else
   pass "unnotarized workflow has no GitHub Release publisher"
 fi
 
-# 7) package-dmg path safety self-test
+# 7) Future notarization must use a Keychain profile and fail safe before mutation
+SIGN_RELEASE_SCRIPT="$ROOT/scripts/sign-release.sh"
+if grep -Eq -- '--password|--apple-id|--team-id|APPLE_APP_PASSWORD' "$SIGN_RELEASE_SCRIPT"; then
+  fail "sign-release must not pass Apple notarization credentials on the command line"
+else
+  pass "sign-release contains no command-line Apple credential flags"
+fi
+
+# The dollar expression is intentionally literal: this contract inspects script source text.
+# shellcheck disable=SC2016
+if grep -Eq -- '--keychain-profile[[:space:]]+"\$NOTARY_KEYCHAIN_PROFILE"' "$SIGN_RELEASE_SCRIPT"; then
+  pass "sign-release submits notarization with a Keychain profile"
+else
+  fail "sign-release must submit with --keychain-profile"
+fi
+
+if missing_notary_output="$(
+  env -u NOTARY_KEYCHAIN_PROFILE -u DEVELOPER_ID \
+    bash "$SIGN_RELEASE_SCRIPT" 2>&1
+)" && printf '%s\n' "$missing_notary_output" | grep -q 'NOTARY_KEYCHAIN_PROFILE'; then
+  pass "sign-release exits safely with setup guidance when notarization credentials are absent"
+else
+  fail "sign-release must exit before build/sign work when NOTARY_KEYCHAIN_PROFILE is absent"
+fi
+
+# 8) package-dmg path safety self-test
 if bash "$ROOT/scripts/package-dmg.sh" --self-test; then
   pass "package-dmg rejects directory / non-.dmg paths and removes stale files with rm -f"
 else
   fail "package-dmg --self-test"
 fi
 
-# 8) Exact tag validation and marketing version equality when a release tag is provided
+# 9) Exact tag validation and marketing version equality when a release tag is provided
 TAG_RAW="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 if [ -n "$TAG_RAW" ]; then
   if bash "$ROOT/scripts/validate-release-tag.sh" "$TAG_RAW"; then
@@ -134,7 +159,7 @@ else
   echo "SKIP: no RELEASE_TAG/GITHUB_REF_NAME; tag equality not checked"
 fi
 
-# 9) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
+# 10) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
 #    (avoids false passes on stale/partial build/Release trees during pre-build).
 if [ "$VERIFY_ARTIFACTS" = "1" ]; then
   APP="$OUT/RazerMenuBarApp.app"
@@ -207,9 +232,22 @@ else
   echo "SKIP: artifact checks (set VERIFY_RELEASE_ARTIFACTS=1 after ci-release-build)"
 fi
 
-# 10) shellcheck when available (required in CI via workflow install)
+# 11) shellcheck when available (required in CI via workflow install)
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -x "$ROOT"/scripts/*.sh; then
+  shellcheck_scripts=()
+  for script in "$ROOT"/scripts/*.sh; do
+    case "$(basename "$script")" in
+      test-release-tag-validator.sh|test-workflow-run-interpolation-checker.sh) ;;
+      *) shellcheck_scripts+=("$script") ;;
+    esac
+  done
+
+  # These adversarial fixture suites intentionally single-quote literal command
+  # substitutions and GitHub expressions; keep SC2016 enabled everywhere else.
+  if shellcheck -x "${shellcheck_scripts[@]}" \
+    && shellcheck -x -e SC2016 \
+      "$ROOT/scripts/test-release-tag-validator.sh" \
+      "$ROOT/scripts/test-workflow-run-interpolation-checker.sh"; then
     pass "shellcheck scripts/*.sh"
   else
     fail "shellcheck scripts/*.sh"

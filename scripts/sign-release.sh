@@ -3,10 +3,11 @@
 #
 # Usage:
 #   export DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)"
-#   export APPLE_ID="you@example.com"
-#   export APPLE_TEAM_ID="XXXXXXXXXX"
-#   export APPLE_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"  # app-specific password
+#   export NOTARY_KEYCHAIN_PROFILE="razer-viper-control-notary"
 #   bash scripts/sign-release.sh
+#
+# Create the Keychain profile once with `xcrun notarytool store-credentials`.
+# The signing script never accepts a notarization password on its command line.
 #
 # By default this rebuilds release artifacts. Pass --reuse-existing-build only when
 # you intentionally want to sign the current build/Release tree (revision must match).
@@ -14,7 +15,7 @@
 # Prerequisites:
 #   - Full Xcode installed
 #   - Developer ID Application certificate in Keychain
-#   - App-specific password for notarytool (https://appleid.apple.com)
+#   - notarytool credentials stored in Keychain under NOTARY_KEYCHAIN_PROFILE
 
 set -euo pipefail
 
@@ -38,6 +39,13 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [ -z "${NOTARY_KEYCHAIN_PROFILE:-}" ]; then
+  echo "Skipping release signing: NOTARY_KEYCHAIN_PROFILE is not set."
+  echo "Create one with 'xcrun notarytool store-credentials', then export its profile name."
+  echo "No release artifacts were built, signed, or notarized."
+  exit 0
+fi
 
 : "${DEVELOPER_ID:?Set DEVELOPER_ID to your Developer ID Application identity}"
 
@@ -119,19 +127,12 @@ bash "$ROOT/scripts/package-dmg.sh"
 echo "Signing DMG…"
 codesign --force --timestamp --sign "$DEVELOPER_ID" "$DMG"
 
-if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
-  echo "Submitting to Apple notarization…"
-  xcrun notarytool submit "$DMG" \
-    --apple-id "$APPLE_ID" \
-    --password "$APPLE_APP_PASSWORD" \
-    --team-id "$APPLE_TEAM_ID" \
-    --wait
+echo "Submitting to Apple notarization…"
+xcrun notarytool submit "$DMG" \
+  --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" \
+  --wait
 
-  echo "Stapling notarization ticket…"
-  xcrun stapler staple "$DMG"
-  xcrun stapler validate "$DMG"
-  echo "Done. Upload $DMG to GitHub Releases — users can open without Gatekeeper warnings."
-else
-  echo "Skipping notarization (set APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID to notarize)."
-  echo "Signed DMG at $DMG (Gatekeeper may still warn without notarization)."
-fi
+echo "Stapling notarization ticket…"
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
+echo "Done. $DMG is signed, notarized, and stapled."
