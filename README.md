@@ -64,7 +64,9 @@ GitHub CI currently publishes **ad-hoc signed** arm64 builds (not notarized). ma
 
 After the first successful launch, double-click works normally.
 
-The official release path for Gatekeeper-clean distribution is **Developer ID signed and notarized** (`scripts/sign-release.sh`). Optional DriverKit exclusive-ownership work is deferred ([GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2)) and is not required for the current remapper.
+The same applies when sharing a self-built unsigned/ad-hoc DMG (`make release-dmg`): recipients must right-click → **Open** once (or run `xattr -dr com.apple.quarantine` on the app). This is expected for ad-hoc distribution, not a defect.
+
+The official release path for Gatekeeper-clean distribution is **Developer ID signed and notarized** (`scripts/sign-release.sh`). Notarized public releases are currently **deferred** (no Apple Developer Program membership yet); CI only produces quarantined, runner-local test artifacts. Optional DriverKit exclusive-ownership work is deferred ([GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2)) and is not required for the current remapper.
 
 ### Install (zip)
 

@@ -1,7 +1,7 @@
 # Safety and Release Hardening Implementation Plan
 
-> **Status (2026-07-22, rev 2): Tasks 1–8 core work IMPLEMENTED.** Code safety (Tasks 1–6): commits `f1cf780`/`3a02354`/`8213da2`/`fc0d660`/`d2f72df`/`3d734f9`. CI quarantine (Task 7): `48f97ff` — top-level `contents: read`, `persist-credentials: false`, no tag push, no GitHub Release publisher, 5 new release-quarantine contracts. Credential-safe notarization (Task 8): `68ae22a` — `NOTARY_KEYCHAIN_PROFILE`/`--keychain-profile` only, safe early exit, 3 new credential contracts. Contracts verified green via `scripts/verify-release-contract.sh`.
-> **Still OPEN:** Task 9 entirely (no `.github/dependabot.yml`, no `docs/testing/safety-hardening-acceptance.md`, SAF ledger not updated); Task 7 sub-items — actions not SHA-pinned (`actions/checkout@v4` mutable tag), XcodeGen fetched without SHA-256 verification, no `UNNOTARIZED_TEST_BUILD.txt` marker in archives; Task 8 sub-items — no `spctl --assess` step or spctl/stapler contract, README signing docs still show `APPLE_ID`/`APPLE_APP_PASSWORD`; plus the manual physical-device rows.
+> **Status (2026-07-22, rev 3): Tasks 1–9 documentation/automation work COMPLETE.** Code safety (Tasks 1–6): commits `f1cf780`/`3a02354`/`8213da2`/`fc0d660`/`d2f72df`/`3d734f9`. CI quarantine (Task 7): `48f97ff`. Credential-safe notarization (Task 8): `68ae22a`. Acceptance record + dependabot + SAF ledger (Task 9): `b913ded` — README now documents `NOTARY_KEYCHAIN_PROFILE` setup. Contracts verified green via `scripts/verify-release-contract.sh`.
+> **Still OPEN:** Task 7 sub-items — actions not SHA-pinned (`actions/checkout@v4` mutable tag), XcodeGen fetched without SHA-256 verification, no `UNNOTARIZED_TEST_BUILD.txt` marker in archives, `ci.yml` lacks top-level permissions + `persist-credentials: false`; Task 8 sub-item — no `spctl --assess` step or spctl/stapler contract (inert until Developer ID membership); physical-device rows (manual matrix below + 07-11/07-18 acceptance runs). SAF-001 stays **Mitigated pending Developer ID** — notarization/public release intentionally deferred (no Apple Developer Program membership yet).
 
 > **For Claude:** Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` to implement this plan task-by-task.
 
@@ -345,10 +345,10 @@ Document default-off/session arming, permission-versus-consent, hardware mutatio
 
 Mark each SAF item `Resolved`, `Mitigated pending Developer ID`, or `Deferred`, with verification evidence. SAF-001 stays `Mitigated pending Developer ID` until a notarized public artifact passes `spctl` on a clean Mac.
 
-- [ ] Run the full automated commands below.
-- [ ] Run the manual matrix with a backup input device.
-- [ ] Verify no public release/tag is created.
-- [ ] Commit: `docs: record safety hardening acceptance`.
+- [x] Run the full automated commands below. *(`verify-release-contract.sh` + `test-*.sh` green at `b913ded`)*
+- [ ] Run the manual matrix with a backup input device. *(manual — physical)*
+- [x] Verify no public release/tag is created. *(`release.yml` has no publisher — contract-enforced)*
+- [x] Commit: `docs: record safety hardening acceptance`. *(`b913ded`)*
 
 ## Files expected to change
 
