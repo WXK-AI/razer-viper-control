@@ -1,7 +1,7 @@
 # Safety and Release Hardening Implementation Plan
 
-> **Status (2026-07-22, rev 3): Tasks 1–9 documentation/automation work COMPLETE.** Code safety (Tasks 1–6): commits `f1cf780`/`3a02354`/`8213da2`/`fc0d660`/`d2f72df`/`3d734f9`. CI quarantine (Task 7): `48f97ff`. Credential-safe notarization (Task 8): `68ae22a`. Acceptance record + dependabot + SAF ledger (Task 9): `b913ded` — README now documents `NOTARY_KEYCHAIN_PROFILE` setup. Contracts verified green via `scripts/verify-release-contract.sh`.
-> **Still OPEN:** Task 7 sub-items — actions not SHA-pinned (`actions/checkout@v4` mutable tag), XcodeGen fetched without SHA-256 verification, no `UNNOTARIZED_TEST_BUILD.txt` marker in archives, `ci.yml` lacks top-level permissions + `persist-credentials: false`; Task 8 sub-item — no `spctl --assess` step or spctl/stapler contract (inert until Developer ID membership); physical-device rows (manual matrix below + 07-11/07-18 acceptance runs). SAF-001 stays **Mitigated pending Developer ID** — notarization/public release intentionally deferred (no Apple Developer Program membership yet).
+> **Status (2026-07-22, rev 4): Tasks 1–9 documentation/automation work COMPLETE.** Code safety (Tasks 1–6): commits `f1cf780`/`3a02354`/`8213da2`/`fc0d660`/`d2f72df`/`3d734f9`. CI quarantine (Task 7): `48f97ff`. Credential-safe notarization (Task 8): `68ae22a`. Acceptance record + dependabot + SAF ledger (Task 9): `b913ded` — README now documents `NOTARY_KEYCHAIN_PROFILE` setup. Task 7/8 hardening sub-items (SHA-pinned actions, verified XcodeGen, test-build marker, `ci.yml` permissions/credentials, `spctl` assessment) complete at `fc76838`. Contracts verified green via `scripts/verify-release-contract.sh`.
+> **Still OPEN:** physical-device rows (manual matrix below + 07-11/07-18 acceptance runs). SAF-001 stays **Mitigated pending Developer ID** — notarization/public release intentionally deferred (no Apple Developer Program membership yet).
 
 > **For Claude:** Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` to implement this plan task-by-task.
 
@@ -299,9 +299,9 @@ Resolve exact official action SHAs and XcodeGen digest during implementation; co
 
 - [x] Add failing temporary-fixture shell contract cases. *(5 quarantine contracts in `verify-release-contract.sh`)*
 - [x] Confirm `bash scripts/verify-release-contract.sh` is RED.
-- [x] Harden workflows and tool installation. *(partial: permissions/credentials/publisher done; SHA-pinning of actions, XcodeGen SHA-256 verification, and `UNNOTARIZED_TEST_BUILD.txt` marker still open)*
+- [x] Harden workflows and tool installation. *(done at `fc76838`: SHA-pinned actions, XcodeGen SHA-256 verification, `UNNOTARIZED_TEST_BUILD.txt` marker; permissions/credentials/publisher already done)*
 - [x] Run contract checks and ShellCheck.
-- [x] Audit with `rg -n "permissions:|contents:|persist-credentials|uses:" .github/workflows`. *(note: `ci.yml` still has no top-level `permissions:` and its checkouts persist credentials)*
+- [x] Audit with `rg -n "permissions:|contents:|persist-credentials|uses:" .github/workflows`. *(note: `ci.yml` now hardened — top-level `permissions: contents: read` + `persist-credentials: false` on checkouts at `fc76838`)*
 - [x] Commit: `ci: quarantine unnotarized test artifacts`. *(`48f97ff`)*
 
 ### Task 8: Make future notarization credential-safe
@@ -326,8 +326,8 @@ xcrun stapler validate "$DMG"
 - Add contracts rejecting `notarytool ... --password` and requiring `spctl`/stapler verification.
 - Without credentials, exit before mutating release artifacts and print setup guidance.
 
-- [x] Write failing contract assertions. *(3 credential contracts in `verify-release-contract.sh`; spctl/stapler-verification contract still open)*
-- [x] Implement Keychain-profile/API-key handling. *(`NOTARY_KEYCHAIN_PROFILE` + `--keychain-profile`; `spctl --assess` post-staple step and README credential docs still open)*
+- [x] Write failing contract assertions. *(4 credential/spctl contracts in `verify-release-contract.sh`; spctl/stapler-verification contract added at `fc76838`)*
+- [x] Implement Keychain-profile/API-key handling. *(`NOTARY_KEYCHAIN_PROFILE` + `--keychain-profile`; `spctl --assess` post-staple step at `fc76838`; README credential docs done)*
 - [x] Run Bash syntax and ShellCheck.
 - [x] Verify safe early exit without credentials.
 - [x] Commit: `build: secure future notarization credentials`. *(`68ae22a`)*
