@@ -79,11 +79,12 @@ You **can** sign the app and DMG locally with an [Apple Developer Program](https
 
 ```bash
 # One-time: install your Developer ID Application certificate in Keychain Access.
+# One-time: store notarization credentials in Keychain:
+#   xcrun notarytool store-credentials "razer-viper-control-notary" \
+#     --apple-id "you@example.com" --team-id "XXXXXXXXXX"
 
 export DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)"
-export APPLE_ID="you@example.com"
-export APPLE_TEAM_ID="XXXXXXXXXX"
-export APPLE_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"   # app-specific password
+export NOTARY_KEYCHAIN_PROFILE="razer-viper-control-notary"
 
 bash scripts/sign-release.sh
 # Rebuilds Release artifacts by default, then signs + notarizes
@@ -91,6 +92,10 @@ bash scripts/sign-release.sh
 #
 # Optional: bash scripts/sign-release.sh --reuse-existing-build
 # (requires build/Release/BUILD_REVISION to match the current git HEAD)
+#
+# The script exits safely without building or signing when
+# NOTARY_KEYCHAIN_PROFILE is unset. It never accepts a notarization
+# password on its command line.
 ```
 
 The script:

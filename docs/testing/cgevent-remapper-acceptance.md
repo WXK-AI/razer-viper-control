@@ -6,6 +6,8 @@
 
 **Not in scope:** DriverKit exclusive ownership — see [`driverkit-spike.md`](driverkit-spike.md) and [GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2).
 
+> **Safety hardening note (2026-07-22):** The remapper now defaults to **off** and requires explicit **session arming** after every launch. Permission grants are necessary but are **not** consent. Hardware mutations are generation-gated and skip unchanged fields. Repeated event-tap timeouts trip a circuit breaker that pauses the remapper and releases held outputs. See [`safety-hardening-acceptance.md`](safety-hardening-acceptance.md) for the full hardening record.
+
 Use this checklist before treating a remapper change as release-ready. Automated tests cover engine state, recovery, scroll precision, and diagnostics coalescing; they do **not** replace physical pointer verification.
 
 ## Prerequisites

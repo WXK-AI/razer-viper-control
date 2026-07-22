@@ -42,6 +42,19 @@ The available security-review reference pack has no Swift/macOS-specific guidanc
 
 Finding IDs stay stable: **SAF-001, SAF-002, SAF-005, SAF-008** are active. **SAF-003, SAF-004, SAF-006, SAF-007** are withdrawn/remediated history (see below). Old SAF-005 “no validation” claims are withdrawn; the ID is reused for the narrower residual.
 
+## SAF status ledger (2026-07-22)
+
+| SAF ID | Status | Notes |
+|--------|--------|-------|
+| SAF-001 | **Mitigated pending Developer ID** | Public release publication paused; test artifacts remain ad-hoc signed. Closure requires a notarized public artifact passing `spctl` on a clean Mac. |
+| SAF-002 | **Mitigated** | Top-level `contents: read`, `persist-credentials: false`, no tag push, no publisher. Open sub-items: actions not SHA-pinned, XcodeGen lacks SHA-256 verification. |
+| SAF-003 | **Resolved** | Generation-gated applies + skip-unchanged planner. |
+| SAF-004 | **Resolved** | Default-off `remapperEnabled`; session-only `remapperArmed`. |
+| SAF-005 | **Mitigated** | Strict validation, owner-only writes, quarantine, session arming. Residual: no external-change mapping summary; Keychain/HMAC deferred. |
+| SAF-006 | **Resolved** | Deferred workspace actions + tap-disable circuit breaker. |
+| SAF-007 | **Resolved** | 1 MiB source cap + semantic limits. |
+| SAF-008 | **Resolved** | `NOTARY_KEYCHAIN_PROFILE` + `--keychain-profile` only; password removed from argument list. |
+
 ## High severity
 
 ### SAF-001 — Ad-hoc public distribution meets session-wide CGEvent remapping
