@@ -134,5 +134,10 @@ xcrun notarytool submit "$DMG" \
 
 echo "Stapling notarization ticket…"
 xcrun stapler staple "$DMG"
+
+# Post-staple Gatekeeper assessment (app + DMG).
+codesign --verify --deep --strict --verbose=2 "$APP"
+spctl --assess --type execute --verbose=4 "$APP"
+xcrun stapler validate "$APP"
 xcrun stapler validate "$DMG"
 echo "Done. $DMG is signed, notarized, and stapled."

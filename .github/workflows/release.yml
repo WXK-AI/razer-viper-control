@@ -17,6 +17,8 @@ permissions:
 
 env:
   XCODEGEN_VERSION: "2.45.4"
+  # SHA-256 of https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
+  XCODEGEN_SHA256: "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef"
   RELEASE_ARCH: arm64
 
 jobs:
@@ -24,7 +26,8 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout with full tag history
-        uses: actions/checkout@v4
+        # Pin to major v4 tag commit so Dependabot can still propose updates.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -92,10 +95,14 @@ jobs:
 
       - name: Install pinned XcodeGen
         run: |
-          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o /tmp/xcodegen.zip
-          unzip -qo /tmp/xcodegen.zip -d /tmp
-          sudo cp /tmp/xcodegen/bin/xcodegen /usr/local/bin/xcodegen
-          xcodegen --version
+          set -euo pipefail
+          WORK_DIR="$(mktemp -d)"
+          curl -fsSL "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" -o "${WORK_DIR}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  ${WORK_DIR}/xcodegen.zip" | shasum -a 256 -c -
+          unzip -qo "${WORK_DIR}/xcodegen.zip" -d "${WORK_DIR}"
+          # Expose job-local binary so scripts/generate-xcodeproj.sh can find bare `xcodegen`.
+          echo "${WORK_DIR}/xcodegen/bin" >> "$GITHUB_PATH"
+          "${WORK_DIR}/xcodegen/bin/xcodegen" --version
 
       - name: Install ShellCheck
         run: brew install shellcheck
@@ -119,9 +126,16 @@ jobs:
         run: |
           bash scripts/package-dmg.sh
           cd build/Release
+          # Marker must be created after ci-release-build (which promotes a fresh tree).
+          printf '%s\n' \
+            "UNNOTARIZED TEST BUILD — not for public distribution." \
+            "This artifact is ad-hoc signed and has NOT been notarized by Apple." \
+            > UNNOTARIZED_TEST_BUILD.txt
           ditto -c -k --sequesterRsrc --keepParent RazerMenuBarApp.app RazerMenuBarApp-macOS.zip
-          zip -j RazerProbeCLI-macOS.zip RazerProbeCLI
-          shasum -a 256 RazerMenuBarApp-macOS.dmg *.zip > SHA256SUMS.txt
+          # Add marker beside the app inside the app zip (ditto archived the .app only).
+          zip -g RazerMenuBarApp-macOS.zip UNNOTARIZED_TEST_BUILD.txt
+          zip -j RazerProbeCLI-macOS.zip RazerProbeCLI UNNOTARIZED_TEST_BUILD.txt
+          shasum -a 256 RazerMenuBarApp-macOS.dmg *.zip UNNOTARIZED_TEST_BUILD.txt > SHA256SUMS.txt
           ls -la
 
       - name: Confirm unnotarized outputs remain quarantined

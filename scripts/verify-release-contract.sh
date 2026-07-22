@@ -135,6 +135,12 @@ else
   fail "sign-release must exit before build/sign work when NOTARY_KEYCHAIN_PROFILE is absent"
 fi
 
+if grep -Eq 'spctl[[:space:]]+--assess' "$SIGN_RELEASE_SCRIPT"; then
+  pass "sign-release performs post-staple Gatekeeper assessment (spctl --assess)"
+else
+  fail "sign-release must contain spctl --assess after stapling"
+fi
+
 # 8) package-dmg path safety self-test
 if bash "$ROOT/scripts/package-dmg.sh" --self-test; then
   pass "package-dmg rejects directory / non-.dmg paths and removes stale files with rm -f"
@@ -254,6 +260,57 @@ if command -v shellcheck >/dev/null 2>&1; then
   fi
 else
   echo "SKIP: shellcheck not installed (CI installs it)"
+fi
+
+# 12) Task 7/8 hardening contracts (SHA-pinned actions, XcodeGen digest, marker, ci.yml)
+CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
+PACKAGE_DMG_SCRIPT="$ROOT/scripts/package-dmg.sh"
+
+mutable_action_tag=0
+for wf in "$CI_WORKFLOW" "$RELEASE_WORKFLOW"; do
+  if grep -Eq 'uses:[[:space:]]*[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@v[0-9]' "$wf"; then
+    mutable_action_tag=1
+  fi
+done
+if [ "$mutable_action_tag" -eq 0 ]; then
+  pass "workflows pin actions to full commit SHAs (no mutable @vN tags)"
+else
+  fail "workflows must pin actions to full commit SHAs"
+fi
+
+if grep -Eq 'XCODEGEN_SHA256:' "$RELEASE_WORKFLOW" \
+  && grep -Eq 'shasum[[:space:]]+-a[[:space:]]+256[[:space:]]+-c' "$RELEASE_WORKFLOW"; then
+  pass "release workflow verifies XcodeGen download with XCODEGEN_SHA256 + shasum -a 256 -c"
+else
+  fail "release workflow must define XCODEGEN_SHA256 and verify with shasum -a 256 -c"
+fi
+
+if grep -Eq 'sudo[[:space:]]+cp[[:space:]].*xcodegen' "$RELEASE_WORKFLOW"; then
+  fail "release workflow must not sudo cp xcodegen into /usr/local/bin"
+else
+  pass "release workflow does not sudo-install xcodegen into /usr/local/bin"
+fi
+
+if grep -Eq 'UNNOTARIZED_TEST_BUILD\.txt' "$PACKAGE_DMG_SCRIPT" \
+  && grep -Eq 'UNNOTARIZED_TEST_BUILD\.txt' "$RELEASE_WORKFLOW"; then
+  pass "UNNOTARIZED_TEST_BUILD.txt marker present in package-dmg.sh and release.yml"
+else
+  fail "UNNOTARIZED_TEST_BUILD.txt must appear in package-dmg.sh and release.yml"
+fi
+
+if grep -A1 '^permissions:$' "$CI_WORKFLOW" \
+  | grep -Eq '^  contents:[[:space:]]*read[[:space:]]*$'; then
+  pass "ci workflow top-level contents permission is read-only"
+else
+  fail "ci workflow top-level contents permission must be read-only"
+fi
+
+ci_checkout_count="$(grep -Ec 'uses:[[:space:]]*actions/checkout@' "$CI_WORKFLOW" || true)"
+ci_non_persisting_checkout_count="$(grep -Ec 'persist-credentials:[[:space:]]*false' "$CI_WORKFLOW" || true)"
+if [ "$ci_checkout_count" -gt 0 ] && [ "$ci_non_persisting_checkout_count" -eq "$ci_checkout_count" ]; then
+  pass "ci workflow disables credential persistence for every checkout"
+else
+  fail "ci workflow must set persist-credentials: false for every checkout"
 fi
 
 if [ "$failures" -ne 0 ]; then

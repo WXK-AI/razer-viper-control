@@ -8,12 +8,18 @@ on:
 env:
   XCODEGEN_VERSION: "2.45.4"
 
+permissions:
+  contents: read
+
 jobs:
   scripts:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # Pin to major v4 tag commit so Dependabot can still propose updates.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install ShellCheck
         run: brew install shellcheck
@@ -27,7 +33,10 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # Pin to major v4 tag commit so Dependabot can still propose updates.
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Swift tests
         run: swift test --disable-sandbox

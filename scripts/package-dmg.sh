@@ -86,6 +86,11 @@ rm -f -- "$DMG"
 
 mkdir -p "$STAGING/.background"
 cp -R "$APP" "$STAGING/"
+# Marker sits next to the .app inside the DMG (unnotarized test packaging only).
+printf '%s\n' \
+  "UNNOTARIZED TEST BUILD — not for public distribution." \
+  "This artifact is ad-hoc signed and has NOT been notarized by Apple." \
+  > "$STAGING/UNNOTARIZED_TEST_BUILD.txt"
 ln -sf /Applications "$STAGING/Applications"
 if [ -f "$BACKGROUND" ]; then
   cp "$BACKGROUND" "$STAGING/.background/background.png"
