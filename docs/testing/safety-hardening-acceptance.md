@@ -105,14 +105,14 @@
 
 **Behavior:** CI produces ad-hoc signed, non-notarized test artifacts only. These are **not** recommended for public installation.
 
-**Open sub-items (still missing):**
-- [ ] `UNNOTARIZED_TEST_BUILD.txt` marker is **not yet included** in built archives/DMG. The release workflow prints a quarantine notice, but the marker file itself is still an open Task 7 sub-item.
-- [ ] Actions are pinned to mutable major tags (`actions/checkout@v4`), not full commit SHAs.
-- [ ] XcodeGen is fetched without SHA-256 verification before `sudo cp` and execution.
-- [ ] `ci.yml` lacks a top-level `permissions:` block and its checkouts still persist credentials.
+**Closed sub-items (`fc76838`):**
+- [x] `UNNOTARIZED_TEST_BUILD.txt` marker is included in DMG staging (`scripts/package-dmg.sh`), `build/Release`, both zip archives, and `SHA256SUMS.txt`.
+- [x] Actions pinned to full commit SHAs (`actions/checkout@11d5960a326750d5838078e36cf38b85af677262` # v4) in `ci.yml` and `release.yml`.
+- [x] XcodeGen 2.45.4 download SHA-256-verified (`XCODEGEN_SHA256` + `shasum -a 256 -c`), job-local `mktemp` dir, no `sudo`.
+- [x] `ci.yml` top-level `permissions: contents: read` and `persist-credentials: false` on both checkouts.
 
 **Verification:**
-- `bash scripts/verify-release-contract.sh` — confirms current quarantine behavior but does not yet enforce the missing marker or SHA pinning.
+- `bash scripts/verify-release-contract.sh` — enforces marker presence, SHA-pinned actions, XcodeGen digest verification, no sudo-install of xcodegen, and `ci.yml` permissions / `persist-credentials` (`fc76838`).
 
 ---
 
@@ -121,7 +121,7 @@
 | SAF ID | Title | Status | Verification evidence |
 |--------|-------|--------|----------------------|
 | **SAF-001** | Ad-hoc public distribution meets session-wide CGEvent remapping | **Mitigated pending Developer ID** | Public release publication paused (`release.yml` read-only, no publisher). Test artifacts remain ad-hoc signed. **Closure condition:** a notarized public artifact passes `spctl --assess --type execute --verbose=4` on a clean Mac. |
-| **SAF-002** | Remaining release supply-chain gaps (mutable actions; unverified XcodeGen) | **Mitigated** | Top-level `contents: read`, `persist-credentials: false`, no tag push, no release publisher. **Open:** actions still use mutable major tags; XcodeGen lacks SHA-256 verification. |
+| **SAF-002** | Remaining release supply-chain gaps (deferred trusted publish) | **Mitigated** | Top-level `contents: read`, `persist-credentials: false`, no tag push, no release publisher. Actions SHA-pinned; XcodeGen SHA-256-verified; marker in DMG/zips/`SHA256SUMS.txt` (`fc76838`). **Residual:** deferred trusted publish / Developer ID path. |
 | **SAF-003** | HID write flood / no coalescing | **Resolved** | `HardwareApplyPolicy` + `LatestHardwareApplyGate` generation-gated applies; `HardwareProfileApplier` skip-unchanged planner. Tests: `HardwareApplyPolicyTests`, `HardwareProfileApplierTests`. |
 | **SAF-004** | Remapper auto-activation | **Resolved** | `remapperEnabled` defaults `false`; session-only `remapperArmed`; permission restoration never re-arms. Tests: `ProfileSchemaTests`, `MouseProfileMigrationTests`, `ControlModelsTests`. |
 | **SAF-005** | Same-user profile integrity residual | **Mitigated** | Strict source/semantic validation, owner-only writes, quarantine, session arming. **Residual:** no external-change detection or mapping summary on the explicit arm path; Keychain/HMAC sealing deferred until stable Developer ID identity exists. |

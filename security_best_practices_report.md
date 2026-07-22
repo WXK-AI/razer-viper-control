@@ -4,7 +4,7 @@
 
 The project has strong defensive work around malformed HID responses, stuck synthetic mouse buttons, corrupt profile recovery, generation-gated hardware applies, session-only remapper arming, bounded event-tap recovery, and validated profile I/O. I did not find an obvious remote-code-execution path, active direct workflow `run:`-block shell injection, or cross-device HID write in the current tree.
 
-Active high-severity issues are on the **distribution and remaining release-supply-chain** boundary: public ad-hoc / non-notarized binaries that ask for Input Monitoring and Accessibility (and then perform session-wide `CGEvent` synthesis), plus mutable GitHub Action major tags and an XcodeGen download/install path without checksum verification. Five earlier runtime findings are withdrawn with current-code evidence below. A previously identified release-workflow tag-injection path is remediated in the current uncommitted workspace; residual risk is external (immutable/protected tag rulesets and hosted-runner verification), not an open in-repo `run:` interpolation bug.
+Active high-severity issues are on the **distribution and remaining release-supply-chain** boundary: public ad-hoc / non-notarized binaries that ask for Input Monitoring and Accessibility (and then perform session-wide `CGEvent` synthesis). Action SHA-pinning and XcodeGen SHA-256 verification are in place (`fc76838`); residual supply-chain work is the deferred trusted publish / Developer ID path. Five earlier runtime findings are withdrawn with current-code evidence below. A previously identified release-workflow tag-injection path is remediated in the current uncommitted workspace; residual risk is external (immutable/protected tag rulesets and hosted-runner verification), not an open in-repo `run:` interpolation bug.
 
 Recommended order: Developer ID signing/notarization and release supply-chain hardening first (including SAF-008 credential transport), then optional SAF-005 mapping-summary on the existing explicit arm path. Defer Keychain/HMAC profile sealing until a stable Developer ID signing identity exists.
 
@@ -47,7 +47,7 @@ Finding IDs stay stable: **SAF-001, SAF-002, SAF-005, SAF-008** are active. **SA
 | SAF ID | Status | Notes |
 |--------|--------|-------|
 | SAF-001 | **Mitigated pending Developer ID** | Public release publication paused; test artifacts remain ad-hoc signed. Closure requires a notarized public artifact passing `spctl` on a clean Mac. |
-| SAF-002 | **Mitigated** | Top-level `contents: read`, `persist-credentials: false`, no tag push, no publisher. Open sub-items: actions not SHA-pinned, XcodeGen lacks SHA-256 verification. |
+| SAF-002 | **Mitigated** | Top-level `contents: read`, `persist-credentials: false`, no tag push, no publisher. Actions SHA-pinned; XcodeGen SHA-256-verified (`fc76838`). Residual: deferred trusted publish / Developer ID path. |
 | SAF-003 | **Resolved** | Generation-gated applies + skip-unchanged planner. |
 | SAF-004 | **Resolved** | Default-off `remapperEnabled`; session-only `remapperArmed`. |
 | SAF-005 | **Mitigated** | Strict validation, owner-only writes, quarantine, session arming. Residual: no external-change mapping summary; Keychain/HMAC deferred. |
@@ -77,27 +77,30 @@ Recommendation:
 2. If ad-hoc builds remain, label them as developer/test-only and stop instructing general users to bypass Gatekeeper.
 3. Publish provenance/attestations in addition to checksums.
 
-### SAF-002 — Remaining release supply-chain gaps (mutable actions; unverified XcodeGen)
+### SAF-002 — Remaining release supply-chain gaps (deferred trusted publish)
 
-**Still open (this finding):**
+**Closed at `fc76838` (do not treat as missing):**
 
-1. Actions pinned only to mutable major tags: `actions/checkout@v4` (`.github/workflows/release.yml:27`) and `softprops/action-gh-release@v2` (`.github/workflows/release.yml:273`).
-2. XcodeGen ZIP download/install without digest/signature verification (`.github/workflows/release.yml:100-105`), then version-gated execution via `scripts/generate-xcodeproj.sh:12-31` (invoked from `scripts/ci-release-build.sh:40`). The script checks the installed version string against `REQUIRED_XCODEGEN_VERSION` but does **not** verify the downloaded archive checksum before `sudo cp` / `xcodegen generate`.
-
-Workflow-scoped `contents: write` (`.github/workflows/release.yml:15-17`) remains the privilege context that makes a compromised action or build tool able to push tags or replace release assets.
+1. Actions pinned to full commit SHAs (e.g. `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` # v4) in `.github/workflows/ci.yml` and `release.yml`; enforced by `scripts/verify-release-contract.sh`.
+2. XcodeGen ZIP download verified with repository-controlled `XCODEGEN_SHA256` + `shasum -a 256 -c` before extract; job-local `mktemp` dir and `$GITHUB_PATH` (no `sudo cp` into `/usr/local/bin`) in `.github/workflows/release.yml`.
+3. `ci.yml` top-level `permissions: contents: read` and `persist-credentials: false` on every checkout.
 
 **Already present (do not treat as missing):**
 
+- Top-level `contents: read`, `persist-credentials: false`, no tag push, no release publisher (`.github/workflows/release.yml`)
 - Clean-worktree requirement for release builds (`scripts/ci-release-build.sh:12-22`, re-check `scripts/ci-release-build.sh:97-98`)
-- Artifact / `BUILD_REVISION` contracts when `VERIFY_RELEASE_ARTIFACTS=1` (`scripts/verify-release-contract.sh:103-171`)
-- Exact `vMAJOR.MINOR.PATCH` tag validation (`scripts/validate-release-tag.sh:9-15`; workflow call sites `.github/workflows/release.yml:53`, `:64`, `:144`)
-- Env-based context passing into `run:` blocks (no direct `${{ … }}` interpolation in run scripts; checker `scripts/check-workflow-run-interpolation.sh`, enforced from `scripts/verify-release-contract.sh:71-77`)
-- Original tag-object capture, exact remote-ref parser, deferred non-force push, and unconditional final tag identity verification (`.github/workflows/release.yml:73-97`, `:134-269` covering existing- and new-tag branches; parser `scripts/parse-exact-ls-remote-ref.sh:9-25`)
+- Artifact / `BUILD_REVISION` contracts when `VERIFY_RELEASE_ARTIFACTS=1` (`scripts/verify-release-contract.sh`)
+- Exact `vMAJOR.MINOR.PATCH` tag validation (`scripts/validate-release-tag.sh:9-15`; workflow call sites in `.github/workflows/release.yml`)
+- Env-based context passing into `run:` blocks (no direct `${{ … }}` interpolation in run scripts; checker `scripts/check-workflow-run-interpolation.sh`, enforced from `scripts/verify-release-contract.sh`)
+- Original tag-object capture, exact remote-ref parser, and related tag identity checks (`.github/workflows/release.yml`; parser `scripts/parse-exact-ls-remote-ref.sh:9-25`)
+- `UNNOTARIZED_TEST_BUILD.txt` marker in DMG staging, `build/Release`, both zips, and `SHA256SUMS.txt` (`scripts/package-dmg.sh`, `.github/workflows/release.yml`)
+
+**Residual (this finding):** deferred trusted publish / Developer ID path — official end-user assets still need signing, notarization, and a controlled publish surface.
 
 Recommendation:
 
-1. Pin every action to a reviewed full commit SHA (comment the human-readable version).
-2. Verify XcodeGen against a repository-controlled SHA-256 before extract/`sudo`/execution, or use a pre-approved immutable tool image.
+1. ~~Pin every action to a reviewed full commit SHA (comment the human-readable version).~~ Done (`fc76838`).
+2. ~~Verify XcodeGen against a repository-controlled SHA-256 before extract/`sudo`/execution, or use a pre-approved immutable tool image.~~ Done (`fc76838`; job-local path, no `sudo`).
 3. Optionally split build (`contents: read`, `persist-credentials: false`) from a minimal publish job (`contents: write`).
 4. Add repository tag protection / immutable-tag rulesets (see residual below).
 
@@ -183,5 +186,5 @@ There is **no active direct workflow `run:`-block shell injection** claim agains
 
 ## Suggested remediation sequence
 
-1. **SAF-001 + SAF-002 + SAF-008:** trusted signing/notarization path, pin actions + checksum XcodeGen, move notarization credentials off the process argument list, and add protected/immutable tag rulesets for the external residual.
+1. **SAF-001 + SAF-002 + SAF-008:** trusted signing/notarization path; actions SHA-pinned + XcodeGen checksummed (`fc76838`); move notarization credentials off the process argument list; and add protected/immutable tag rulesets for the external residual.
 2. **SAF-005 (optional):** show a mapping summary in the existing explicit arm action when startup-loaded action content is externally changed or already enabled; defer Keychain/HMAC until Developer ID identity is stable.
