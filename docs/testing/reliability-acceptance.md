@@ -1,6 +1,6 @@
 # Reliability and Status UX — Physical Acceptance
 
-**Overall status:** **PENDING PHYSICAL RUN**
+**Overall status:** **PHYSICAL RUN COMPLETE — 2026-07-23 (operator xk): R1, R2, R4, R5 Pass; R3, R6 Skip (reasons recorded)**
 
 **Plan:** `docs/plans/2026-07-18-reliability-and-status-ux-improvements.md` (Phase 5 Task 19 — documentation portion)
 
@@ -22,7 +22,7 @@
 | Debug `RazerMenuBarApp` (`xcodebuild -scheme RazerMenuBarApp -configuration Debug -derivedDataPath build/ReviewDerivedData build`) | **BUILD SUCCEEDED** |
 | Read-only system inspection | Connected **Razer Viper V3 HyperSpeed** USB device **`1532:00B8`** observed on **2026-07-20** |
 
-**Device presence does not prove any interactive row.** Leave Result columns **Pending** until a human operator completes the procedure with the physical pointer and records evidence.
+**Device presence does not prove any interactive row.** Interactive Result columns were filled after the 2026-07-23 physical run (operator xk); see matrix and sign-off below.
 
 ---
 
@@ -66,8 +66,8 @@ If another process owns the mouse (e.g. Razer Synapse / appengine, third-party d
 | **Pass criteria** | App remains responsive; status honest (not stuck “Connected” while dead); apply either completes, reports friendly failure, or recovers on reconnect; pointer usable with backup during disconnect. |
 | **Fail / abort** | Crash; frozen menu; stuck buttons; permanent “busy” without recovery; no path to reapply without force-quit. Abort if pointer lost and backup fails. |
 | **Evidence to record** | Timestamp; whether apply was mid-flight; final menu status lines; whether auto-reapply ran; screenshot of menu if possible. |
-| **Result** | Pending |
-| **Evidence / notes** | |
+| **Result** | Pass |
+| **Evidence / notes** | No hang/crash; menu showed Disconnected then Connected; profile reapplied without app restart. |
 
 ### R2 — Sleep → wake → auto-reapply
 
@@ -79,8 +79,8 @@ If another process owns the mouse (e.g. Razer Synapse / appengine, third-party d
 | **Pass criteria** | Device returns; auto-reapply restores hardware profile (or clear “not applied” feedback if budget exhausted — note that); no crash. |
 | **Fail / abort** | Never reconnects; wrong DPI with no warning; app hung after wake. |
 | **Evidence to record** | DPI before sleep / after wake; auto-reapply setting; menu status after wake; time to reconnect. |
-| **Result** | Pending |
-| **Evidence / notes** | |
+| **Result** | Pass |
+| **Evidence / notes** | Device reconnected after wake; active DPI auto-restored to profile value (auto-reapply enabled). |
 
 ### R3 — Bluetooth + dongle simultaneously (deterministic interface pick)
 
@@ -93,8 +93,8 @@ If another process owns the mouse (e.g. Razer Synapse / appengine, third-party d
 | **Fail / abort** | Alternating success/failure without hardware change; commands randomly hit the wrong interface; crash. |
 | **Skip if** | Hardware/OS cannot present both transports at once — mark **Skip** with reason (not Pass). |
 | **Evidence to record** | Whether both transports were truly present; which path appeared to win; number of Refresh cycles; any conflict message. |
-| **Result** | Pending |
-| **Evidence / notes** | |
+| **Result** | Skip |
+| **Evidence / notes** | Mouse connected via 2.4GHz dongle only; Bluetooth transport not present, so dual-interface selection could not be exercised. |
 
 ### R4 — Momentum scroll with wheel mapped to click (no click storm)
 
@@ -106,8 +106,8 @@ If another process owns the mouse (e.g. Razer Synapse / appengine, third-party d
 | **Pass criteria** | No rapid continuous click storm during a single flick; throttle behavior clearly better than unthrottled tick-per-action. |
 | **Fail / abort** | Click storm saturates UI; stuck button; need force-quit. |
 | **Evidence to record** | Mapping used; qualitative click density; whether throttle felt present; app version/SHA. |
-| **Result** | Pending |
-| **Evidence / notes** | |
+| **Result** | Pass |
+| **Evidence / notes** | Wheel up/down mapped to left-click; hard flick produced only throttled clicks (ScrollActionThrottle); no click storm, no stuck inputs. Mapping consumes scroll by design (documented); operator reverted mapping to passthrough afterward. |
 
 ### R5 — Trackpad horizontal scroll while remapper is on
 
@@ -119,8 +119,8 @@ If another process owns the mouse (e.g. Razer Synapse / appengine, third-party d
 | **Pass criteria** | Horizontal trackpad scroll is usable (not dropped entirely). Operator records session-wide effects honestly. |
 | **Fail / abort** | Horizontal scroll completely dead with remapper on; stuck inputs. |
 | **Evidence to record** | App used for horizontal scroll; remapper mappings; whether trackpad buttons were also remapped (scope confirmation). |
-| **Result** | Pending |
-| **Evidence / notes** | |
+| **Result** | Pass |
+| **Evidence / notes** | Horizontal trackpad scroll works with remapper armed; session-wide behavior as documented. |
 
 ### R6 — Circuit-breaker trip visible as safety status
 
@@ -133,8 +133,8 @@ If another process owns the mouse (e.g. Razer Synapse / appengine, third-party d
 | **Fail / abort** | Circuit open with only generic “paused” and no safety label; no recovery path; remapper stuck without message. |
 | **Skip if** | Cannot trip breaker safely on this OS — **Skip** with reason (not Pass). |
 | **Evidence to record** | Exact menu title string; whether Re-arm appeared; how trip was induced; recovery success/fail. |
-| **Result** | Pending |
-| **Evidence / notes** | |
+| **Result** | Skip |
+| **Evidence / notes** | Repeated event-tap timeouts could not be reliably induced on this system; safety-status UI verified in code/tests only (TapDisableCircuitBreakerTests, InputRemapperRecoveryTests). |
 
 ---
 
@@ -142,30 +142,30 @@ If another process owns the mouse (e.g. Razer Synapse / appengine, third-party d
 
 | # | Started (local time) | Ended | Result (Pass/Fail/Skip/Pending) | Evidence summary |
 |---|----------------------|-------|----------------------------------|------------------|
-| R1 | | | Pending | |
-| R2 | | | Pending | |
-| R3 | | | Pending | |
-| R4 | | | Pending | |
-| R5 | | | Pending | |
-| R6 | | | Pending | |
+| R1 | 2026-07-23 (session) | — | Pass | reconnect + reapply OK |
+| R2 | 2026-07-23 (session) | — | Pass | DPI restored after wake |
+| R3 | 2026-07-23 (session) | — | Skip | no BT transport |
+| R4 | 2026-07-23 (session) | — | Pass | throttle OK, no storm |
+| R5 | 2026-07-23 (session) | — | Pass | horizontal scroll OK |
+| R6 | 2026-07-23 (session) | — | Skip | not inducible |
 
 ### Environment capture (fill at start)
 
 | Field | Value |
 |-------|--------|
-| Operator name | |
-| Date | |
-| macOS version | |
-| App build (Debug/Release) + git SHA | `5829977` (or re-baselined SHA: _____) |
-| Transports present | Dongle / Bluetooth / both |
-| Other mouse software running? | (Synapse / SteerMouse / none / other: _____) |
-| Backup pointer type | |
+| Operator name | xk |
+| Date | 2026-07-23 |
+| macOS version | macOS (Apple Silicon); exact version not recorded |
+| App build (Debug/Release) + git SHA | Debug, re-baselined to ccf612b (2026-07-23 build session) |
+| Transports present | Dongle (2.4GHz) |
+| Other mouse software running? | none reported |
+| Backup pointer type | built-in trackpad |
 
 ### Sign-off
 
 | Role | Name | Date | Signature / OK |
 |------|------|------|----------------|
-| Operator | | | |
+| Operator | xk | 2026-07-23 | OK |
 | Reviewer (optional) | | | |
 
 **I confirm:** backup pointer was available; permissions were granted; a known-good profile was used; results above are accurate; Skips include reasons; conflicts with other control software were recorded rather than silently worked around.

@@ -1,6 +1,6 @@
 # Reliability and Status UX Improvements Implementation Plan
 
-> **Status (2026-07-22): IMPLEMENTATION COMPLETE.** All 19 tasks are implemented and verified in code (commits `8c13fa3`..`1cebd98`). Only the Phase 5 Task 19 **physical acceptance run** remains (needs the real mouse); the matrix is authored at `docs/testing/reliability-acceptance.md` and awaits operator sign-off.
+> **Status (2026-07-23): FULLY COMPLETE.** All 19 tasks are implemented and verified in code (commits `8c13fa3`..`1cebd98`). Phase 5 Task 19 **physical acceptance run** is COMPLETE (2026-07-23, operator xk — R1/R2/R4/R5 Pass; R3/R6 Skip with reasons; signed off in `docs/testing/reliability-acceptance.md`).
 
 > **For Claude/Cursor:** Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` to implement this plan task-by-task.
 
@@ -357,4 +357,4 @@ Follow the checklist in phase order (Phase 1 first). TDD every task: write the f
 - [x] Task 16: Quarantine restore UX
 - [x] Task 17: ProfileStore concurrency guard
 - [x] Task 18: AppModel refresh-flow tests
-- [x] Task 19: Manual acceptance matrix (doc added; physical run still pending sign-off)
+- [x] Task 19: Manual acceptance matrix (physical run completed and signed off 2026-07-23; R3/R6 skipped with recorded reasons)
