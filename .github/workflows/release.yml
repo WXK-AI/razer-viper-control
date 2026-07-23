@@ -7,14 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag matching MARKETING_VERSION (e.g. v1.0.2). This workflow validates an unnotarized test package and never creates or publishes a release."
+        description: "Existing tag matching MARKETING_VERSION (e.g. v1.0.2). Builds an unnotarized prerelease for that tag and publishes it on GitHub Releases."
         required: true
         # No default: forces an intentional tag that matches project.yml MARKETING_VERSION.
 
 
 permissions:
-  contents: read
-  actions: write   # short-retention test artifacts only — not a Release publish
+  contents: write   # create/update GitHub Release + upload assets
+  actions: write    # short-retention Actions artifact
 
 env:
   XCODEGEN_VERSION: "2.45.4"
@@ -88,7 +88,7 @@ jobs:
             echo "Tag ${TAG} matches this commit; continuing with a quarantined test package"
           else
             echo "error: tag ${TAG} does not exist at this workflow commit" >&2
-            echo "This read-only test-package workflow never creates tags." >&2
+            echo "This workflow never creates tags." >&2
             exit 1
           fi
 
@@ -153,8 +153,38 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Confirm unnotarized outputs remain quarantined
+      - name: Publish unnotarized GitHub prerelease
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }} (unnotarized test build)
+          prerelease: true
+          generate_release_notes: true
+          body: |
+            ## Unnotarized test build
+
+            **Not** Developer ID signed and **not** notarized by Apple.
+            macOS Gatekeeper may block first launch — right-click → Open, or System Settings → Privacy & Security → Open Anyway.
+
+            ### Files
+            - `RazerMenuBarApp-macOS.dmg` / `.zip`
+            - `RazerProbeCLI-macOS.zip`
+            - `SHA256SUMS.txt`
+            - `UNNOTARIZED_TEST_BUILD.txt` marker
+
+            Session-wide CGEvent remapper (not Razer-only). Official Gatekeeper-clean distribution still requires Apple Developer Program + `scripts/sign-release.sh`.
+          files: |
+            build/Release/RazerMenuBarApp-macOS.dmg
+            build/Release/RazerMenuBarApp-macOS.zip
+            build/Release/RazerProbeCLI-macOS.zip
+            build/Release/SHA256SUMS.txt
+            build/Release/UNNOTARIZED_TEST_BUILD.txt
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Confirm unnotarized prerelease published
         run: |
-          echo "UNNOTARIZED TEST BUILD: short-retention Actions artifact UNNOTARIZED-TEST-BUILD (7 days)."
-          echo "Downloadable from this run's Artifacts UI — not a public GitHub Release, not notarized."
-          echo "A future publisher must require Developer ID signing, notarization, and protected credentials."
+          echo "UNNOTARIZED PRERELEASE: published on GitHub Releases (prerelease: true) + 7-day Actions artifact UNNOTARIZED-TEST-BUILD."
+          echo "Still unnotarized — not a notarized production / Gatekeeper-clean release."
+          echo "Official Gatekeeper-clean distribution still requires Apple Developer Program + scripts/sign-release.sh."

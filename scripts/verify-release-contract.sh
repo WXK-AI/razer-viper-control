@@ -76,18 +76,19 @@ else
   fail "release workflow run scripts directly interpolate GitHub expressions"
 fi
 
-# 6) Unnotarized CI output must remain quarantined from public release paths
-if grep -A1 '^permissions:$' "$RELEASE_WORKFLOW" \
-  | grep -Eq '^  contents:[[:space:]]*read[[:space:]]*$'; then
-  pass "release workflow top-level contents permission is read-only"
+# 6) Release workflow publishes an unnotarized GitHub prerelease (contents: write)
+#    CI remains read-only with no publisher. No git push of tags from either workflow.
+if grep -A2 '^permissions:$' "$RELEASE_WORKFLOW" \
+  | grep -Eq '^  contents:[[:space:]]*write([[:space:]]|#|$)'; then
+  pass "release workflow top-level contents permission is write (GitHub Release assets)"
 else
-  fail "release workflow top-level contents permission must be read-only"
+  fail "release workflow top-level contents permission must be write (for release assets)"
 fi
 
-if grep -Eq '^[[:space:]]*contents:[[:space:]]*write[[:space:]]*$' "$RELEASE_WORKFLOW"; then
-  fail "unnotarized workflow must not grant contents: write"
+if ! grep -Eq '^[[:space:]]*contents:[[:space:]]*write([[:space:]]|#|$)' "$RELEASE_WORKFLOW"; then
+  fail "release workflow must grant contents: write for GitHub Release publish"
 else
-  pass "unnotarized workflow grants no contents: write permission"
+  pass "release workflow grants contents: write for GitHub Release publish"
 fi
 
 checkout_count="$(grep -Ec 'uses:[[:space:]]*actions/checkout@' "$RELEASE_WORKFLOW" || true)"
@@ -99,18 +100,34 @@ else
 fi
 
 if grep -Eq 'git[[:space:]]+push' "$RELEASE_WORKFLOW"; then
-  fail "unnotarized workflow must not push tags or refs"
+  fail "release workflow must not push tags or refs"
 else
-  pass "unnotarized workflow cannot push tags or refs"
+  pass "release workflow does not push tags or refs"
 fi
 
-if grep -Eq 'softprops/action-gh-release|actions/upload-release-asset|gh[[:space:]]+release' "$RELEASE_WORKFLOW"; then
-  fail "unnotarized workflow must not publish a GitHub Release"
+# Require SHA-pinned softprops/action-gh-release with prerelease: true.
+# Reject unpinned softprops @vN (covered globally later), shell `gh release`, and
+# softprops without prerelease: true.
+if grep -Eq 'uses:[[:space:]]*softprops/action-gh-release@[0-9a-f]{40}' "$RELEASE_WORKFLOW" \
+  && grep -Eq 'prerelease:[[:space:]]*true' "$RELEASE_WORKFLOW"; then
+  pass "release workflow uses SHA-pinned softprops/action-gh-release with prerelease: true"
 else
-  pass "unnotarized workflow has no GitHub Release publisher"
+  fail "release workflow must use softprops/action-gh-release@<40-hex-sha> with prerelease: true"
 fi
 
-# Short-retention Actions artifact upload is allowed (not a GitHub Release).
+if grep -Eq 'uses:[[:space:]]*softprops/action-gh-release@v[0-9]' "$RELEASE_WORKFLOW"; then
+  fail "softprops/action-gh-release must be SHA-pinned (not mutable @vN)"
+else
+  pass "softprops/action-gh-release is not pinned to a mutable @vN tag"
+fi
+
+if grep -Eq 'actions/upload-release-asset|gh[[:space:]]+release' "$RELEASE_WORKFLOW"; then
+  fail "release workflow must not use unpinned shell gh release or upload-release-asset"
+else
+  pass "release workflow has no shell gh release / upload-release-asset publisher"
+fi
+
+# Short-retention Actions artifact upload remains required alongside the prerelease.
 # Requires actions: write; must remain SHA-pinned and named UNNOTARIZED-TEST-BUILD.
 if grep -Eq 'uses:[[:space:]]*actions/upload-artifact@[0-9a-f]{40}' "$RELEASE_WORKFLOW" \
   && grep -Eq 'UNNOTARIZED-TEST-BUILD' "$RELEASE_WORKFLOW" \
@@ -320,6 +337,18 @@ if grep -A1 '^permissions:$' "$CI_WORKFLOW" \
   pass "ci workflow top-level contents permission is read-only"
 else
   fail "ci workflow top-level contents permission must be read-only"
+fi
+
+if grep -Eq '^[[:space:]]*contents:[[:space:]]*write([[:space:]]|#|$)' "$CI_WORKFLOW"; then
+  fail "ci workflow must not grant contents: write"
+else
+  pass "ci workflow grants no contents: write permission"
+fi
+
+if grep -Eq 'softprops/action-gh-release|actions/upload-release-asset|gh[[:space:]]+release' "$CI_WORKFLOW"; then
+  fail "ci workflow must not publish a GitHub Release"
+else
+  pass "ci workflow has no GitHub Release publisher"
 fi
 
 ci_checkout_count="$(grep -Ec 'uses:[[:space:]]*actions/checkout@' "$CI_WORKFLOW" || true)"
