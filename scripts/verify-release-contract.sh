@@ -149,7 +149,14 @@ else
 fi
 
 # 9) Exact tag validation and marketing version equality when a release tag is provided
-TAG_RAW="${RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
+# Prefer RELEASE_TAG when set. Only fall back to GITHUB_REF_NAME when it looks like a
+# release tag (v + digits.digits.digits). Branch names like "main" must SKIP, not FAIL.
+TAG_RAW="${RELEASE_TAG:-}"
+if [ -z "$TAG_RAW" ]; then
+  case "${GITHUB_REF_NAME:-}" in
+    v[0-9]*.[0-9]*.[0-9]*) TAG_RAW="$GITHUB_REF_NAME" ;;
+  esac
+fi
 if [ -n "$TAG_RAW" ]; then
   if bash "$ROOT/scripts/validate-release-tag.sh" "$TAG_RAW"; then
     TAG_VERSION="${TAG_RAW#v}"
@@ -162,7 +169,7 @@ if [ -n "$TAG_RAW" ]; then
     fail "release tag is unsafe or unsupported; version comparison skipped"
   fi
 else
-  echo "SKIP: no RELEASE_TAG/GITHUB_REF_NAME; tag equality not checked"
+  echo "SKIP: no release tag (RELEASE_TAG unset and GITHUB_REF_NAME is not a v*.*.* tag); tag equality not checked"
 fi
 
 # 10) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped

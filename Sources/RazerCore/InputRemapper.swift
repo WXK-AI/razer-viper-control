@@ -203,26 +203,27 @@ public final class InputRemapper: @unchecked Sendable {
             throw InputRemapperError.missingPermissions(permissions)
         }
 
-        let mask = (
-            (1 << CGEventType.leftMouseDown.rawValue) |
-            (1 << CGEventType.leftMouseUp.rawValue) |
-            (1 << CGEventType.leftMouseDragged.rawValue) |
-            (1 << CGEventType.rightMouseDown.rawValue) |
-            (1 << CGEventType.rightMouseUp.rawValue) |
-            (1 << CGEventType.rightMouseDragged.rawValue) |
-            (1 << CGEventType.otherMouseDown.rawValue) |
-            (1 << CGEventType.otherMouseUp.rawValue) |
-            (1 << CGEventType.otherMouseDragged.rawValue) |
-            (1 << CGEventType.scrollWheel.rawValue) |
-            (1 << CGEventType.keyDown.rawValue)
-        )
+        // Build mask incrementally so the type checker does not time out on a
+        // single huge bitwise-OR expression (seen on macos-15 CI runners).
+        var mask: CGEventMask = 0
+        mask |= CGEventMask(1) << CGEventType.leftMouseDown.rawValue
+        mask |= CGEventMask(1) << CGEventType.leftMouseUp.rawValue
+        mask |= CGEventMask(1) << CGEventType.leftMouseDragged.rawValue
+        mask |= CGEventMask(1) << CGEventType.rightMouseDown.rawValue
+        mask |= CGEventMask(1) << CGEventType.rightMouseUp.rawValue
+        mask |= CGEventMask(1) << CGEventType.rightMouseDragged.rawValue
+        mask |= CGEventMask(1) << CGEventType.otherMouseDown.rawValue
+        mask |= CGEventMask(1) << CGEventType.otherMouseUp.rawValue
+        mask |= CGEventMask(1) << CGEventType.otherMouseDragged.rawValue
+        mask |= CGEventMask(1) << CGEventType.scrollWheel.rawValue
+        mask |= CGEventMask(1) << CGEventType.keyDown.rawValue
 
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
-            eventsOfInterest: CGEventMask(mask),
+            eventsOfInterest: mask,
             callback: InputRemapper.eventCallback,
             userInfo: userInfo
         ) else {
