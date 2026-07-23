@@ -1,6 +1,6 @@
 # Safety Hardening — Acceptance Record
 
-**Status:** Tasks 1–8 implemented and verified (see `docs/plans/2026-07-12-safety-release-hardening.md` rev 2). This document records the acceptance evidence for the complete hardening set and tracks residual items that remain open.
+**Status:** Tasks 1–8 implemented and verified (see `docs/plans/2026-07-12-safety-release-hardening.md` rev 2). Physical acceptance **passed** 2026-07-23 (operator xk). This document records the acceptance evidence for the complete hardening set and tracks residual items that remain open.
 
 **Plan reference:** [`docs/plans/2026-07-12-safety-release-hardening.md`](../plans/2026-07-12-safety-release-hardening.md)
 **Security report:** [`security_best_practices_report.md`](../../security_best_practices_report.md)
@@ -142,11 +142,11 @@ shellcheck -x scripts/*.sh
 
 ## Manual acceptance (physical device)
 
-The manual matrix in [`cgevent-remapper-acceptance.md`](cgevent-remapper-acceptance.md) remains the physical sign-off record. It must be run with a backup input device before closing the continuation plan.
+Physical matrix run **2026-07-23** — **PASSED** (all sections A–F). Full results, capture log, and operator sign-off are recorded in [`cgevent-remapper-acceptance.md`](cgevent-remapper-acceptance.md).
 
 ## Sign-off
 
 | Role | Name | Date | Verdict |
 |------|------|------|---------|
 | Implementer | | | Accept / Accept with notes / Reject |
-| Operator (physical) | | | Accept / Accept with notes / Reject |
+| Operator (physical) | xk | 2026-07-23 | Accept |

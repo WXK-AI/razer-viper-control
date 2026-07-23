@@ -1,5 +1,7 @@
 # CGEvent Remapper Continuation Implementation Plan
 
+> **Status (2026-07-23): COMPLETE.** All tasks implemented; physical acceptance matrix passed 2026-07-23 (operator xk, verdict Accept — see `docs/testing/cgevent-remapper-acceptance.md`). DriverKit device-local remapping remains deferred to GitHub issue #2.
+
 > **For Claude/Cursor:** Use the repository's plan-execution workflow and implement this document task-by-task. Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` when available.
 
 **Goal:** Continue improving button, wheel, DPI, profile, diagnostics, and reliability features using the existing macOS `CGEvent` remapper without requiring paid DriverKit signing.
@@ -178,13 +180,13 @@
 **Steps:**
 
 - [x] Create a manual matrix for normal click, hold, drag, swapped buttons, side buttons, wheel click, vertical scroll, Shift-horizontal scroll, slow multipliers, one-shot actions, pause, permission loss, and tap recovery.
-- [ ] Explicitly test with a trackpad and second mouse and record that session-wide remapping affects them; this is a known limitation, not a failed DriverKit criterion. *(physical — still open)*
+- [x] Explicitly test with a trackpad and second mouse and record that session-wide remapping affects them; this is a known limitation, not a failed DriverKit criterion. *(physical — done 2026-07-23: trackpad follows session-wide maps (D1 Pass); second-mouse row not applicable — device not available; recorded in cgevent-remapper-acceptance.md)*
 - [x] Run `swift test --disable-sandbox`.
 - [x] Run `make xcode` if `project.yml` changed.
 - [x] Run `xcodebuild -scheme RazerMenuBarApp -configuration Debug -derivedDataPath build/ReviewDerivedData build`.
 - [x] Run `git diff --check` and inspect `git status --short` for generated or unrelated changes.
 - [x] Commit: `test: document CGEvent remapper acceptance`.
-- [ ] Operator fills and signs off [`docs/testing/cgevent-remapper-acceptance.md`](../testing/cgevent-remapper-acceptance.md); only then is this plan complete.
+- [x] Operator fills and signs off [`docs/testing/cgevent-remapper-acceptance.md`](../testing/cgevent-remapper-acceptance.md); only then is this plan complete. *(signed off 2026-07-23 by xk — verdict Accept; all sections A–F passed, no release blockers)*
 
 ## Cursor Handoff Prompt
 
