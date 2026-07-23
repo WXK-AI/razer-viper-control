@@ -110,6 +110,16 @@ else
   pass "unnotarized workflow has no GitHub Release publisher"
 fi
 
+# Short-retention Actions artifact upload is allowed (not a GitHub Release).
+# Requires actions: write; must remain SHA-pinned and named UNNOTARIZED-TEST-BUILD.
+if grep -Eq 'uses:[[:space:]]*actions/upload-artifact@[0-9a-f]{40}' "$RELEASE_WORKFLOW" \
+  && grep -Eq 'UNNOTARIZED-TEST-BUILD' "$RELEASE_WORKFLOW" \
+  && grep -Eq 'retention-days:[[:space:]]*[0-9]+' "$RELEASE_WORKFLOW"; then
+  pass "release workflow uploads SHA-pinned short-retention UNNOTARIZED-TEST-BUILD artifact"
+else
+  fail "release workflow must SHA-pin actions/upload-artifact with UNNOTARIZED-TEST-BUILD and retention-days"
+fi
+
 # 7) Future notarization must use a Keychain profile and fail safe before mutation
 SIGN_RELEASE_SCRIPT="$ROOT/scripts/sign-release.sh"
 if grep -Eq -- '--password|--apple-id|--team-id|APPLE_APP_PASSWORD' "$SIGN_RELEASE_SCRIPT"; then

@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  actions: write   # short-retention test artifacts only — not a Release publish
 
 env:
   XCODEGEN_VERSION: "2.45.4"
@@ -139,7 +140,21 @@ jobs:
           shasum -a 256 RazerMenuBarApp-macOS.dmg *.zip UNNOTARIZED_TEST_BUILD.txt > SHA256SUMS.txt
           ls -la
 
+      - name: Upload unnotarized test package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: UNNOTARIZED-TEST-BUILD
+          path: |
+            build/Release/RazerMenuBarApp-macOS.dmg
+            build/Release/RazerMenuBarApp-macOS.zip
+            build/Release/RazerProbeCLI-macOS.zip
+            build/Release/SHA256SUMS.txt
+            build/Release/UNNOTARIZED_TEST_BUILD.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Confirm unnotarized outputs remain quarantined
         run: |
-          echo "UNNOTARIZED TEST BUILD: artifacts remain runner-local and are not published."
+          echo "UNNOTARIZED TEST BUILD: short-retention Actions artifact UNNOTARIZED-TEST-BUILD (7 days)."
+          echo "Downloadable from this run's Artifacts UI — not a public GitHub Release, not notarized."
           echo "A future publisher must require Developer ID signing, notarization, and protected credentials."
