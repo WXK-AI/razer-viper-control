@@ -66,7 +66,8 @@ jobs:
           TAG="$RELEASE_TAG"
           bash scripts/validate-release-tag.sh "$TAG"
 
-          git fetch --tags --force origin
+          # No git fetch: persist-credentials is false (private-repo auth would fail).
+          # Checkout already used fetch-depth: 0 + fetch-tags: true.
 
           # Always build from the initially selected workflow commit so release
           # tooling matches the sources under test. Never check out a historical tag.
