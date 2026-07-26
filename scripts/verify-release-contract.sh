@@ -68,27 +68,62 @@ else
   fail "workflow run interpolation checker fixture tests"
 fi
 
-# 5) Workflow run scripts must receive GitHub values through env, never expression interpolation
+# 5) Release publisher checker fixture tests
+if bash "$ROOT/scripts/test-release-publisher-checker.sh"; then
+  pass "release publisher checker fixture tests"
+else
+  fail "release publisher checker fixture tests"
+fi
+
+# 6) Workflow permissions checker fixture tests
+if bash "$ROOT/scripts/test-workflow-permissions-checker.sh"; then
+  pass "workflow permissions checker fixture tests"
+else
+  fail "workflow permissions checker fixture tests"
+fi
+
+# 7) Workflow run scripts must receive GitHub values through env, never expression interpolation
 RELEASE_WORKFLOW="$ROOT/.github/workflows/release.yml"
+CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
 if bash "$ROOT/scripts/check-workflow-run-interpolation.sh" "$RELEASE_WORKFLOW"; then
   pass "release workflow run scripts contain no direct GitHub expression interpolation"
 else
   fail "release workflow run scripts directly interpolate GitHub expressions"
 fi
 
-# 6) Release workflow publishes an unnotarized GitHub prerelease (contents: write)
-#    CI remains read-only with no publisher. No git push of tags from either workflow.
-if grep -A2 '^permissions:$' "$RELEASE_WORKFLOW" \
-  | grep -Eq '^  contents:[[:space:]]*write([[:space:]]|#|$)'; then
-  pass "release workflow top-level contents permission is write (GitHub Release assets)"
+# 8) Workflow authority surface: top-level permissions, the release-publishing
+#    surface, action pinning, and ref mutation — for BOTH workflows.
+#
+#    These used to be whole-file / fixed-window greps, which could not express the
+#    invariants they claimed. `grep -A2 '^permissions:$'` happens to span today's
+#    block and can never notice a key that was ADDED (a silent 'id-token: write'
+#    sailed straight through), and a whole-file grep for 'prerelease: true' or
+#    'UNNOTARIZED-TEST-BUILD' is satisfied by a YAML comment, by release-body prose
+#    or by an echo in an unrelated step. Both now go through structural awk
+#    checkers that scope every match to the owning block/step, and those checkers
+#    are themselves exercised by the fixture suites in sections 5 and 6.
+if bash "$ROOT/scripts/check-workflow-permissions.sh" "$RELEASE_WORKFLOW" contents:write actions:write; then
+  pass "release workflow top-level permissions are exactly contents: write + actions: write"
 else
-  fail "release workflow top-level contents permission must be write (for release assets)"
+  fail "release workflow top-level permissions must be exactly contents: write and actions: write"
 fi
 
-if ! grep -Eq '^[[:space:]]*contents:[[:space:]]*write([[:space:]]|#|$)' "$RELEASE_WORKFLOW"; then
-  fail "release workflow must grant contents: write for GitHub Release publish"
+if bash "$ROOT/scripts/check-workflow-permissions.sh" "$CI_WORKFLOW" contents:read; then
+  pass "ci workflow top-level permissions are exactly contents: read"
 else
-  pass "release workflow grants contents: write for GitHub Release publish"
+  fail "ci workflow top-level permissions must be exactly contents: read"
+fi
+
+if bash "$ROOT/scripts/check-release-publisher.sh" --mode=release "$RELEASE_WORKFLOW"; then
+  pass "release workflow publisher contract: one SHA-pinned softprops prerelease step + UNNOTARIZED-TEST-BUILD artifact"
+else
+  fail "release workflow violates the release publisher contract"
+fi
+
+if bash "$ROOT/scripts/check-release-publisher.sh" --mode=forbid "$CI_WORKFLOW"; then
+  pass "ci workflow contains no GitHub Release publisher step"
+else
+  fail "ci workflow must not contain a GitHub Release publisher step, at any pin level"
 fi
 
 checkout_count="$(grep -Ec 'uses:[[:space:]]*actions/checkout@' "$RELEASE_WORKFLOW" || true)"
@@ -99,45 +134,69 @@ else
   fail "release workflow must set persist-credentials: false for every checkout"
 fi
 
-if grep -Eq 'git[[:space:]]+push' "$RELEASE_WORKFLOW"; then
-  fail "release workflow must not push tags or refs"
+# Every action reference in both workflows must be a full 40-hex commit SHA.
+# The old rule only rejected '@v[0-9]', so 'uses: owner/repo@main', a branch name
+# or a short SHA passed every check in this file.
+unpinned_uses="$(
+  awk '
+    function is_hex40(s) {
+      if (length(s) != 40) { return 0 }
+      if (s ~ /[^0-9a-f]/) { return 0 }
+      return 1
+    }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*/ {
+      v = $0
+      sub(/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*/, "", v)
+      sub(/[[:space:]]+#.*$/, "", v)
+      sub(/[[:space:]]+$/, "", v)
+      if (v ~ /^".*"$/) { v = substr(v, 2, length(v) - 2) }
+      at = index(v, "@")
+      spec = (at > 0 ? substr(v, 1, at - 1) : v)
+      ref = (at > 0 ? substr(v, at + 1) : "")
+      if (spec !~ /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/ || is_hex40(ref) == 0) {
+        printf "  %s:%d: uses: %s\n", FILENAME, FNR, v
+      }
+    }
+  ' "$RELEASE_WORKFLOW" "$CI_WORKFLOW"
+)"
+if [ -z "$unpinned_uses" ]; then
+  pass "every workflow 'uses:' pins <owner>/<repo>@<40-hex commit SHA>"
 else
-  pass "release workflow does not push tags or refs"
+  fail "workflow actions must be pinned as <owner>/<repo>@<40-hex commit SHA> (a trailing '# v1.2.3' comment is fine)"
+  printf '%s\n' "$unpinned_uses" >&2
 fi
 
-# Require SHA-pinned softprops/action-gh-release with prerelease: true.
-# Reject unpinned softprops @vN (covered globally later), shell `gh release`, and
-# softprops without prerelease: true.
-if grep -Eq 'uses:[[:space:]]*softprops/action-gh-release@[0-9a-f]{40}' "$RELEASE_WORKFLOW" \
-  && grep -Eq 'prerelease:[[:space:]]*true' "$RELEASE_WORKFLOW"; then
-  pass "release workflow uses SHA-pinned softprops/action-gh-release with prerelease: true"
+# Ref mutation: neither the release workflow nor any script it can reach may
+# create or move a ref. This previously scanned release.yml only, so a stray
+# 'push' or force-moved tag inside one of the scripts release.yml invokes was
+# invisible to it. Matches are anchored to shell COMMAND position (start of line,
+# after a separator, or inside a command substitution) so that comments,
+# diagnostics and checker fixtures that merely NAME these commands do not trip it.
+# Command position includes one leading shell keyword ('if git push ...'),
+# and git may carry a -C <dir> option before the verb.
+# Known limits: a bare '( ... )' subshell open is not command position (it
+# would trip on diagnostics that NAME these commands in parentheses), and
+# commands hidden inside eval'd strings or variable indirection ("$cmd" push)
+# are not seen; unanchored matching is what made the old rule unusable across
+# scripts, so those stay out of scope deliberately.
+ref_cmd_start='(^|[;&|`]|\$\()[[:space:]]*((if|then|else|elif|do|while|until|eval|exec|command|sudo|time)[[:space:]]+)?'
+ref_git='git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?'
+ref_mutation_hits=""
+for candidate in "$RELEASE_WORKFLOW" "$ROOT"/scripts/*.sh; do
+  if grep -Eq "${ref_cmd_start}${ref_git}(push|update-ref)" "$candidate" \
+    || grep -Eq "${ref_cmd_start}${ref_git}tag[[:space:]]+(-f|--force)" "$candidate" \
+    || grep -Eq "${ref_cmd_start}(gh|curl)[[:space:]][^;&|]*git/refs" "$candidate"; then
+    ref_mutation_hits="${ref_mutation_hits} $(basename "$candidate")"
+  fi
+done
+if [ -z "$ref_mutation_hits" ]; then
+  pass "release workflow and scripts/*.sh never create or move refs"
 else
-  fail "release workflow must use softprops/action-gh-release@<40-hex-sha> with prerelease: true"
+  fail "ref-mutating command in:${ref_mutation_hits} — release automation must never push, force-move or API-write a ref"
 fi
 
-if grep -Eq 'uses:[[:space:]]*softprops/action-gh-release@v[0-9]' "$RELEASE_WORKFLOW"; then
-  fail "softprops/action-gh-release must be SHA-pinned (not mutable @vN)"
-else
-  pass "softprops/action-gh-release is not pinned to a mutable @vN tag"
-fi
-
-if grep -Eq 'actions/upload-release-asset|gh[[:space:]]+release' "$RELEASE_WORKFLOW"; then
-  fail "release workflow must not use unpinned shell gh release or upload-release-asset"
-else
-  pass "release workflow has no shell gh release / upload-release-asset publisher"
-fi
-
-# Short-retention Actions artifact upload remains required alongside the prerelease.
-# Requires actions: write; must remain SHA-pinned and named UNNOTARIZED-TEST-BUILD.
-if grep -Eq 'uses:[[:space:]]*actions/upload-artifact@[0-9a-f]{40}' "$RELEASE_WORKFLOW" \
-  && grep -Eq 'UNNOTARIZED-TEST-BUILD' "$RELEASE_WORKFLOW" \
-  && grep -Eq 'retention-days:[[:space:]]*[0-9]+' "$RELEASE_WORKFLOW"; then
-  pass "release workflow uploads SHA-pinned short-retention UNNOTARIZED-TEST-BUILD artifact"
-else
-  fail "release workflow must SHA-pin actions/upload-artifact with UNNOTARIZED-TEST-BUILD and retention-days"
-fi
-
-# 7) Future notarization must use a Keychain profile and fail safe before mutation
+# 9) Future notarization must use a Keychain profile and fail safe before mutation
 SIGN_RELEASE_SCRIPT="$ROOT/scripts/sign-release.sh"
 if grep -Eq -- '--password|--apple-id|--team-id|APPLE_APP_PASSWORD' "$SIGN_RELEASE_SCRIPT"; then
   fail "sign-release must not pass Apple notarization credentials on the command line"
@@ -168,14 +227,14 @@ else
   fail "sign-release must contain spctl --assess after stapling"
 fi
 
-# 8) package-dmg path safety self-test
+# 10) package-dmg path safety self-test
 if bash "$ROOT/scripts/package-dmg.sh" --self-test; then
   pass "package-dmg rejects directory / non-.dmg paths and removes stale files with rm -f"
 else
   fail "package-dmg --self-test"
 fi
 
-# 9) Exact tag validation and marketing version equality when a release tag is provided
+# 11) Exact tag validation and marketing version equality when a release tag is provided
 # Prefer RELEASE_TAG when set. Only fall back to GITHUB_REF_NAME when it looks like a
 # release tag (v + digits.digits.digits). Branch names like "main" must SKIP, not FAIL.
 TAG_RAW="${RELEASE_TAG:-}"
@@ -199,7 +258,7 @@ else
   echo "SKIP: no release tag (RELEASE_TAG unset and GITHUB_REF_NAME is not a v*.*.* tag); tag equality not checked"
 fi
 
-# 10) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
+# 12) Artifact checks — required when VERIFY_RELEASE_ARTIFACTS=1; otherwise skipped
 #    (avoids false passes on stale/partial build/Release trees during pre-build).
 if [ "$VERIFY_ARTIFACTS" = "1" ]; then
   APP="$OUT/RazerMenuBarApp.app"
@@ -272,7 +331,7 @@ else
   echo "SKIP: artifact checks (set VERIFY_RELEASE_ARTIFACTS=1 after ci-release-build)"
 fi
 
-# 11) shellcheck when available (required in CI via workflow install)
+# 13) shellcheck when available (required in CI via workflow install)
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck_scripts=()
   for script in "$ROOT"/scripts/*.sh; do
@@ -296,21 +355,10 @@ else
   echo "SKIP: shellcheck not installed (CI installs it)"
 fi
 
-# 12) Task 7/8 hardening contracts (SHA-pinned actions, XcodeGen digest, marker, ci.yml)
-CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
+# 14) Task 7/8 hardening contracts (XcodeGen digest verification, unnotarized marker)
+#     Action pinning, permissions and the publisher surface for BOTH workflows are
+#     asserted once, structurally, in section 8 — never re-grepped here.
 PACKAGE_DMG_SCRIPT="$ROOT/scripts/package-dmg.sh"
-
-mutable_action_tag=0
-for wf in "$CI_WORKFLOW" "$RELEASE_WORKFLOW"; do
-  if grep -Eq 'uses:[[:space:]]*[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@v[0-9]' "$wf"; then
-    mutable_action_tag=1
-  fi
-done
-if [ "$mutable_action_tag" -eq 0 ]; then
-  pass "workflows pin actions to full commit SHAs (no mutable @vN tags)"
-else
-  fail "workflows must pin actions to full commit SHAs"
-fi
 
 if grep -Eq 'XCODEGEN_SHA256:' "$RELEASE_WORKFLOW" \
   && grep -Eq 'shasum[[:space:]]+-a[[:space:]]+256[[:space:]]+-c' "$RELEASE_WORKFLOW"; then
@@ -330,25 +378,6 @@ if grep -Eq 'UNNOTARIZED_TEST_BUILD\.txt' "$PACKAGE_DMG_SCRIPT" \
   pass "UNNOTARIZED_TEST_BUILD.txt marker present in package-dmg.sh and release.yml"
 else
   fail "UNNOTARIZED_TEST_BUILD.txt must appear in package-dmg.sh and release.yml"
-fi
-
-if grep -A1 '^permissions:$' "$CI_WORKFLOW" \
-  | grep -Eq '^  contents:[[:space:]]*read[[:space:]]*$'; then
-  pass "ci workflow top-level contents permission is read-only"
-else
-  fail "ci workflow top-level contents permission must be read-only"
-fi
-
-if grep -Eq '^[[:space:]]*contents:[[:space:]]*write([[:space:]]|#|$)' "$CI_WORKFLOW"; then
-  fail "ci workflow must not grant contents: write"
-else
-  pass "ci workflow grants no contents: write permission"
-fi
-
-if grep -Eq 'softprops/action-gh-release|actions/upload-release-asset|gh[[:space:]]+release' "$CI_WORKFLOW"; then
-  fail "ci workflow must not publish a GitHub Release"
-else
-  pass "ci workflow has no GitHub Release publisher"
 fi
 
 ci_checkout_count="$(grep -Ec 'uses:[[:space:]]*actions/checkout@' "$CI_WORKFLOW" || true)"

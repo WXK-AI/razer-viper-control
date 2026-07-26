@@ -42,12 +42,14 @@ The available security-review reference pack has no Swift/macOS-specific guidanc
 
 Finding IDs stay stable: **SAF-001, SAF-002, SAF-005, SAF-008** are active. **SAF-003, SAF-004, SAF-006, SAF-007** are withdrawn/remediated history (see below). Old SAF-005 “no validation” claims are withdrawn; the ID is reused for the narrower residual.
 
-## SAF status ledger (2026-07-22)
+## SAF status ledger (2026-07-22, release rows updated 2026-07-23)
+
+> **Update 2026-07-23 (`40a6ccd`):** the release posture reversed. `.github/workflows/release.yml` now takes top-level `contents: write` and publishes a **public unnotarized GitHub prerelease** on every `v*` tag; `scripts/verify-release-contract.sh` now *requires* that publisher shape instead of forbidding publishers. Only the SAF-001 / SAF-002 rows and their sections below are restated for this change; the rest of the report is unchanged from the 2026-07-22 pass.
 
 | SAF ID | Status | Notes |
 |--------|--------|-------|
-| SAF-001 | **Mitigated pending Developer ID** | Public release publication paused; test artifacts remain ad-hoc signed. Closure requires a notarized public artifact passing `spctl` on a clean Mac. |
-| SAF-002 | **Mitigated** | Top-level `contents: read`, `persist-credentials: false`, no tag push, no publisher. Actions SHA-pinned; XcodeGen SHA-256-verified (`fc76838`). Residual: deferred trusted publish / Developer ID path. |
+| SAF-001 | **Open — exposure accepted pending Developer ID** | Unnotarized, ad-hoc signed builds are now published publicly as prereleases (`40a6ccd`); the publication pause that mitigated this is gone. Compensating controls are labeling only (`prerelease: true`, "(unnotarized test build)" title, `UNNOTARIZED_TEST_BUILD.txt` marker). Closure requires a notarized public artifact passing `spctl` on a clean Mac. |
+| SAF-002 | **Mitigated** | SHA-pinned `softprops/action-gh-release` with `prerelease: true`; `contents: write` only in `release.yml`, the token reaching only the publisher step and a read-only clobber-guard probe (token allowlist contract-enforced); `persist-credentials: false`; no tag push; no shell `gh release`; `ci.yml` still `contents: read` with no publisher. Actions SHA-pinned; XcodeGen SHA-256-verified (`fc76838`); publisher shape contract-enforced (`40a6ccd`). Residual: workflow-scoped rather than job-split `contents: write`; deferred trusted publish / Developer ID path. |
 | SAF-003 | **Resolved** | Generation-gated applies + skip-unchanged planner. |
 | SAF-004 | **Resolved** | Default-off `remapperEnabled`; session-only `remapperArmed`. |
 | SAF-005 | **Mitigated** | Strict validation, owner-only writes, quarantine, session arming. Residual: no external-change mapping summary; Keychain/HMAC deferred. |
@@ -59,7 +61,7 @@ Finding IDs stay stable: **SAF-001, SAF-002, SAF-005, SAF-008** are active. **SA
 
 ### SAF-001 — Ad-hoc public distribution meets session-wide CGEvent remapping
 
-Public installs still ship **ad-hoc signed, non-notarized** binaries and document Gatekeeper bypass before granting Input Monitoring and Accessibility (`README.md:50-67`, `.github/workflows/release.yml:291-296`).
+Public installs still ship **ad-hoc signed, non-notarized** binaries and document Gatekeeper bypass before granting Input Monitoring and Accessibility (`README.md:50-67`, `.github/workflows/release.yml`). Since `40a6ccd` this is automatic and unauthenticated: every `v*` tag push attaches those binaries to a public GitHub prerelease, so exposure is no longer limited to maintainers who log in to download an Actions artifact. The prerelease flag, the "(unnotarized test build)" title, and the `UNNOTARIZED_TEST_BUILD.txt` marker label the risk; they do not remove it.
 
 Once armed, the remapper installs a session event tap and posts synthetic HID-level mouse and keyboard events globally—not only Razer hardware:
 
@@ -69,7 +71,7 @@ Once armed, the remapper installs a session event tap and posts synthetic HID-le
 
 Impact: users cannot authenticate the publisher through Developer ID/notarization at the point they are trained to bypass Gatekeeper for a binary that can observe and inject session-wide input.
 
-The published `SHA256SUMS.txt` does not close the publisher-trust gap because it is produced and attached by the same release job (`.github/workflows/release.yml:125-132`, `.github/workflows/release.yml:272-283`).
+The published `SHA256SUMS.txt` does not close the publisher-trust gap because it is produced and attached by the same release job (`.github/workflows/release.yml`, `Package downloads` and `Publish unnotarized GitHub prerelease` steps).
 
 Recommendation:
 
@@ -81,13 +83,13 @@ Recommendation:
 
 **Closed at `fc76838` (do not treat as missing):**
 
-1. Actions pinned to full commit SHAs (e.g. `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` # v4) in `.github/workflows/ci.yml` and `release.yml`; enforced by `scripts/verify-release-contract.sh`.
+1. Actions pinned to full commit SHAs (e.g. `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1` # v7.0.1) in `.github/workflows/ci.yml` and `release.yml`; enforced by `scripts/verify-release-contract.sh`.
 2. XcodeGen ZIP download verified with repository-controlled `XCODEGEN_SHA256` + `shasum -a 256 -c` before extract; job-local `mktemp` dir and `$GITHUB_PATH` (no `sudo cp` into `/usr/local/bin`) in `.github/workflows/release.yml`.
 3. `ci.yml` top-level `permissions: contents: read` and `persist-credentials: false` on every checkout.
 
 **Already present (do not treat as missing):**
 
-- Top-level `contents: read`, `persist-credentials: false`, no tag push, no release publisher (`.github/workflows/release.yml`)
+- Constrained publish surface: SHA-pinned `softprops/action-gh-release` (`prerelease: true`, `fail_on_unmatched_files: true`) as the only publisher, `persist-credentials: false`, no tag push, a fail-closed pre-publish guard that refuses to overwrite an existing non-prerelease or draft release for the tag, and `secrets.GITHUB_TOKEN` handed only to the publisher step and that read-only guard probe (`.github/workflows/release.yml`, `40a6ccd`). `contents: write` is workflow-scoped, not a separate protected publish job — see recommendation 3.
 - Clean-worktree requirement for release builds (`scripts/ci-release-build.sh:12-22`, re-check `scripts/ci-release-build.sh:97-98`)
 - Artifact / `BUILD_REVISION` contracts when `VERIFY_RELEASE_ARTIFACTS=1` (`scripts/verify-release-contract.sh`)
 - Exact `vMAJOR.MINOR.PATCH` tag validation (`scripts/validate-release-tag.sh:9-15`; workflow call sites in `.github/workflows/release.yml`)

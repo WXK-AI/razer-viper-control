@@ -3,11 +3,13 @@
 > **Status (2026-07-22, rev 4): Tasks 1–9 documentation/automation work COMPLETE.** Code safety (Tasks 1–6): commits `f1cf780`/`3a02354`/`8213da2`/`fc0d660`/`d2f72df`/`3d734f9`. CI quarantine (Task 7): `48f97ff`. Credential-safe notarization (Task 8): `68ae22a`. Acceptance record + dependabot + SAF ledger (Task 9): `b913ded` — README now documents `NOTARY_KEYCHAIN_PROFILE` setup. Task 7/8 hardening sub-items (SHA-pinned actions, verified XcodeGen, test-build marker, `ci.yml` permissions/credentials, `spctl` assessment) complete at `fc76838`. Contracts verified green via `scripts/verify-release-contract.sh`.
 > **Still OPEN:** physical-device rows (manual matrix below + 07-11/07-18 acceptance runs). SAF-001 stays **Mitigated pending Developer ID** — notarization/public release intentionally deferred (no Apple Developer Program membership yet).
 
+> **SUPERSEDED IN PART — 2026-07-23, commit `40a6ccd` (`ci(release): auto-publish unnotarized GitHub prerelease on tag`).** The "no public release" decision recorded below (Task 7 no-membership policy, Task 9 verification, safety notes, and the handoff prompt) **no longer describes the repository.** `.github/workflows/release.yml` now takes top-level `contents: write` and publishes a **public GitHub Release marked `prerelease: true`** on every `v*` tag push, with the same ad-hoc signed, **unnotarized** assets plus an `UNNOTARIZED_TEST_BUILD.txt` marker; `scripts/verify-release-contract.sh` now **requires** that publisher shape (SHA-pinned `softprops/action-gh-release`, `prerelease: true`) instead of forbidding publishers. Notarization is still deferred, so SAF-001 is now **open with accepted exposure** rather than mitigated by a publication pause: unnotarized binaries of a session-wide `CGEvent` remapper are publicly downloadable. Everything below is preserved as the 2026-07-12 plan of record; for current posture read [`docs/testing/safety-hardening-acceptance.md`](../testing/safety-hardening-acceptance.md) § 6 and its SAF ledger.
+
 > **For Claude:** Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` to implement this plan task-by-task.
 
 **Goal:** Eliminate unintended persistent HID writes, require explicit session-wide remapper consent, validate privileged profile actions, keep event-tap work bounded, and prevent unnotarized builds from being presented as trusted public releases.
 
-**Architecture:** Split saved profile state, session remapper arming, and hardware application into distinct flows. Move validation and scheduling policy into small testable `RazerCore` types, keep `AppModel` as the main-actor coordinator, and make failure paths disable or pause privileged behavior. Until Apple Developer membership exists, CI may build test artifacts with read-only permissions but must not publish them as recommended public releases.
+**Architecture:** Split saved profile state, session remapper arming, and hardware application into distinct flows. Move validation and scheduling policy into small testable `RazerCore` types, keep `AppModel` as the main-actor coordinator, and make failure paths disable or pause privileged behavior. Until Apple Developer membership exists, CI may build test artifacts with read-only permissions but must not publish them as recommended public releases. *(Superseded 2026-07-23 by `40a6ccd`: CI publishes them as public **prereleases** — still never as a recommended/`latest` release, and still unnotarized. See the supersession note above.)*
 
 **Tech Stack:** Swift 5.9, Swift Package Manager/XCTest, SwiftUI, AppKit, CoreGraphics, IOKit, Bash, GitHub Actions, and XcodeGen.
 
@@ -27,7 +29,7 @@ Success means:
 - Open App/Open URL work runs after the event-tap callback returns.
 - Repeated event-tap disables trip a circuit breaker and leave the remapper paused.
 - Build jobs use read-only permissions, non-persisted credentials, immutable action pins, and verified XcodeGen bytes.
-- Without Developer ID credentials, CI produces internal test artifacts only and creates no public release.
+- Without Developer ID credentials, CI produces internal test artifacts only and creates no public release. *(Superseded 2026-07-23 by `40a6ccd`.)*
 - Future notarization uses a Keychain profile or App Store Connect API key, never a password argument.
 
 ## Current codebase facts
@@ -281,7 +283,7 @@ For Open App/Open URL, validate and copy the URL in the callback, then `Dispatch
 - Modify: `README.md`
 - Create: `.github/dependabot.yml`
 
-No-membership policy:
+No-membership policy *(as decided 2026-07-12; items 1, 2, 4, and 9 were reversed on 2026-07-23 by `40a6ccd` — the workflow now publishes a tag-triggered public **prerelease** with `contents: write`, and the contract requires that publisher shape instead of rejecting it. Items 3, 5, 6, 7, 8 still hold.)*:
 
 1. Remove tag-triggered public GitHub Release publication.
 2. Keep a manual test-package workflow with `permissions: contents: read`.
@@ -347,7 +349,7 @@ Mark each SAF item `Resolved`, `Mitigated pending Developer ID`, or `Deferred`, 
 
 - [x] Run the full automated commands below. *(`verify-release-contract.sh` + `test-*.sh` green at `b913ded`)*
 - [ ] Run the manual matrix with a backup input device. *(manual — physical)*
-- [x] Verify no public release/tag is created. *(`release.yml` has no publisher — contract-enforced)*
+- [x] Verify no public release/tag is created. *(true when checked at `b913ded`: `release.yml` had no publisher, contract-enforced. **Superseded 2026-07-23 by `40a6ccd`** — a public unnotarized prerelease is now published on every `v*` tag; no tag is ever created or pushed by the workflow, which still holds.)*
 - [x] Commit: `docs: record safety hardening acceptance`. *(`b913ded`)*
 
 ## Files expected to change
@@ -415,6 +417,8 @@ Manual acceptance:
 9. Run test packaging: no tag or GitHub Release is created.
 ```
 
+*(Step 9 superseded 2026-07-23 by `40a6ccd`: no tag is created, but a public GitHub prerelease now is. Current expectation — a `v*` tag push produces a `prerelease: true` release titled `<tag> (unnotarized test build)` carrying the dmg/zips, `SHA256SUMS.txt`, and `UNNOTARIZED_TEST_BUILD.txt`.)*
+
 ## Safety and rollback notes
 
 - Use a backup pointing device for physical remapper/hardware tests.
@@ -422,9 +426,11 @@ Manual acceptance:
 - Preserve mappings and quarantine artifacts during migration.
 - If session arming regresses, fail closed and keep the remapper inactive.
 - If profile permissions cannot be repaired, preserve the file, block writes, load safe in-memory defaults, and keep remapping off.
-- Do not restore public binary publication to work around missing Developer ID credentials.
+- Do not restore public binary publication to work around missing Developer ID credentials. *(Superseded 2026-07-23 by `40a6ccd`, which deliberately restored it as prerelease-only, explicitly labelled, unnotarized publication. The accepted residual risk is recorded under SAF-001 in `docs/testing/safety-hardening-acceptance.md`.)*
 
 ## Cursor handoff prompt
+
+*Historical — preserved as written on 2026-07-12. The "do not publish, tag, push, or create a GitHub Release" instruction below was superseded on 2026-07-23 by `40a6ccd`; do not follow it as current policy.*
 
 ```text
 Implement docs/plans/2026-07-12-safety-release-hardening.md task-by-task using strict TDD.

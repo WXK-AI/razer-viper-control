@@ -1,6 +1,6 @@
 # Safety Hardening — Acceptance Record
 
-**Status:** Tasks 1–8 implemented and verified (see `docs/plans/2026-07-12-safety-release-hardening.md` rev 2). Physical acceptance **passed** 2026-07-23 (operator xk). This document records the acceptance evidence for the complete hardening set and tracks residual items that remain open.
+**Status:** Tasks 1–8 implemented and verified (see `docs/plans/2026-07-12-safety-release-hardening.md` rev 2). Physical acceptance **passed** 2026-07-23 (operator xk). This document records the acceptance evidence for the complete hardening set and tracks residual items that remain open. **Release posture changed 2026-07-23 (`40a6ccd`): public unnotarized prereleases are now published on every `v*` tag — see § 6 and SAF-001.**
 
 **Plan reference:** [`docs/plans/2026-07-12-safety-release-hardening.md`](../plans/2026-07-12-safety-release-hardening.md)
 **Security report:** [`security_best_practices_report.md`](../../security_best_practices_report.md)
@@ -87,27 +87,41 @@
 
 ---
 
-## 6. Paused public binary releases
+## 6. Public unnotarized prereleases
 
-**Behavior:** Public GitHub Release publication is **disabled**. The `release.yml` workflow is a read-only test-package artifact producer: it validates tags and builds unsigned/unnotarized packages, but never pushes tags, never creates releases, and never exposes artifacts to end users.
+> **Reversed 2026-07-23 (`40a6ccd`).** This section previously recorded paused public releases. Publication is no longer paused.
+
+**Behavior:** `release.yml` publishes a **public GitHub Release marked `prerelease: true`** on every `v*` tag push, and on `workflow_dispatch` for a tag that already exists at the workflow commit. The assets are the same ad-hoc signed, **not notarized** packages CI has always built, so they are now downloadable by anyone without a login instead of only by authenticated maintainers. The workflow still never creates or pushes a tag — it fails if the tag does not already exist at the workflow commit.
+
+**Residual risk (accepted, not closed):** unnotarized, ad-hoc-signed binaries of a **session-wide `CGEvent` remapper** are publicly downloadable, and users are told how to bypass Gatekeeper to launch them. Nothing below authenticates the publisher; the compensating controls are labeling, scoping, and provenance only. SAF-001 stays open until a notarized artifact passes `spctl` on a clean Mac.
+
+**Compensating controls that actually exist:**
+- `prerelease: true` — GitHub never serves the release as `/releases/latest`.
+- Release title `<tag> (unnotarized test build)` and a body stating the build is not Developer ID signed and not notarized.
+- `UNNOTARIZED_TEST_BUILD.txt` marker inside the DMG staging tree and both zip archives, hashed in `SHA256SUMS.txt`, and attached as a standalone release asset.
+- Publisher SHA-pinned: `softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65` # v2, `fail_on_unmatched_files: true`.
+- `persist-credentials: false` on checkout; the `contents: write` token is passed only to the pinned publisher step and to a read-only pre-publish probe (below) via `secrets.GITHUB_TOKEN` — a contract-enforced token allowlist rejects any other token-bearing step that could mutate refs or releases.
+- A `Guard against clobbering an existing release` step runs before the publisher: it refuses to publish when the tag already has a release (or draft) that is not this workflow's own unnotarized prerelease, so a re-run can never silently replace a manually published notarized release's assets. It fails closed — an API or auth error blocks publishing rather than being read as "no release exists".
+- Publisher **shape** is contract-enforced (including the guard step's presence and ordering), so the pin, the prerelease flag, and the guard cannot be dropped silently.
 
 **Implementation evidence:**
-- `.github/workflows/release.yml` — top-level `permissions: contents: read`, `persist-credentials: false`, no tag push step, no GitHub Release publisher step.
-- The workflow still runs on `push: tags: "v*"` and `workflow_dispatch` to validate release packaging, but all outputs remain runner-local.
-- `scripts/verify-release-contract.sh` enforces the no-publisher, read-only contract.
+- `.github/workflows/release.yml` — top-level `permissions: contents: write` (release assets) and `actions: write` (short-retention artifact); `persist-credentials: false`; no `git push`; `Publish unnotarized GitHub prerelease` step with `prerelease: true`.
+- Assets: `RazerMenuBarApp-macOS.dmg`, `RazerMenuBarApp-macOS.zip`, `RazerProbeCLI-macOS.zip`, `SHA256SUMS.txt`, `UNNOTARIZED_TEST_BUILD.txt`. The 7-day `UNNOTARIZED-TEST-BUILD` Actions artifact is still uploaded alongside the release.
+- `scripts/verify-release-contract.sh` now **requires** the publisher shape (SHA-pinned `softprops/action-gh-release` + `prerelease: true`) and still rejects mutable `@vN` pins, shell `gh release` / `actions/upload-release-asset`, persisted checkout credentials, and `git push`.
+- `.github/workflows/ci.yml` is unchanged: top-level `contents: read`, no publisher.
 
 **Verification:**
-- `bash scripts/verify-release-contract.sh` — passes with 5 release-quarantine contracts.
+- `bash scripts/verify-release-contract.sh` — passes; the workflow authority-surface contracts (exact-set permissions, publisher shape + clobber guard, action pinning, ref-mutation scan) are section 8 of the script, backed by the structural checkers `scripts/check-release-publisher.sh` and `scripts/check-workflow-permissions.sh` and their fixture suites.
 
 ---
 
 ## 7. Test-artifact limitations
 
-**Behavior:** CI produces ad-hoc signed, non-notarized test artifacts only. These are **not** recommended for public installation.
+**Behavior:** CI produces ad-hoc signed, non-notarized artifacts only — including the ones now attached to the public prerelease (§ 6). They are **not** a Gatekeeper-clean distribution and are **not** recommended for general installation.
 
 **Closed sub-items (`fc76838`):**
 - [x] `UNNOTARIZED_TEST_BUILD.txt` marker is included in DMG staging (`scripts/package-dmg.sh`), `build/Release`, both zip archives, and `SHA256SUMS.txt`.
-- [x] Actions pinned to full commit SHAs (`actions/checkout@11d5960a326750d5838078e36cf38b85af677262` # v4) in `ci.yml` and `release.yml`.
+- [x] Actions pinned to full commit SHAs (`actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1` # v7.0.1) in `ci.yml` and `release.yml`.
 - [x] XcodeGen 2.45.4 download SHA-256-verified (`XCODEGEN_SHA256` + `shasum -a 256 -c`), job-local `mktemp` dir, no `sudo`.
 - [x] `ci.yml` top-level `permissions: contents: read` and `persist-credentials: false` on both checkouts.
 
@@ -120,8 +134,8 @@
 
 | SAF ID | Title | Status | Verification evidence |
 |--------|-------|--------|----------------------|
-| **SAF-001** | Ad-hoc public distribution meets session-wide CGEvent remapping | **Mitigated pending Developer ID** | Public release publication paused (`release.yml` read-only, no publisher). Test artifacts remain ad-hoc signed. **Closure condition:** a notarized public artifact passes `spctl --assess --type execute --verbose=4` on a clean Mac. |
-| **SAF-002** | Remaining release supply-chain gaps (deferred trusted publish) | **Mitigated** | Top-level `contents: read`, `persist-credentials: false`, no tag push, no release publisher. Actions SHA-pinned; XcodeGen SHA-256-verified; marker in DMG/zips/`SHA256SUMS.txt` (`fc76838`). **Residual:** deferred trusted publish / Developer ID path. |
+| **SAF-001** | Ad-hoc public distribution meets session-wide CGEvent remapping | **Open — exposure accepted pending Developer ID** | Since `40a6ccd`, `release.yml` publishes ad-hoc signed, **unnotarized** builds of a session-wide `CGEvent` remapper as a **public** GitHub prerelease on every `v*` tag; the publication pause that previously mitigated this finding is gone. Compensating controls are labeling/scoping only, not publisher authentication: `prerelease: true` (never served as `/releases/latest`), release title `<tag> (unnotarized test build)`, an explicitly not-notarized release body, `UNNOTARIZED_TEST_BUILD.txt` inside every archive, and `SHA256SUMS.txt` (same-job provenance, so it does not close the publisher-trust gap). **Closure condition:** a notarized public artifact passes `spctl --assess --type execute --verbose=4` on a clean Mac. |
+| **SAF-002** | Remaining release supply-chain gaps (deferred trusted publish) | **Mitigated** | Publisher is SHA-pinned `softprops/action-gh-release@3bb1273` # v2 with `prerelease: true` and `fail_on_unmatched_files: true`; `contents: write` is granted only in `release.yml` and the token reaches only the pinned publisher step and the read-only clobber-guard probe (token allowlist contract-enforced); a pre-publish guard refuses to overwrite an existing non-prerelease or draft release for the tag; `persist-credentials: false` on every checkout; no `git push`; no shell `gh release` / `upload-release-asset`; `ci.yml` stays `contents: read` with no publisher. Actions SHA-pinned; XcodeGen SHA-256-verified; marker in DMG/zips/`SHA256SUMS.txt` (`fc76838`). Publisher shape is contract-enforced by `scripts/verify-release-contract.sh` (`40a6ccd`). **Residual:** `contents: write` is workflow-scoped rather than split into a separate protected publish job; deferred trusted publish / Developer ID path; tag immutability still relies on external GitHub rulesets. |
 | **SAF-003** | HID write flood / no coalescing | **Resolved** | `HardwareApplyPolicy` + `LatestHardwareApplyGate` generation-gated applies; `HardwareProfileApplier` skip-unchanged planner. Tests: `HardwareApplyPolicyTests`, `HardwareProfileApplierTests`. |
 | **SAF-004** | Remapper auto-activation | **Resolved** | `remapperEnabled` defaults `false`; session-only `remapperArmed`; permission restoration never re-arms. Tests: `ProfileSchemaTests`, `MouseProfileMigrationTests`, `ControlModelsTests`. |
 | **SAF-005** | Same-user profile integrity residual | **Mitigated** | Strict source/semantic validation, owner-only writes, quarantine, session arming. **Residual:** no external-change detection or mapping summary on the explicit arm path; Keychain/HMAC sealing deferred until stable Developer ID identity exists. |

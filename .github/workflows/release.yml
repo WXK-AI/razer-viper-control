@@ -85,7 +85,7 @@ jobs:
               echo "Cut a new version/tag from the commit you want to release." >&2
               exit 1
             fi
-            echo "Tag ${TAG} matches this commit; continuing with a quarantined test package"
+            echo "Tag ${TAG} matches this commit; continuing with the unnotarized prerelease build"
           else
             echo "error: tag ${TAG} does not exist at this workflow commit" >&2
             echo "This workflow never creates tags." >&2
@@ -153,6 +153,95 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Guard against clobbering an existing release
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # softprops/action-gh-release UPDATES the release that already owns this
+          # tag: it overrides name and prerelease with this workflow's inputs and
+          # overwrites same-named assets. The "tag points at this commit" guard
+          # above says nothing about releases, so without this probe a re-run (or a
+          # workflow_dispatch) would silently rename a manually published NOTARIZED
+          # release to "<tag> (unnotarized test build)", flip it to prerelease, and
+          # replace its notarized .dmg/.zip with unnotarized ones.
+          #
+          # Read-only probe only: a plain GET, no mutating gh api flags, no
+          # 'gh release', no ref-writing commands (see check-release-publisher.sh R6).
+          UNNOTARIZED_SUFFIX="(unnotarized test build)"
+          WORK_DIR="$(mktemp -d)"
+          BODY_FILE="${WORK_DIR}/release.txt"
+          ERR_FILE="${WORK_DIR}/error.txt"
+          API_PATH="repos/${RELEASE_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+
+          # Draft releases are invisible to the tags endpoint (a draft has no
+          # tag until published), but softprops adopts a same-tag draft and
+          # overwrites its assets — rule one out first via the list endpoint.
+          DRAFT_TAGS_FILE="${WORK_DIR}/draft-tags.txt"
+          GH_STATUS=0
+          gh api "repos/${RELEASE_REPOSITORY}/releases?per_page=100" --paginate \
+            --jq '.[] | select(.draft) | .tag_name // ""' \
+            >"$DRAFT_TAGS_FILE" 2>"$ERR_FILE" || GH_STATUS=$?
+          if [ "$GH_STATUS" -ne 0 ]; then
+            echo "error: could not list releases to rule out a draft for ${RELEASE_TAG}" >&2
+            cat "$ERR_FILE" >&2
+            echo "Refusing to publish: an existing draft release cannot be ruled out." >&2
+            exit 1
+          fi
+          if grep -Fxq "$RELEASE_TAG" "$DRAFT_TAGS_FILE"; then
+            echo "error: a DRAFT release already targets ${RELEASE_TAG}." >&2
+            echo "Publishing would adopt that draft and replace its assets with unnotarized ones." >&2
+            echo "Publish or delete the draft deliberately, then re-run this workflow." >&2
+            exit 1
+          fi
+
+          GH_STATUS=0
+          gh api "$API_PATH" \
+            --jq '"prerelease=\(.prerelease)", "name=\(.name // "")"' \
+            >"$BODY_FILE" 2>"$ERR_FILE" || GH_STATUS=$?
+
+          if [ "$GH_STATUS" -ne 0 ]; then
+            # Fail closed: only a definite 404 means "no release yet". Auth, rate
+            # limit and network failures must stop the job, never be read as absence.
+            if grep -q 'HTTP 404' "$ERR_FILE"; then
+              echo "No existing release for ${RELEASE_TAG}; this is the first publish for that tag."
+              exit 0
+            fi
+            echo "error: could not determine whether ${RELEASE_TAG} already has a release" >&2
+            cat "$ERR_FILE" >&2
+            echo "Refusing to publish: an existing release cannot be ruled out." >&2
+            exit 1
+          fi
+
+          EXISTING_PRERELEASE=""
+          EXISTING_NAME=""
+          while IFS= read -r LINE; do
+            case "$LINE" in
+              prerelease=*) EXISTING_PRERELEASE="${LINE#prerelease=}" ;;
+              name=*) EXISTING_NAME="${LINE#name=}" ;;
+            esac
+          done < "$BODY_FILE"
+
+          echo "Existing release for ${RELEASE_TAG}: prerelease=${EXISTING_PRERELEASE:-<unknown>} name=${EXISTING_NAME:-<empty>}"
+
+          if [ "$EXISTING_PRERELEASE" = "true" ] &&
+             [ "${EXISTING_NAME%"$UNNOTARIZED_SUFFIX"}" != "$EXISTING_NAME" ]; then
+            echo "Existing release is this workflow's own unnotarized prerelease; re-publishing over it is expected."
+            exit 0
+          fi
+
+          echo "error: ${RELEASE_TAG} already has a release this workflow must not overwrite." >&2
+          echo "  prerelease: ${EXISTING_PRERELEASE:-<unknown>}" >&2
+          echo "  name:       ${EXISTING_NAME:-<empty>}" >&2
+          echo "Only a prerelease whose name ends with '${UNNOTARIZED_SUFFIX}' may be republished here." >&2
+          echo "Publishing would rename that release, flip it to a prerelease, and replace its" >&2
+          echo "assets with unnotarized ones — including a notarized build from scripts/sign-release.sh." >&2
+          echo "If overwriting really is intended, delete the existing release deliberately" >&2
+          echo "(Releases -> ${RELEASE_TAG} -> Delete release, keeping the tag) and re-run this workflow." >&2
+          exit 1
+
       - name: Publish unnotarized GitHub prerelease
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
@@ -183,7 +272,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Confirm unnotarized prerelease published
+      # Log-only summary. It asserts nothing — the publish contract is enforced
+      # structurally by scripts/check-release-publisher.sh, not by this prose.
+      - name: Log unnotarized build disclaimer
         run: |
           echo "UNNOTARIZED PRERELEASE: published on GitHub Releases (prerelease: true) + 7-day Actions artifact UNNOTARIZED-TEST-BUILD."
           echo "Still unnotarized — not a notarized production / Gatekeeper-clean release."

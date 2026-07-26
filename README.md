@@ -24,6 +24,8 @@
 
 Get the latest release from **[GitHub Releases](https://github.com/WXK-AI/razer-viper-control/releases)**.
 
+> **Every published release is an unnotarized pre-release.** Assets are ad-hoc signed and **not notarized by Apple**, so they are marked pre-release (never served as `latest`) and every archive contains an `UNNOTARIZED_TEST_BUILD.txt` marker. Verify what you download against `SHA256SUMS.txt` and read [First launch and Gatekeeper](#first-launch-and-gatekeeper) before installing.
+
 | Asset | Purpose |
 |-------|---------|
 | `RazerMenuBarApp-macOS.dmg` | **Recommended** — drag-and-drop install |
@@ -66,7 +68,7 @@ After the first successful launch, double-click works normally.
 
 The same applies when sharing a self-built unsigned/ad-hoc DMG (`make release-dmg`): recipients must right-click → **Open** once (or run `xattr -dr com.apple.quarantine` on the app). This is expected for ad-hoc distribution, not a defect.
 
-The official release path for Gatekeeper-clean distribution is **Developer ID signed and notarized** (`scripts/sign-release.sh`). Notarized public releases are currently **deferred** (no Apple Developer Program membership yet); CI only produces quarantined, runner-local test artifacts. Optional DriverKit exclusive-ownership work is deferred ([GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2)) and is not required for the current remapper.
+The official release path for Gatekeeper-clean distribution is **Developer ID signed and notarized** (`scripts/sign-release.sh`). Notarized releases are currently **deferred** (no Apple Developer Program membership yet). What CI publishes instead: every `v*` tag is built and attached to a **public GitHub pre-release** titled `<tag> (unnotarized test build)`, with ad-hoc signed, non-notarized assets plus an `UNNOTARIZED_TEST_BUILD.txt` marker. Because the build is not notarized, installing it means trusting this repository and the build workflow — macOS cannot verify a publisher identity for you, and this app requests Input Monitoring and Accessibility and can remap input session-wide. Optional DriverKit exclusive-ownership work is deferred ([GitHub issue #2](https://github.com/WXK-AI/razer-viper-control/issues/2)) and is not required for the current remapper.
 
 ### Install (zip)
 
@@ -219,7 +221,7 @@ Manual acceptance for the CGEvent remapper (button/drag/scroll/pause/permissions
 - **Device (hardware):** Razer Viper V3 HyperSpeed (`1532:00B8`) only
 - **Software remapping:** session-wide; a trackpad or second mouse may be remapped while the remapper is enabled
 - **No** RGB, onboard profile save, or Mac App Store distribution
-- **CI builds today:** ad-hoc signed, arm64 only (optional local path: Developer ID + notarization)
+- **CI builds today:** ad-hoc signed, arm64 only, published as unnotarized GitHub **pre-releases** (optional local path: Developer ID + notarization)
 - **Unofficial:** not affiliated with Razer Inc.
 
 ---
