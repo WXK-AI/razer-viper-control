@@ -3,11 +3,12 @@ import XCTest
 @testable import RazerCore
 
 final class RazerCommandClientTransportTests: XCTestCase {
+    private let encoder = RazerCommandEncoder(model: .viperV3HyperSpeed)
     func testDeviceStateDefaultsPollingToUnknown() {
         XCTAssertNil(DeviceState().pollingRateHz)
     }
     func testBusyResponsesRetryThenSucceed() throws {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         let transport = FakeRazerReportTransport(
             getResponses: [
                 .success(response(for: request, status: .busy).bytes),
@@ -15,7 +16,7 @@ final class RazerCommandClientTransportTests: XCTestCase {
                 .success(response(for: request, status: .successful).bytes)
             ]
         )
-        let client = RazerCommandClient(transport: transport)
+        let client = RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
 
         let report = try client.send(request)
 
@@ -25,29 +26,29 @@ final class RazerCommandClientTransportTests: XCTestCase {
     }
 
     func testBusyExhaustionThrowsDeviceBusy() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         let busy = response(for: request, status: .busy).bytes
         let transport = FakeRazerReportTransport(
             getResponses: Array(
                 repeating: .success(busy),
-                count: DeviceDescriptor.maxCommandRetries
+                count: MouseModel.viperV3HyperSpeed.maxCommandRetries
             )
         )
-        let client = RazerCommandClient(transport: transport)
+        let client = RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
 
         XCTAssertThrowsError(try client.send(request)) { error in
             XCTAssertEqual(error as? RazerCommandError, .deviceBusy)
         }
-        XCTAssertEqual(transport.setCount, DeviceDescriptor.maxCommandRetries)
-        XCTAssertEqual(transport.getCount, DeviceDescriptor.maxCommandRetries)
+        XCTAssertEqual(transport.setCount, MouseModel.viperV3HyperSpeed.maxCommandRetries)
+        XCTAssertEqual(transport.getCount, MouseModel.viperV3HyperSpeed.maxCommandRetries)
     }
 
     func testTransportSetFailureDoesNotRetry() {
         let expected = RazerCommandError.permissionDenied("set result \(kIOReturnNotPermitted)")
         let transport = FakeRazerReportTransport(setErrors: [expected])
-        let client = RazerCommandClient(transport: transport)
+        let client = RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
 
-        XCTAssertThrowsError(try client.send(.getBatteryLevel())) { error in
+        XCTAssertThrowsError(try client.send(encoder.getBatteryLevel())) { error in
             XCTAssertEqual(error as? RazerCommandError, expected)
         }
         XCTAssertEqual(transport.setCount, 1)
@@ -55,11 +56,11 @@ final class RazerCommandClientTransportTests: XCTestCase {
     }
 
     func testCRCMismatchThrowsInvalidResponse() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         var invalid = response(for: request, status: .successful)
         invalid.crc ^= 0xFF
         let transport = FakeRazerReportTransport(getResponses: [.success(invalid.bytes)])
-        let client = RazerCommandClient(transport: transport)
+        let client = RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
 
         XCTAssertThrowsError(try client.send(request)) { error in
             XCTAssertEqual(error as? RazerCommandError, .invalidResponse("CRC mismatch."))
@@ -69,19 +70,19 @@ final class RazerCommandClientTransportTests: XCTestCase {
     }
 
     func testSleepDurationUsesDescriptorDefault() throws {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         let transport = FakeRazerReportTransport(
             getResponses: [.success(response(for: request, status: .successful).bytes)]
         )
-        let client = RazerCommandClient(transport: transport)
+        let client = RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
 
         _ = try client.send(request)
 
-        XCTAssertEqual(transport.sleeps, [DeviceDescriptor.responseWaitMilliseconds])
+        XCTAssertEqual(transport.sleeps, [MouseModel.viperV3HyperSpeed.responseWaitMilliseconds])
     }
 
     func testNewCommandResponsesPollGetThenSucceed() throws {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         let transport = FakeRazerReportTransport(
             getResponses: [
                 .success(response(for: request, status: .newCommand).bytes),
@@ -89,7 +90,7 @@ final class RazerCommandClientTransportTests: XCTestCase {
                 .success(response(for: request, status: .successful).bytes)
             ]
         )
-        let client = RazerCommandClient(transport: transport)
+        let client = RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
 
         let report = try client.send(request)
 
@@ -99,22 +100,22 @@ final class RazerCommandClientTransportTests: XCTestCase {
         XCTAssertEqual(
             transport.sleeps,
             [
-                DeviceDescriptor.responseWaitMilliseconds,
-                DeviceDescriptor.responsePollIntervalMilliseconds,
-                DeviceDescriptor.responsePollIntervalMilliseconds
+                MouseModel.viperV3HyperSpeed.responseWaitMilliseconds,
+                MouseModel.viperV3HyperSpeed.responsePollIntervalMilliseconds,
+                MouseModel.viperV3HyperSpeed.responsePollIntervalMilliseconds
             ]
         )
     }
 
     func testNewCommandPollingStopsAtDeadlineAndReportsBlockedAccess() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         let notReady: Result<[UInt8], RazerCommandError> = .success(
             response(for: request, status: .newCommand).bytes
         )
         let transport = FakeRazerReportTransport(
             getResponses: Array(repeating: notReady, count: 32)
         )
-        let client = RazerCommandClient(transport: transport)
+        let client = RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
 
         XCTAssertThrowsError(try client.send(request)) { error in
             XCTAssertEqual(
@@ -125,31 +126,31 @@ final class RazerCommandClientTransportTests: XCTestCase {
         XCTAssertEqual(transport.setCount, 1)
         XCTAssertEqual(
             transport.sleeps.reduce(UInt64(0), +),
-            DeviceDescriptor.responseDeadlineMilliseconds
+            MouseModel.viperV3HyperSpeed.responseDeadlineMilliseconds
         )
         XCTAssertLessThanOrEqual(
             transport.sleeps.reduce(UInt64(0), +),
-            DeviceDescriptor.responseDeadlineMilliseconds
+            MouseModel.viperV3HyperSpeed.responseDeadlineMilliseconds
         )
     }
 
     func testReadStatePreservesUnknownPollingAndBothDPIStageAxes() throws {
-        var battery = response(for: .getBatteryLevel(), status: .successful)
+        var battery = response(for: encoder.getBatteryLevel(), status: .successful)
         battery.arguments[1] = 255
         battery.refreshCRC()
 
-        var charging = response(for: .getChargingStatus(), status: .successful)
+        var charging = response(for: encoder.getChargingStatus(), status: .successful)
         charging.arguments[1] = 1
         charging.refreshCRC()
 
-        var dpi = response(for: .getDPI(), status: .successful)
+        var dpi = response(for: encoder.getDPI(), status: .successful)
         dpi.arguments[1] = 0x03
         dpi.arguments[2] = 0x20
         dpi.arguments[3] = 0x06
         dpi.arguments[4] = 0x40
         dpi.refreshCRC()
 
-        var stages = response(for: .getDPIStages(), status: .successful)
+        var stages = response(for: encoder.getDPIStages(), status: .successful)
         stages.arguments[1] = 1
         stages.arguments[2] = 1
         stages.arguments[3] = 0
@@ -159,14 +160,14 @@ final class RazerCommandClientTransportTests: XCTestCase {
         stages.arguments[7] = 0x40
         stages.refreshCRC()
 
-        var polling = response(for: .getPollingRate(), status: .successful)
+        var polling = response(for: encoder.getPollingRate(), status: .successful)
         polling.arguments[0] = 0xFF
         polling.refreshCRC()
 
         let transport = FakeRazerReportTransport(
             getResponses: [battery, charging, dpi, stages, polling].map { .success($0.bytes) }
         )
-        let client = RazerCommandClient(transport: transport)
+        let client = RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
 
         let state = try client.readState()
 

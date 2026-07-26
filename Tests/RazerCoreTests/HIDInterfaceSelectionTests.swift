@@ -10,20 +10,21 @@ final class HIDInterfaceSelectionTests: XCTestCase {
     ) -> DiscoveredHIDInterface {
         DiscoveredHIDInterface(
             id: DiscoveredHIDInterface.makeID(
-                vendorID: DeviceDescriptor.vendorID,
-                productID: DeviceDescriptor.productID,
+                vendorID: MouseModel.viperV3HyperSpeed.vendorID,
+                productID: MouseModel.viperV3HyperSpeed.productID,
                 selectionIdentity: selectionIdentity
             ),
-            vendorID: DeviceDescriptor.vendorID,
-            productID: DeviceDescriptor.productID,
+            vendorID: MouseModel.viperV3HyperSpeed.vendorID,
+            productID: MouseModel.viperV3HyperSpeed.productID,
             productName: productName,
             manufacturer: "Razer",
-            primaryUsagePage: DeviceDescriptor.primaryUsagePage,
-            primaryUsage: DeviceDescriptor.primaryUsage,
-            maxFeatureReportSize: DeviceDescriptor.featureReportLength,
+            primaryUsagePage: MouseModel.viperV3HyperSpeed.primaryUsagePage,
+            primaryUsage: MouseModel.viperV3HyperSpeed.primaryUsage,
+            maxFeatureReportSize: MouseModel.viperV3HyperSpeed.minimumFeatureReportSize,
             transport: transport,
             locationID: locationID,
             isTargetControlInterface: true,
+            model: MouseModel.viperV3HyperSpeed,
             selectionIdentity: selectionIdentity
         )
     }

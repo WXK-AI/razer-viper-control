@@ -8,6 +8,10 @@ import IOKit.hid
 /// `Sendable` so clients can cross the MainActor → HID-queue boundary safely
 /// (production `RazerCommandClient` is `@unchecked Sendable`).
 public protocol DeviceCommandClient: AnyObject, Sendable {
+    /// The device this client is bound to. Carrying it here rather than passing it
+    /// alongside makes a client/model mismatch structurally impossible.
+    var model: MouseModel { get }
+
     func readState() throws -> DeviceState
     func probeWheelCapability() -> WheelCapabilityProbe.ProbeReport
     /// Diagnostics line for a probe report (production may append live readback).
@@ -81,10 +85,16 @@ protocol DeviceSessionDeviceHandle: AnyObject {}
 struct DeviceSessionDiscoveredDevice {
     let identity: DeviceSessionDeviceIdentity?
     let handle: any DeviceSessionDeviceHandle
+    let model: MouseModel
 
-    init(identity: DeviceSessionDeviceIdentity?, handle: any DeviceSessionDeviceHandle) {
+    init(
+        identity: DeviceSessionDeviceIdentity?,
+        handle: any DeviceSessionDeviceHandle,
+        model: MouseModel
+    ) {
         self.identity = identity
         self.handle = handle
+        self.model = model
     }
 }
 
@@ -233,10 +243,14 @@ private final class IOHIDDeviceRemovalMonitorBackend: DeviceRemovalMonitorBacken
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let lock = NSLock()
     private var state: State = .idle
+    /// Every supported model, not the connected one: this starts before the first
+    /// discovery pass, so the connected device is not yet known.
+    private let models: [MouseModel]
 
-    init() {
+    init(models: [MouseModel]) {
         manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         deliveryQueue.setSpecific(key: queueKey, value: 1)
+        self.models = models
     }
 
     func start(removalHandler: @escaping (DeviceSessionDeviceIdentity) -> Void) -> IOReturn {
@@ -246,13 +260,20 @@ private final class IOHIDDeviceRemovalMonitorBackend: DeviceRemovalMonitorBacken
             callbackContext: callbackContext
         )
 
-        let matching: [String: Any] = [
-            kIOHIDVendorIDKey: DeviceDescriptor.vendorID,
-            kIOHIDProductIDKey: DeviceDescriptor.productID,
-            kIOHIDDeviceUsagePageKey: DeviceDescriptor.primaryUsagePage,
-            kIOHIDDeviceUsageKey: DeviceDescriptor.primaryUsage
-        ]
-        IOHIDManagerSetDeviceMatching(manager, matching as CFDictionary)
+        let matching: [[String: Any]] = models.map { model in
+            [
+                kIOHIDVendorIDKey: model.vendorID,
+                kIOHIDProductIDKey: model.productID,
+                kIOHIDDeviceUsagePageKey: model.primaryUsagePage,
+                kIOHIDDeviceUsageKey: model.primaryUsage
+            ]
+        }
+        if matching.count == 1 {
+            // Byte-identical to the pre-registry single-dictionary call.
+            IOHIDManagerSetDeviceMatching(manager, matching[0] as CFDictionary)
+        } else {
+            IOHIDManagerSetDeviceMatchingMultiple(manager, matching as CFArray)
+        }
         IOHIDManagerRegisterDeviceRemovalCallback(
             manager,
             deviceSessionRemovalCallback,
@@ -339,24 +360,25 @@ public final class DeviceSession: @unchecked Sendable {
     private var client: RazerCommandClient?
     private var removalHandler: (() -> Void)?
 
-    public convenience init() {
-        let discovery = HIDDeviceDiscovery()
+    public convenience init(registry: DeviceRegistry) {
+        let discovery = HIDDeviceDiscovery(registry: registry)
         let removalMonitor = ManagedDeviceRemovalMonitor(
-            backend: IOHIDDeviceRemovalMonitorBackend()
+            backend: IOHIDDeviceRemovalMonitorBackend(models: registry.models)
         )
         self.init(
             discoverDevice: {
-                guard let device = try discovery.findControlDevice() else { return nil }
+                guard let resolved = try discovery.findControlDevice() else { return nil }
                 return DeviceSessionDiscoveredDevice(
-                    identity: DeviceSessionDeviceIdentity(device: device),
-                    handle: IOHIDDeviceSessionHandle(device: device)
+                    identity: DeviceSessionDeviceIdentity(device: resolved.device),
+                    handle: IOHIDDeviceSessionHandle(device: resolved.device),
+                    model: resolved.model
                 )
             },
             makeClient: { discoveredDevice in
                 guard let handle = discoveredDevice.handle as? IOHIDDeviceSessionHandle else {
                     preconditionFailure("Production discovery must return an IOHIDDevice.")
                 }
-                return RazerCommandClient(device: handle.device)
+                return RazerCommandClient(device: handle.device, model: discoveredDevice.model)
             },
             removalMonitor: removalMonitor
         )

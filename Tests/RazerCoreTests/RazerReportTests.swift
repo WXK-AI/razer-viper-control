@@ -2,8 +2,10 @@ import XCTest
 @testable import RazerCore
 
 final class RazerReportTests: XCTestCase {
+    private let encoder = RazerCommandEncoder(model: .viperV3HyperSpeed)
+    private let limits = ProfileLimits.viperV3HyperSpeed
     func testReportLengthIs90Bytes() throws {
-        let report = RazerReport.makeCommand(commandClass: 0x07, commandID: 0x80, dataSize: 0x02)
+        let report = encoder.makeCommand(commandClass: 0x07, commandID: 0x80, dataSize: 0x02)
         XCTAssertEqual(report.bytes.count, 90)
         let roundTrip = try RazerReport(bytes: report.bytes)
         XCTAssertEqual(roundTrip.bytes, report.bytes)
@@ -11,7 +13,7 @@ final class RazerReportTests: XCTestCase {
 
     func testCRCCalculatedOverExpectedRange() throws {
         var bytes = [UInt8](repeating: 0, count: 90)
-        bytes[1] = DeviceDescriptor.transactionID
+        bytes[1] = MouseModel.viperV3HyperSpeed.transactionID
         bytes[5] = 0x02
         bytes[6] = 0x07
         bytes[7] = 0x80
@@ -22,7 +24,7 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testBatteryCommandEncoding() {
-        let report = RazerReport.getBatteryLevel()
+        let report = encoder.getBatteryLevel()
         XCTAssertEqual(report.commandClass, 0x07)
         XCTAssertEqual(report.commandID, 0x80)
         XCTAssertEqual(report.dataSize, 0x02)
@@ -30,7 +32,7 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testBatteryPercentScalesFromRawByte() throws {
-        var report = RazerReport.makeCommand(commandClass: 0x07, commandID: 0x80, dataSize: 0x02)
+        var report = encoder.makeCommand(commandClass: 0x07, commandID: 0x80, dataSize: 0x02)
         report.arguments[1] = 231
         XCTAssertEqual(report.decodeBatteryPercent(), 90) // (231 * 100) / 255
 
@@ -42,20 +44,20 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testChargingCommandEncoding() {
-        let report = RazerReport.getChargingStatus()
+        let report = encoder.getChargingStatus()
         XCTAssertEqual(report.commandClass, 0x07)
         XCTAssertEqual(report.commandID, 0x84)
         XCTAssertEqual(report.dataSize, 0x02)
     }
 
     func testDPICommandsEncoding() throws {
-        let get = RazerReport.getDPI()
+        let get = encoder.getDPI()
         XCTAssertEqual(get.commandClass, 0x04)
         XCTAssertEqual(get.commandID, 0x85)
         XCTAssertEqual(get.dataSize, 0x07)
         XCTAssertEqual(get.arguments[0], 0x00)
 
-        let set = try RazerReport.setDPI(x: 1800, y: 1800)
+        let set = try encoder.setDPI(x: 1800, y: 1800)
         XCTAssertEqual(set.commandClass, 0x04)
         XCTAssertEqual(set.commandID, 0x05)
         XCTAssertEqual(set.dataSize, 0x07)
@@ -65,12 +67,12 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testDPIStageCommandEncoding() throws {
-        let get = RazerReport.getDPIStages()
+        let get = encoder.getDPIStages()
         XCTAssertEqual(get.commandClass, 0x04)
         XCTAssertEqual(get.commandID, 0x86)
         XCTAssertEqual(get.dataSize, 0x26)
 
-        let set = try RazerReport.setDPIStages(activeStage: 2, stages: [400, 800, 1600])
+        let set = try encoder.setDPIStages(activeStage: 2, stages: [400, 800, 1600])
         XCTAssertEqual(set.commandClass, 0x04)
         XCTAssertEqual(set.commandID, 0x06)
         XCTAssertEqual(set.dataSize, 0x26)
@@ -79,40 +81,40 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testPollingCommandEncoding() throws {
-        let get = RazerReport.getPollingRate()
+        let get = encoder.getPollingRate()
         XCTAssertEqual(get.commandClass, 0x00)
         XCTAssertEqual(get.commandID, 0x85)
         XCTAssertEqual(get.dataSize, 0x01)
 
-        XCTAssertEqual(try RazerReport.setPollingRate(hz: 1000).arguments[0], 0x01)
-        XCTAssertEqual(try RazerReport.setPollingRate(hz: 500).arguments[0], 0x02)
-        XCTAssertEqual(try RazerReport.setPollingRate(hz: 125).arguments[0], 0x08)
+        XCTAssertEqual(try encoder.setPollingRate(hz: 1000).arguments[0], 0x01)
+        XCTAssertEqual(try encoder.setPollingRate(hz: 500).arguments[0], 0x02)
+        XCTAssertEqual(try encoder.setPollingRate(hz: 125).arguments[0], 0x08)
     }
 
     func testWheelCommandEncoding() {
-        let getMode = RazerReport.getScrollMode()
+        let getMode = encoder.getScrollMode()
         XCTAssertEqual(getMode.commandClass, 0x02)
         XCTAssertEqual(getMode.commandID, 0x94)
         XCTAssertEqual(getMode.dataSize, 0x02)
         XCTAssertEqual(getMode.arguments[0], 0x01)
 
-        let setMode = RazerReport.setScrollMode(.freeSpin)
+        let setMode = encoder.setScrollMode(.freeSpin)
         XCTAssertEqual(setMode.commandClass, 0x02)
         XCTAssertEqual(setMode.commandID, 0x14)
         XCTAssertEqual(setMode.arguments[0], 0x01)
         XCTAssertEqual(setMode.arguments[1], 0x01)
 
-        let setAccel = RazerReport.setScrollAcceleration(true)
+        let setAccel = encoder.setScrollAcceleration(true)
         XCTAssertEqual(setAccel.commandID, 0x16)
         XCTAssertEqual(setAccel.arguments[1], 0x01)
 
-        let setReel = RazerReport.setScrollSmartReel(false)
+        let setReel = encoder.setScrollSmartReel(false)
         XCTAssertEqual(setReel.commandID, 0x17)
         XCTAssertEqual(setReel.arguments[1], 0x00)
     }
 
     func testWheelDecoding() {
-        var report = RazerReport.makeCommand(commandClass: 0x02, commandID: 0x94, dataSize: 0x02)
+        var report = encoder.makeCommand(commandClass: 0x02, commandID: 0x94, dataSize: 0x02)
         report.arguments[1] = ScrollWheelMode.tactile.rawValue
         XCTAssertEqual(report.decodeScrollMode(), .tactile)
 
@@ -124,18 +126,18 @@ final class RazerReportTests: XCTestCase {
 
     /// OpenRazer-compatible get-DPI-stages response: active stage 2, stages 400 / 800 / 1600.
     func testDecodeDPIStagesMatchesOpenRazerFixture() throws {
-        let report = try Self.makeDPIStagesResponse(
+        let report = try makeDPIStagesResponse(
             activeStage: 2,
             stages: [400, 800, 1600]
         )
-        let decoded = try report.decodeDPIStages()
+        let decoded = try report.decodeDPIStages(limits: limits)
         XCTAssertEqual(decoded.activeStage, 2)
         XCTAssertEqual(decoded.stages.map(\.x), [400, 800, 1600])
         XCTAssertEqual(decoded.stages.map(\.y), [400, 800, 1600])
     }
 
     func testDecodeDPIStagesRejectsOversizedDataSize() throws {
-        var bytes = try Self.makeDPIStagesResponse(activeStage: 1, stages: [800]).bytes
+        var bytes = try makeDPIStagesResponse(activeStage: 1, stages: [800]).bytes
         bytes[5] = 81
         bytes[88] = RazerReport.calculateCRC(for: bytes)
         XCTAssertThrowsError(try RazerReport(bytes: bytes)) { error in
@@ -144,17 +146,17 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testDecodeDPIStagesRejectsStageCountGreaterThanFive() throws {
-        var report = try Self.makeDPIStagesResponse(activeStage: 1, stages: [400, 800, 1600])
+        var report = try makeDPIStagesResponse(activeStage: 1, stages: [400, 800, 1600])
         report.arguments[2] = 6
         report.refreshCRC()
-        XCTAssertThrowsError(try report.decodeDPIStages()) { error in
-            XCTAssertEqual(error as? RazerValidationError, .tooManyDPIStages(6))
+        XCTAssertThrowsError(try report.decodeDPIStages(limits: limits)) { error in
+            XCTAssertEqual(error as? RazerValidationError, .tooManyDPIStages(6, maximum: 5))
         }
     }
 
     func testDecodeDPIStagesRejectsTruncatedStagePayload() throws {
         // count=2 requires 3 + 2*7 = 17 argument bytes; declare only 11 so truncation is real.
-        var report = RazerReport.makeCommand(
+        var report = encoder.makeCommand(
             commandClass: 0x04,
             commandID: 0x86,
             dataSize: 11,
@@ -173,7 +175,7 @@ final class RazerReportTests: XCTestCase {
         report.arguments[9] = 0
         report.arguments[10] = 1
         report.refreshCRC()
-        XCTAssertThrowsError(try report.decodeDPIStages()) { error in
+        XCTAssertThrowsError(try report.decodeDPIStages(limits: limits)) { error in
             XCTAssertEqual(
                 error as? RazerReportError,
                 .truncatedDPIStagesPayload(requiredBytes: 17, available: 11)
@@ -182,7 +184,7 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testDecodeDPIStagesRejectsShortHeaderBeforeReadingActiveOrCount() throws {
-        var report = RazerReport.makeCommand(
+        var report = encoder.makeCommand(
             commandClass: 0x04,
             commandID: 0x86,
             dataSize: 2,
@@ -193,7 +195,7 @@ final class RazerReportTests: XCTestCase {
         report.arguments[1] = 1
         report.arguments[2] = 0
         report.refreshCRC()
-        XCTAssertThrowsError(try report.decodeDPIStages()) { error in
+        XCTAssertThrowsError(try report.decodeDPIStages(limits: limits)) { error in
             XCTAssertEqual(
                 error as? RazerReportError,
                 .truncatedDPIStagesPayload(requiredBytes: 3, available: 2)
@@ -202,15 +204,16 @@ final class RazerReportTests: XCTestCase {
     }
 
     func testDecodeDPIStagesRejectsActiveStageOutsideCount() throws {
-        let report = try Self.makeDPIStagesResponse(activeStage: 4, stages: [400, 800, 1600])
+        let report = try makeDPIStagesResponse(activeStage: 4, stages: [400, 800, 1600])
         // Fixture helper writes the requested active stage even when invalid.
-        XCTAssertThrowsError(try report.decodeDPIStages()) { error in
+        XCTAssertThrowsError(try report.decodeDPIStages(limits: limits)) { error in
             XCTAssertEqual(error as? RazerValidationError, .invalidActiveStage(4, stageCount: 3))
         }
     }
 
     func testBytesSurvivesNon80ArgumentArrays() {
         let shortArgs = RazerReport(
+            transactionID: 0,
             dataSize: 1,
             commandClass: 0x00,
             commandID: 0x85,
@@ -220,6 +223,7 @@ final class RazerReportTests: XCTestCase {
         XCTAssertEqual(shortArgs.arguments.count, 80)
 
         let longArgs = RazerReport(
+            transactionID: 0,
             dataSize: 1,
             commandClass: 0x00,
             commandID: 0x85,
@@ -231,11 +235,11 @@ final class RazerReportTests: XCTestCase {
         XCTAssertEqual(longArgs.arguments[79], 0xAB)
     }
 
-    private static func makeDPIStagesResponse(
+    private func makeDPIStagesResponse(
         activeStage: Int,
         stages: [Int]
     ) throws -> RazerReport {
-        var report = RazerReport.makeCommand(
+        var report = encoder.makeCommand(
             commandClass: 0x04,
             commandID: 0x86,
             dataSize: 0x26,
@@ -262,27 +266,28 @@ final class RazerReportTests: XCTestCase {
 }
 
 final class ProfileValidatorTests: XCTestCase {
+    private let limits = ProfileLimits.viperV3HyperSpeed
     func testPollingValidation() {
-        XCTAssertNoThrow(try ProfileValidator.validatePollingRate(125))
-        XCTAssertNoThrow(try ProfileValidator.validatePollingRate(500))
-        XCTAssertNoThrow(try ProfileValidator.validatePollingRate(1000))
-        XCTAssertThrowsError(try ProfileValidator.validatePollingRate(250)) { error in
-            XCTAssertEqual(error as? RazerValidationError, .unsupportedPollingRate(250))
+        XCTAssertNoThrow(try limits.validatePollingRate(125))
+        XCTAssertNoThrow(try limits.validatePollingRate(500))
+        XCTAssertNoThrow(try limits.validatePollingRate(1000))
+        XCTAssertThrowsError(try limits.validatePollingRate(250)) { error in
+            XCTAssertEqual(error as? RazerValidationError, .unsupportedPollingRate(250, supported: [125, 500, 1000]))
         }
     }
 
     func testProfileValidationRejectsInvalidInput() {
-        XCTAssertThrowsError(try ProfileValidator.validateStages([], activeStage: 1)) { error in
+        XCTAssertThrowsError(try limits.validateStages([], activeStage: 1)) { error in
             XCTAssertEqual(error as? RazerValidationError, .emptyDPIStages)
         }
-        XCTAssertThrowsError(try ProfileValidator.validateStages([800], activeStage: 2)) { error in
+        XCTAssertThrowsError(try limits.validateStages([800], activeStage: 2)) { error in
             XCTAssertEqual(error as? RazerValidationError, .invalidActiveStage(2, stageCount: 1))
         }
-        XCTAssertThrowsError(try ProfileValidator.validateStages([50], activeStage: 1)) { error in
-            XCTAssertEqual(error as? RazerValidationError, .invalidDPI(50))
+        XCTAssertThrowsError(try limits.validateStages([50], activeStage: 1)) { error in
+            XCTAssertEqual(error as? RazerValidationError, .invalidDPI(50, allowed: 100...30_000))
         }
-        XCTAssertThrowsError(try ProfileValidator.validateStages([800, 900, 1000, 1100, 1200, 1300], activeStage: 1)) { error in
-            XCTAssertEqual(error as? RazerValidationError, .tooManyDPIStages(6))
+        XCTAssertThrowsError(try limits.validateStages([800, 900, 1000, 1100, 1200, 1300], activeStage: 1)) { error in
+            XCTAssertEqual(error as? RazerValidationError, .tooManyDPIStages(6, maximum: 5))
         }
     }
 }

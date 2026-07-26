@@ -11,6 +11,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
             .appendingPathComponent("razer-profile-store-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "test-device",
             applicationSupportDirectory: tempDirectory,
             now: { Date(timeIntervalSince1970: 1_700_000_000) }
@@ -164,7 +165,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         XCTAssertThrowsError(
             try store.save(ProfileBundle(selectedProfileID: invalid.id, profiles: [invalid]))
         ) { error in
-            XCTAssertEqual(error as? ProfileStoreError, .validation(.invalidDPI(50)))
+            XCTAssertEqual(error as? ProfileStoreError, .validation(.invalidDPI(50, allowed: 100...30_000)))
         }
 
         let after = try Data(contentsOf: store.storageURL)
@@ -177,6 +178,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
 
         let fchmodToggle = OperationToggle()
         let localStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "write-fail",
             applicationSupportDirectory: nestedSupport,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -212,6 +214,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
 
         let fchmodToggle = OperationToggle()
         let localStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "repair-fail",
             applicationSupportDirectory: nestedSupport,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -270,6 +273,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
 
         let renameToggle = OperationToggle()
         let localStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "locked",
             applicationSupportDirectory: nestedSupport,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -314,6 +318,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
 
         let renameToggle = OperationToggle()
         let localStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "retry",
             applicationSupportDirectory: nestedSupport,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -342,6 +347,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
     func testQuarantineCollisionPreservesOlderArtifact() throws {
         let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
         let collisionStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "collision",
             applicationSupportDirectory: tempDirectory,
             now: { fixedNow }
@@ -608,6 +614,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
 
         let fchmodToggle = OperationToggle()
         let localStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "restore-write-fail",
             applicationSupportDirectory: nestedSupport,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -654,6 +661,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         try FileManager.default.createDirectory(at: nestedSupport, withIntermediateDirectories: true)
 
         let localStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "restore-block",
             applicationSupportDirectory: nestedSupport,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -724,6 +732,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
         let stressRoot = tempDirectory.appendingPathComponent("concurrent-stress", isDirectory: true)
         try FileManager.default.createDirectory(at: stressRoot, withIntermediateDirectories: true)
         let stressStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "stress",
             applicationSupportDirectory: stressRoot,
             now: { Date(timeIntervalSince1970: 1_700_000_000) }
@@ -759,7 +768,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
                     let outcome = stressStore.loadOutcome()
                     switch outcome {
                     case let .loaded(bundle, _), let .firstRun(bundle, _):
-                        _ = try ProfileSafetyValidator.validateAndRepair(bundle)
+                        _ = try ProfileSafetyValidator.validateAndRepair(bundle, limits: .viperV3HyperSpeed)
                         guard bundle.profiles.count == 1,
                               ["Alpha", "Beta", "Default"].contains(bundle.profiles[0].name) else {
                             recordFailure("unexpected loaded profile set: \(bundle.profiles.map(\.name))")
@@ -783,7 +792,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
                     } else if case .corruptPreserved = outcome {
                         recordFailure("save+load pair produced corruptPreserved")
                     } else {
-                        _ = try ProfileSafetyValidator.validateAndRepair(outcome.bundle)
+                        _ = try ProfileSafetyValidator.validateAndRepair(outcome.bundle, limits: .viperV3HyperSpeed)
                     }
                 default:
                     _ = stressStore.refreshSupportDirectorySafety()
@@ -801,12 +810,12 @@ final class ProfileStoreRecoveryTests: XCTestCase {
             return XCTFail("Expected final loaded outcome, got \(finalOutcome)")
         }
         XCTAssertNil(warning)
-        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(finalBundle))
+        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(finalBundle, limits: .viperV3HyperSpeed))
         let onDisk = try JSONDecoder().decode(
             ProfileBundle.self,
             from: Data(contentsOf: stressStore.storageURL)
         )
-        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(onDisk))
+        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(onDisk, limits: .viperV3HyperSpeed))
         XCTAssertEqual(onDisk.schemaVersion, ProfileBundle.currentSchemaVersion)
         XCTAssertEqual(onDisk.profiles.count, 1)
         XCTAssertTrue(["Alpha", "Beta"].contains(onDisk.profiles[0].name))
@@ -818,6 +827,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
 
         // Seed a real quarantine artifact on the eventual support directory inode.
         let prep = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "list-swap",
             applicationSupportDirectory: supportRoot,
             now: { Date(timeIntervalSince1970: 1_700_000_000) }
@@ -838,6 +848,7 @@ final class ProfileStoreRecoveryTests: XCTestCase {
 
         var didSwap = false
         let listingStore = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "list-swap",
             applicationSupportDirectory: supportRoot,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },

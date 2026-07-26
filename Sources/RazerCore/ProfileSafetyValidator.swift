@@ -406,8 +406,12 @@ public enum ProfileSafetyValidator {
         return data
     }
 
+    /// `limits` is required: this runs on every profile load, and validating against
+    /// the wrong device's bounds quarantines the user's file and replaces it with
+    /// defaults.
     public static func validateAndRepair(
         _ bundle: ProfileBundle,
+        limits: ProfileLimits,
         fileManager: FileManager = .default
     ) throws -> (bundle: ProfileBundle, repairWarnings: [String]) {
         guard (1...ProfileSafetyLimits.maximumProfiles).contains(bundle.profiles.count) else {
@@ -435,8 +439,8 @@ public enum ProfileSafetyValidator {
             profile.name = trimmedName
 
             do {
-                _ = try ProfileValidator.validateStages(profile.dpiStages, activeStage: profile.activeStage)
-                try ProfileValidator.validatePollingRate(profile.pollingRateHz)
+                _ = try limits.validateStages(profile.dpiStages, activeStage: profile.activeStage)
+                try limits.validatePollingRate(profile.pollingRateHz)
                 try ProfileValidator.validateWheelSpeedMultiplier(profile.wheelSettings.software.verticalSpeedMultiplier)
             } catch let error as RazerValidationError {
                 throw ProfileSafetyValidationError.invalidHardware(error)

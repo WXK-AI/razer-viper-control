@@ -47,6 +47,9 @@ final class AppModel: ObservableObject {
     @Published var driverStatusMessage = "Driver status has not been queried yet."
     @Published var driverLastError: String?
     @Published var wheelCapability = WheelHardwareCapability()
+    /// The device the UI is currently editing for. MainActor-isolated: snapshot it into
+    /// a local before crossing to `hidQueue`.
+    @Published private(set) var activeModel: MouseModel
     @Published var permissions = PermissionStatus.current()
     @Published var captureSession = InputCaptureSession()
     @Published var captureEntries: [InputCaptureSession.Entry] = []
@@ -142,14 +145,16 @@ final class AppModel: ObservableObject {
     private var pendingRemapperEnableDraft: ProfileDraft?
 
     init(
-        profileStore: ProfileStore = ProfileStore(),
-        session: any DeviceSessionProtocol = DeviceSession(),
+        model: MouseModel = .viperV3HyperSpeed,
+        profileStore: ProfileStore = ProfileStore(limits: MouseModel.viperV3HyperSpeed.limits),
+        session: any DeviceSessionProtocol = DeviceSession(registry: .builtIn),
         workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
         scheduleDelayedAction: @escaping DelayedActionScheduler = { delay, action in
             let workItem = DispatchWorkItem(block: action)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
         }
     ) {
+        activeModel = model
         self.profileStore = profileStore
         self.session = session
         self.workspaceNotificationCenter = workspaceNotificationCenter
@@ -321,7 +326,7 @@ final class AppModel: ObservableObject {
         if let existing = draftsByProfileID[profile.id] {
             profileDraft = existing
         } else {
-            let draft = ProfileDraft(profile: profile)
+            let draft = ProfileDraft(profile: profile, limits: activeModel.limits)
             draftsByProfileID[profile.id] = draft
             profileDraft = draft
         }
@@ -798,7 +803,7 @@ final class AppModel: ObservableObject {
                 profileDraft = draftsByProfileID[profile.id]
             }
         } else {
-            let draft = ProfileDraft(profile: profile)
+            let draft = ProfileDraft(profile: profile, limits: activeModel.limits)
             draftsByProfileID[profile.id] = draft
             if selectedProfile?.id == profile.id {
                 profileDraft = draft
@@ -848,7 +853,7 @@ final class AppModel: ObservableObject {
         )
         bundle.profiles.append(profile)
         bundle.selectedProfileID = profile.id
-        let draft = ProfileDraft(profile: profile)
+        let draft = ProfileDraft(profile: profile, limits: activeModel.limits)
         draftsByProfileID[profile.id] = draft
         profileDraft = draft
         _ = flushPendingSave()
@@ -1181,7 +1186,7 @@ final class AppModel: ObservableObject {
         saveWorkItem?.cancel()
         saveWorkItem = nil
         if let profile = selectedProfile {
-            let draft = ProfileDraft(profile: profile)
+            let draft = ProfileDraft(profile: profile, limits: activeModel.limits)
             draftsByProfileID[profile.id] = draft
             profileDraft = draft
         } else {

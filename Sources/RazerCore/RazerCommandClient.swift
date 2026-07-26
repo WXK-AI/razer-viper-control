@@ -184,16 +184,23 @@ public struct DeviceState: Equatable, Sendable {
 
 public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable {
     private let transport: any RazerReportTransport
+    /// Immutable `Sendable` values, so they sit outside the lifecycle lock.
+    public let model: MouseModel
+    public let encoder: RazerCommandEncoder
     /// Recursive because high-level operations compose lower-level public commands.
     /// Open/close and feature-report I/O can never overlap across this boundary.
     private let lifecycleLock = NSRecursiveLock()
 
-    public init(device: IOHIDDevice) {
+    public init(device: IOHIDDevice, model: MouseModel) {
         transport = IOHIDReportTransport(device: device)
+        self.model = model
+        encoder = RazerCommandEncoder(model: model)
     }
 
-    public init(transport: any RazerReportTransport) {
+    public init(transport: any RazerReportTransport, model: MouseModel) {
         self.transport = transport
+        self.model = model
+        encoder = RazerCommandEncoder(model: model)
     }
 
     public func probeWheelCapability() -> WheelCapabilityProbe.ProbeReport {
@@ -222,12 +229,12 @@ public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable 
         try withLifecycleBoundary {
             var lastError: Error?
 
-            for attempt in 1...DeviceDescriptor.maxCommandRetries {
+            for attempt in 1...model.maxCommandRetries {
                 do {
                     return try performRoundTrip(request)
                 } catch RazerCommandError.deviceBusy {
                     lastError = RazerCommandError.deviceBusy
-                    if attempt < DeviceDescriptor.maxCommandRetries {
+                    if attempt < model.maxCommandRetries {
                         transport.sleep(milliseconds: UInt64(50 * attempt))
                     }
                 } catch {
@@ -241,13 +248,13 @@ public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable 
 
     public func readState() throws -> DeviceState {
         try withLifecycleBoundary {
-            let battery = try send(.getBatteryLevel())
-            let charging = try send(.getChargingStatus())
-            let dpi = try send(.getDPI())
-            let stages = try send(.getDPIStages())
-            let polling = try send(.getPollingRate())
+            let battery = try send(encoder.getBatteryLevel())
+            let charging = try send(encoder.getChargingStatus())
+            let dpi = try send(encoder.getDPI())
+            let stages = try send(encoder.getDPIStages())
+            let polling = try send(encoder.getPollingRate())
 
-            let decodedStages = try stages.decodeDPIStages()
+            let decodedStages = try stages.decodeDPIStages(limits: model.limits)
             let decodedDPI = dpi.decodeDPI()
             let stageValuesX = decodedStages.stages.map(\.x)
             let stageValuesY = decodedStages.stages.map(\.y)
@@ -273,20 +280,20 @@ public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable 
 
     public func setDPI(x: Int, y: Int) throws {
         try withLifecycleBoundary {
-            _ = try send(try .setDPI(x: x, y: y))
+            _ = try send(try encoder.setDPI(x: x, y: y))
         }
     }
 
     public func setDPIStages(activeStage: Int, stages: [Int]) throws {
         try withLifecycleBoundary {
-            _ = try send(try .setDPIStages(activeStage: activeStage, stages: stages))
+            _ = try send(try encoder.setDPIStages(activeStage: activeStage, stages: stages))
         }
     }
 
     public func setPollingRate(hz: Int) throws {
         try withLifecycleBoundary {
-            try ProfileValidator.validatePollingRate(hz)
-            _ = try send(try .setPollingRate(hz: hz))
+            try model.limits.validatePollingRate(hz)
+            _ = try send(try encoder.setPollingRate(hz: hz))
         }
     }
 
@@ -294,13 +301,13 @@ public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable 
         try withLifecycleBoundary {
             var lastError: Error?
 
-            for attempt in 1...DeviceDescriptor.maxCommandRetries {
+            for attempt in 1...model.maxCommandRetries {
                 do {
                     let report = try performRoundTripAllowingUnsupported(request)
                     return report
                 } catch RazerCommandError.deviceBusy {
                     lastError = RazerCommandError.deviceBusy
-                    if attempt < DeviceDescriptor.maxCommandRetries {
+                    if attempt < model.maxCommandRetries {
                         transport.sleep(milliseconds: UInt64(50 * attempt))
                     }
                 } catch {
@@ -314,37 +321,37 @@ public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable 
 
     public func probeScrollMode() throws -> CommandSendResult {
         try withLifecycleBoundary {
-            try sendAllowingUnsupported(.getScrollMode())
+            try sendAllowingUnsupported(encoder.getScrollMode())
         }
     }
 
     public func probeScrollAcceleration() throws -> CommandSendResult {
         try withLifecycleBoundary {
-            try sendAllowingUnsupported(.getScrollAcceleration())
+            try sendAllowingUnsupported(encoder.getScrollAcceleration())
         }
     }
 
     public func probeScrollSmartReel() throws -> CommandSendResult {
         try withLifecycleBoundary {
-            try sendAllowingUnsupported(.getScrollSmartReel())
+            try sendAllowingUnsupported(encoder.getScrollSmartReel())
         }
     }
 
     public func setScrollMode(_ mode: ScrollWheelMode) throws -> CommandSendResult {
         try withLifecycleBoundary {
-            try sendAllowingUnsupported(.setScrollMode(mode))
+            try sendAllowingUnsupported(encoder.setScrollMode(mode))
         }
     }
 
     public func setScrollAcceleration(_ enabled: Bool) throws -> CommandSendResult {
         try withLifecycleBoundary {
-            try sendAllowingUnsupported(.setScrollAcceleration(enabled))
+            try sendAllowingUnsupported(encoder.setScrollAcceleration(enabled))
         }
     }
 
     public func setScrollSmartReel(_ enabled: Bool) throws -> CommandSendResult {
         try withLifecycleBoundary {
-            try sendAllowingUnsupported(.setScrollSmartReel(enabled))
+            try sendAllowingUnsupported(encoder.setScrollSmartReel(enabled))
         }
     }
 
@@ -435,8 +442,8 @@ public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable 
         let payload = request.bytes
         try transport.setFeatureReport(payload)
         let initialWait = min(
-            DeviceDescriptor.responseWaitMilliseconds,
-            DeviceDescriptor.responseDeadlineMilliseconds
+            model.responseWaitMilliseconds,
+            model.responseDeadlineMilliseconds
         )
         transport.sleep(milliseconds: initialWait)
         var elapsedMilliseconds = initialWait
@@ -457,12 +464,12 @@ public final class RazerCommandClient: DeviceCommandClient, @unchecked Sendable 
                     allowingUnsupported: true
                 )
             } catch let RazerCommandError.blockedDeviceAccess(details) {
-                guard elapsedMilliseconds < DeviceDescriptor.responseDeadlineMilliseconds else {
+                guard elapsedMilliseconds < model.responseDeadlineMilliseconds else {
                     throw RazerCommandError.blockedDeviceAccess(details)
                 }
                 let pollWait = min(
-                    DeviceDescriptor.responsePollIntervalMilliseconds,
-                    DeviceDescriptor.responseDeadlineMilliseconds - elapsedMilliseconds
+                    model.responsePollIntervalMilliseconds,
+                    model.responseDeadlineMilliseconds - elapsedMilliseconds
                 )
                 transport.sleep(milliseconds: pollWait)
                 elapsedMilliseconds += pollWait

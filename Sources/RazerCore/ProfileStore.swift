@@ -66,8 +66,12 @@ public struct MouseProfile: Codable, Identifiable, Equatable, Sendable {
         try container.encode(remapperEnabled, forKey: .remapperEnabled)
     }
 
+    /// Unreachable through the store — `validateStages` rejects an empty stage list —
+    /// so this stays a constant rather than dragging device limits into the on-disk shape.
+    public static let emptyStagesFallbackDPI = 100
+
     public var activeDPI: Int {
-        guard !dpiStages.isEmpty else { return DeviceDescriptor.minDPI }
+        guard !dpiStages.isEmpty else { return Self.emptyStagesFallbackDPI }
         let index = min(max(activeStage - 1, 0), dpiStages.count - 1)
         return dpiStages[index]
     }
@@ -209,6 +213,7 @@ public final class ProfileStore {
     private let directoryURL: URL
     private let profileFileName: String
     private let deviceKey: String
+    private let limits: ProfileLimits
     private let fileManager: FileManager
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -269,7 +274,8 @@ public final class ProfileStore {
     }
 
     public init(
-        deviceKey: String = DeviceDescriptor.deviceKey,
+        limits: ProfileLimits,
+        deviceKey: String = MouseModel.viperV3HyperSpeed.deviceKey,
         applicationSupportDirectory: URL? = nil,
         fileManager: FileManager = .default,
         now: @escaping () -> Date = Date.init,
@@ -296,6 +302,7 @@ public final class ProfileStore {
         directoryReadyProbe: ((Int32) -> Void)? = nil
     ) {
         self.deviceKey = deviceKey
+        self.limits = limits
         self.fileManager = fileManager
         self.now = now
         self.currentUID = currentUID
@@ -460,7 +467,7 @@ public final class ProfileStore {
 
         let validated: (bundle: ProfileBundle, repairWarnings: [String])
         do {
-            validated = try ProfileSafetyValidator.validateAndRepair(bundle, fileManager: fileManager)
+            validated = try ProfileSafetyValidator.validateAndRepair(bundle, limits: limits, fileManager: fileManager)
         } catch {
             return quarantineAndRecover(
                 directoryFD: directoryFD,
@@ -516,7 +523,7 @@ public final class ProfileStore {
 
         let validated: (bundle: ProfileBundle, repairWarnings: [String])
         do {
-            validated = try ProfileSafetyValidator.validateAndRepair(normalized, fileManager: fileManager)
+            validated = try ProfileSafetyValidator.validateAndRepair(normalized, limits: limits, fileManager: fileManager)
         } catch let error as ProfileSafetyValidationError {
             if case let .invalidHardware(validationError) = error {
                 throw ProfileStoreError.validation(validationError)
@@ -866,7 +873,7 @@ public final class ProfileStore {
         }
 
         do {
-            return try ProfileSafetyValidator.validateAndRepair(bundle, fileManager: fileManager)
+            return try ProfileSafetyValidator.validateAndRepair(bundle, limits: limits, fileManager: fileManager)
         } catch let error as ProfileSafetyValidationError {
             if case let .invalidHardware(validationError) = error {
                 throw ProfileStoreError.validation(validationError)

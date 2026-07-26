@@ -254,7 +254,7 @@ final class HardwareApplyPolicyTests: XCTestCase {
         )
         XCTAssertFalse(
             HardwareApplyFailurePolicy.shouldInvalidate(
-                error: RazerValidationError.unsupportedPollingRate(250)
+                error: RazerValidationError.unsupportedPollingRate(250, supported: [125, 500, 1000])
             )
         )
         XCTAssertFalse(

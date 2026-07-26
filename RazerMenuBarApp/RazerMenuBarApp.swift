@@ -61,7 +61,7 @@ private struct MenuBarContent: View {
     }
 
     var body: some View {
-        Text(DeviceDescriptor.productName)
+        Text(model.activeModel.name)
             .font(.headline)
 
         if status.isConnected {

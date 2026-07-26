@@ -4,6 +4,7 @@ import XCTest
 // MARK: - Fakes
 
 private final class FakeCommandClient: DeviceCommandClient, HardwareProfileApplying, @unchecked Sendable {
+    let model = MouseModel.viperV3HyperSpeed
     var state: DeviceState
     var readStateErrors: [Error] = []
     var probeReports: [WheelCapabilityProbe.ProbeReport] = []

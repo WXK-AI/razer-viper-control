@@ -36,7 +36,7 @@ struct SettingsView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(DeviceDescriptor.productName)
+            Text(model.activeModel.name)
                 .font(.title2.bold())
             Text(model.isConnected ? "Connected • Battery \(model.batteryPercent)%" : model.statusMessage)
                 .foregroundStyle(.secondary)
@@ -255,11 +255,11 @@ private struct ProfileTab: View {
                 HStack {
                     Button("Add Stage") {
                         var updated = draft
-                        guard updated.stageTexts.count < DeviceDescriptor.maxDPIStages else { return }
+                        guard updated.stageTexts.count < model.activeModel.maxDPIStages else { return }
                         updated.stageTexts.append(updated.stageTexts.last ?? "800")
                         model.updateDraft(updated)
                     }
-                    .disabled(draft.stageTexts.count >= DeviceDescriptor.maxDPIStages)
+                    .disabled(draft.stageTexts.count >= model.activeModel.maxDPIStages)
 
                     Button("Remove Stage") {
                         var updated = draft
@@ -282,7 +282,7 @@ private struct ProfileTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Picker("Hz", selection: draftBinding(draft, keyPath: \.pollingRateHz)) {
-                    ForEach(DeviceDescriptor.supportedPollingRates, id: \.self) { rate in
+                    ForEach(model.activeModel.pollingRates, id: \.self) { rate in
                         Text("\(rate) Hz").tag(rate)
                     }
                 }

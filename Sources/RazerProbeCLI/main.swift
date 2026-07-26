@@ -66,10 +66,11 @@ struct RazerProbeCLI {
     }
 
     private static func listInterfaces() throws {
-        let discovery = HIDDeviceDiscovery()
+        let discovery = HIDDeviceDiscovery(registry: .builtIn)
         let interfaces = try discovery.listRazerInterfaces()
         if interfaces.isEmpty {
-            print("No Razer HID interfaces found for \(DeviceDescriptor.deviceKey).")
+            let keys = DeviceRegistry.builtIn.models.map(\.deviceKey).joined(separator: ", ")
+            print("No Razer HID interfaces found for \(keys).")
             return
         }
 
@@ -79,14 +80,16 @@ struct RazerProbeCLI {
         }
 
         if interfaces.contains(where: \.isTargetControlInterface) {
-            print("Control interface candidate: usage 1:2 with feature report >= \(DeviceDescriptor.featureReportLength) bytes.")
+            let model = DeviceRegistry.builtIn.models[0]
+            print("Control interface candidate: usage \(model.primaryUsagePage):\(model.primaryUsage) with feature report >= \(model.minimumFeatureReportSize) bytes.")
         } else {
-            print("Warning: no 90-byte feature-report control interface detected.")
+            let model = DeviceRegistry.builtIn.models[0]
+            print("Warning: no \(model.minimumFeatureReportSize)-byte feature-report control interface detected.")
         }
     }
 
     private static func withClient<T>(_ body: (RazerCommandClient) throws -> T) throws -> T {
-        let session = DeviceSession()
+        let session = DeviceSession(registry: .builtIn)
         let client = try session.connect()
         defer { session.disconnect() }
         return try body(client)
@@ -94,28 +97,28 @@ struct RazerProbeCLI {
 
     private static func printBattery() throws {
         let percent = try withClient { client in
-            try client.send(.getBatteryLevel()).decodeBatteryPercent()
+            try client.send(client.encoder.getBatteryLevel()).decodeBatteryPercent()
         }
         print("Battery: \(percent)%")
     }
 
     private static func printCharging() throws {
         let charging = try withClient { client in
-            try client.send(.getChargingStatus()).decodeCharging()
+            try client.send(client.encoder.getChargingStatus()).decodeCharging()
         }
         print("Charging: \(charging ? "yes" : "no")")
     }
 
     private static func printDPI() throws {
         let dpi = try withClient { client in
-            try client.send(.getDPI()).decodeDPI()
+            try client.send(client.encoder.getDPI()).decodeDPI()
         }
         print("DPI: \(dpi.x) x \(dpi.y)")
     }
 
     private static func printStages() throws {
         let decoded = try withClient { client in
-            try client.send(.getDPIStages()).decodeDPIStages()
+            try client.send(client.encoder.getDPIStages()).decodeDPIStages(limits: client.model.limits)
         }
         print("Active stage: \(decoded.activeStage)")
         for (index, stage) in decoded.stages.enumerated() {
@@ -125,7 +128,7 @@ struct RazerProbeCLI {
 
     private static func printPolling() throws {
         let hz = try withClient { client in
-            try client.send(.getPollingRate()).decodePollingRateHz()
+            try client.send(client.encoder.getPollingRate()).decodePollingRateHz()
         }
         print("Polling rate: \(hz.map(String.init) ?? "unknown") Hz")
     }

@@ -3,7 +3,11 @@ import XCTest
 
 final class WheelCapabilityProbeTests: XCTestCase {
     func testSuccessMapsToSupported() {
-        XCTAssertEqual(WheelCapabilityProbe.capability(from: .success(RazerReport())), .supported)
+        // Only the capability mapping is under test, so the transaction ID is irrelevant.
+        XCTAssertEqual(
+            WheelCapabilityProbe.capability(from: .success(RazerReport(transactionID: 0))),
+            .supported
+        )
     }
 
     func testNotSupportedMapsToNotSupported() {

@@ -29,35 +29,35 @@ final class ProfileSafetyValidatorTests: XCTestCase {
     }
 
     func testProfileAndNameLimits() throws {
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(ProfileBundle())) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(ProfileBundle(), limits: .viperV3HyperSpeed)) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .invalidProfileCount(0))
         }
         let profiles = (0...ProfileSafetyLimits.maximumProfiles).map { _ in profile() }
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(ProfileBundle(profiles: profiles))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(ProfileBundle(profiles: profiles), limits: .viperV3HyperSpeed)) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .invalidProfileCount(51))
         }
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(name: " \n ")))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(name: " \n ")), limits: .viperV3HyperSpeed)) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .invalidProfileName)
         }
         let tooLongName = String(repeating: "a", count: ProfileSafetyLimits.maximumProfileNameUTF8Bytes + 1)
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(name: tooLongName)))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(name: tooLongName)), limits: .viperV3HyperSpeed)) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .profileNameTooLong(actual: 257))
         }
 
         let maximumProfiles = (0..<ProfileSafetyLimits.maximumProfiles).map { _ in profile(name: String(repeating: "a", count: 256)) }
-        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(ProfileBundle(profiles: maximumProfiles)))
+        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(ProfileBundle(profiles: maximumProfiles), limits: .viperV3HyperSpeed))
     }
 
     func testDuplicateIDAndDanglingSelection() throws {
         let first = profile()
         var duplicate = profile()
         duplicate.id = first.id
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(ProfileBundle(profiles: [first, duplicate]))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(ProfileBundle(profiles: [first, duplicate]), limits: .viperV3HyperSpeed)) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .duplicateProfileID(first.id))
         }
 
         let repaired = try ProfileSafetyValidator.validateAndRepair(
-            ProfileBundle(selectedProfileID: UUID(), profiles: [first])
+            ProfileBundle(selectedProfileID: UUID(), profiles: [first]), limits: .viperV3HyperSpeed
         )
         XCTAssertEqual(repaired.bundle.selectedProfileID, first.id)
     }
@@ -70,40 +70,40 @@ final class ProfileSafetyValidatorTests: XCTestCase {
                     modifierFlags: ProfileSafetyLimits.allowedShortcutModifierMask
                 )
             )
-        ]))))
+        ])), limits: .viperV3HyperSpeed))
         let badMask = profile(mappings: [
             .sideButton1: .keyboardShortcut(KeyboardShortcut(keyCode: 12, modifierFlags: 0x0000_0001))
         ])
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(badMask))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(badMask), limits: .viperV3HyperSpeed)) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .invalidShortcut)
         }
         let badKey = profile(mappings: [
             .sideButton1: .keyboardShortcut(KeyboardShortcut(keyCode: ProfileSafetyLimits.maximumVirtualKeyCode + 1, modifierFlags: 0))
         ])
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(badKey))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(badKey), limits: .viperV3HyperSpeed)) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .invalidShortcut)
         }
     }
 
     func testURLLimitsAndScheme() {
         let tooLong = String(repeating: "a", count: ProfileSafetyLimits.maximumURLUTF8Bytes) + "https://example.com"
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openURL(tooLong)])))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openURL(tooLong)])), limits: .viperV3HyperSpeed)) {
             guard case .urlTooLong = $0 as? ProfileSafetyValidationError else {
                 return XCTFail("Expected urlTooLong, got \($0)")
             }
         }
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openURL("file:///tmp/test")])))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openURL("file:///tmp/test")])), limits: .viperV3HyperSpeed)) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .invalidURL)
         }
         let maximumURL = "https://" + String(repeating: "a", count: ProfileSafetyLimits.maximumURLUTF8Bytes - 8)
-        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openURL(maximumURL)]))))
+        XCTAssertNoThrow(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openURL(maximumURL)])), limits: .viperV3HyperSpeed))
     }
 
     func testAppPathsAreValidatedAndMissingAppsAreDisabled() throws {
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openApp("relative.app")]))))
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openApp("/tmp/not-an-app")]))))
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openApp("relative.app")])), limits: .viperV3HyperSpeed))
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openApp("/tmp/not-an-app")])), limits: .viperV3HyperSpeed))
         let longPath = "/" + String(repeating: "a", count: ProfileSafetyLimits.maximumAppPathUTF8Bytes)
-        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openApp(longPath)])))) {
+        XCTAssertThrowsError(try ProfileSafetyValidator.validateAndRepair(bundle(profile(mappings: [.sideButton1: .openApp(longPath)])), limits: .viperV3HyperSpeed)) {
             guard case .appPathTooLong = $0 as? ProfileSafetyValidationError else {
                 return XCTFail("Expected appPathTooLong, got \($0)")
             }
@@ -111,7 +111,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
 
         let missing = temporaryDirectory.appendingPathComponent("Moved.app").path
         let repaired = try ProfileSafetyValidator.validateAndRepair(
-            bundle(profile(mappings: [.sideButton1: .openApp(missing)]))
+            bundle(profile(mappings: [.sideButton1: .openApp(missing)])), limits: .viperV3HyperSpeed
         )
         XCTAssertEqual(repaired.bundle.profiles[0].buttonMappings[.sideButton1], .disabled)
         XCTAssertFalse(repaired.repairWarnings.isEmpty)
@@ -120,7 +120,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         try FileManager.default.createDirectory(at: fakeAppDirectory, withIntermediateDirectories: true)
         XCTAssertThrowsError(
             try ProfileSafetyValidator.validateAndRepair(
-                bundle(profile(mappings: [.sideButton1: .openApp(fakeAppDirectory.path)]))
+                bundle(profile(mappings: [.sideButton1: .openApp(fakeAppDirectory.path)])), limits: .viperV3HyperSpeed
             )
         ) {
             XCTAssertEqual($0 as? ProfileSafetyValidationError, .invalidAppPath)
@@ -128,7 +128,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
 
         let realApp = try makeMinimalApplicationBundle(named: "Example.app")
         let valid = try ProfileSafetyValidator.validateAndRepair(
-            bundle(profile(mappings: [.sideButton1: .openApp(realApp.path)]))
+            bundle(profile(mappings: [.sideButton1: .openApp(realApp.path)])), limits: .viperV3HyperSpeed
         )
         XCTAssertEqual(valid.bundle.profiles[0].buttonMappings[.sideButton1], .openApp(realApp.path))
     }
@@ -152,7 +152,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support.path)
 
-        let store = ProfileStore(applicationSupportDirectory: temporaryDirectory)
+        let store = ProfileStore(limits: .viperV3HyperSpeed, applicationSupportDirectory: temporaryDirectory)
         XCTAssertFalse(store.writesBlockedForUnsafeSupportDirectory)
         try store.save(bundle())
 
@@ -170,7 +170,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         let link = temporaryDirectory.appendingPathComponent("RazerMenuBarApp", isDirectory: true)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
 
-        let store = ProfileStore(applicationSupportDirectory: temporaryDirectory)
+        let store = ProfileStore(limits: .viperV3HyperSpeed, applicationSupportDirectory: temporaryDirectory)
         XCTAssertTrue(store.writesBlockedForUnsafeSupportDirectory)
 
         let outcome = store.loadOutcome()
@@ -196,7 +196,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         let file = temporaryDirectory.appendingPathComponent("RazerMenuBarApp")
         try Data("not-a-directory".utf8).write(to: file)
 
-        let store = ProfileStore(applicationSupportDirectory: temporaryDirectory)
+        let store = ProfileStore(limits: .viperV3HyperSpeed, applicationSupportDirectory: temporaryDirectory)
         XCTAssertTrue(store.writesBlockedForUnsafeSupportDirectory)
         XCTAssertThrowsError(try store.save(bundle())) { error in
             XCTAssertEqual(
@@ -217,6 +217,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
 
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             applicationSupportDirectory: temporaryDirectory,
             currentUID: { getuid() &+ 1 }
         )
@@ -232,6 +233,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
 
     func testChmodFailureBlocksLoadAndSaveWithoutCreatingProfileFile() throws {
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             applicationSupportDirectory: temporaryDirectory,
             fchmodDirectory: { _, _ in
                 throw POSIXError(.EPERM)
@@ -329,6 +331,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
 
         let renameToggle = OperationToggle()
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "post-init",
             applicationSupportDirectory: supportRoot,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -401,6 +404,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         let orphanedReal = supportRoot.appendingPathComponent("orphaned-real-support", isDirectory: true)
         var didSwapDuringMutation = false
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "check-use",
             applicationSupportDirectory: supportRoot,
             now: { Date(timeIntervalSince1970: 1_700_000_000) },
@@ -494,7 +498,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
     }
 
     func testSaveSetsOwnerOnlyFileMode() throws {
-        let store = ProfileStore(applicationSupportDirectory: temporaryDirectory)
+        let store = ProfileStore(limits: .viperV3HyperSpeed, applicationSupportDirectory: temporaryDirectory)
         try store.save(bundle())
         let attributes = try FileManager.default.attributesOfItem(atPath: store.storageURL.path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
@@ -520,6 +524,7 @@ final class ProfileSafetyValidatorTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
 
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "test-device",
             applicationSupportDirectory: temporaryDirectory
         )

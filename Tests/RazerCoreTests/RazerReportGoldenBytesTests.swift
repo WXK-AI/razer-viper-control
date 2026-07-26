@@ -1,0 +1,192 @@
+import XCTest
+@testable import RazerCore
+
+/// Locks the exact 90-byte wire format of every command builder and the exact text of
+/// every validation error. Captured from the single-device implementation: these bytes are
+/// what a Viper V3 HyperSpeed accepts, so they must stay byte-identical while device
+/// parameters moved from shared statics onto a per-model value type.
+final class RazerReportGoldenBytesTests: XCTestCase {
+    private let encoder = RazerCommandEncoder(model: .viperV3HyperSpeed)
+    func testCommandBuildersMatchGoldenWireFormat() throws {
+        assertGolden(
+            encoder.getBatteryLevel(),
+            "001F00000002078000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008500",
+            "getBatteryLevel"
+        )
+        assertGolden(
+            encoder.getChargingStatus(),
+            "001F00000002078400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008100",
+            "getChargingStatus"
+        )
+        assertGolden(
+            encoder.getPollingRate(),
+            "001F00000001008500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008400",
+            "getPollingRate"
+        )
+        assertGolden(
+            try encoder.setPollingRate(hz: 125),
+            "001F00000001000508000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000C00",
+            "setPollingRate(125)"
+        )
+        assertGolden(
+            try encoder.setPollingRate(hz: 500),
+            "001F00000001000502000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000600",
+            "setPollingRate(500)"
+        )
+        assertGolden(
+            try encoder.setPollingRate(hz: 1000),
+            "001F00000001000501000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000500",
+            "setPollingRate(1000)"
+        )
+        assertGolden(
+            encoder.getDPI(),
+            "001F00000007048500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008600",
+            "getDPI"
+        )
+        assertGolden(
+            try encoder.setDPI(x: 100, y: 100),
+            "001F00000007040501006400640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700",
+            "setDPI(100)"
+        )
+        assertGolden(
+            try encoder.setDPI(x: 800, y: 800),
+            "001F00000007040501032003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700",
+            "setDPI(800)"
+        )
+        assertGolden(
+            try encoder.setDPI(x: 1800, y: 1800),
+            "001F00000007040501070807080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700",
+            "setDPI(1800)"
+        )
+        assertGolden(
+            try encoder.setDPI(x: 26_000, y: 26_000),
+            "001F00000007040501659065900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700",
+            "setDPI(26000)"
+        )
+        assertGolden(
+            try encoder.setDPI(x: 30_000, y: 30_000),
+            "001F00000007040501753075300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700",
+            "setDPI(30000)"
+        )
+        assertGolden(
+            try encoder.setDPI(x: 400, y: 1600),
+            "001F0000000704050101900640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000D000",
+            "setDPI(asym 400x1600)"
+        )
+        assertGolden(
+            encoder.getDPIStages(),
+            "001F0000002604860100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000A500",
+            "getDPIStages"
+        )
+        assertGolden(
+            try encoder.setDPIStages(activeStage: 1, stages: [800]),
+            "001F00000026040601010100032003200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002500",
+            "setDPIStages(1,[800])"
+        )
+        assertGolden(
+            try encoder.setDPIStages(activeStage: 2, stages: [400, 800, 1600]),
+            "001F00000026040601020300019001900000010320032000000206400640000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002700",
+            "setDPIStages(2,[400,800,1600])"
+        )
+        assertGolden(
+            try encoder.setDPIStages(activeStage: 5, stages: [100, 400, 800, 1600, 30_000]),
+            "001F00000026040601050500006400640000010190019000000203200320000003064006400000047530753000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002100",
+            "setDPIStages(5,[100,400,800,1600,30000])"
+        )
+        assertGolden(
+            encoder.getScrollMode(),
+            "001F00000002029401000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000009500",
+            "getScrollMode"
+        )
+        assertGolden(
+            encoder.setScrollMode(.tactile),
+            "001F00000002021401000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001500",
+            "setScrollMode(tactile)"
+        )
+        assertGolden(
+            encoder.setScrollMode(.freeSpin),
+            "001F00000002021401010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001400",
+            "setScrollMode(freeSpin)"
+        )
+        assertGolden(
+            encoder.getScrollAcceleration(),
+            "001F00000002029601000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000009700",
+            "getScrollAcceleration"
+        )
+        assertGolden(
+            encoder.setScrollAcceleration(true),
+            "001F00000002021601010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001600",
+            "setScrollAcceleration(true)"
+        )
+        assertGolden(
+            encoder.setScrollAcceleration(false),
+            "001F00000002021601000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001700",
+            "setScrollAcceleration(false)"
+        )
+        assertGolden(
+            encoder.getScrollSmartReel(),
+            "001F00000002029701000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000009600",
+            "getScrollSmartReel"
+        )
+        assertGolden(
+            encoder.setScrollSmartReel(true),
+            "001F00000002021701010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001700",
+            "setScrollSmartReel(true)"
+        )
+        assertGolden(
+            encoder.setScrollSmartReel(false),
+            "001F00000002021701000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001600",
+            "setScrollSmartReel(false)"
+        )
+    }
+
+    func testValidationErrorMessagesAreUnchanged() {
+        XCTAssertEqual(
+            RazerValidationError.emptyDPIStages.errorDescription,
+            "At least one DPI stage is required."
+        )
+        XCTAssertEqual(
+            RazerValidationError.invalidActiveStage(4, stageCount: 3).errorDescription,
+            "Active DPI stage 4 is invalid for 3 stages."
+        )
+        XCTAssertEqual(
+            RazerValidationError.invalidDPI(50, allowed: 100...30_000).errorDescription,
+            "DPI 50 is outside the supported range 100-30000."
+        )
+        XCTAssertEqual(
+            RazerValidationError.unsupportedPollingRate(250, supported: [125, 500, 1000]).errorDescription,
+            "Polling rate 250 Hz is not supported. Use 125, 500, or 1000 Hz."
+        )
+        XCTAssertEqual(
+            RazerValidationError.tooManyDPIStages(6, maximum: 5).errorDescription,
+            "Too many DPI stages (6). Maximum is 5."
+        )
+        XCTAssertEqual(
+            RazerValidationError.invalidWheelSpeedMultiplier.errorDescription,
+            "Wheel speed multiplier must be a finite value between 0.25 and 3.0."
+        )
+        XCTAssertEqual(
+            RazerReportError.invalidLength(expected: 90, actual: 12).errorDescription,
+            "Razer report must be 90 bytes, got 12."
+        )
+        XCTAssertEqual(
+            RazerReportError.invalidDataSize(81).errorDescription,
+            "Razer report data size 81 exceeds the 80-byte argument field."
+        )
+        XCTAssertEqual(
+            RazerReportError.truncatedDPIStagesPayload(requiredBytes: 17, available: 11).errorDescription,
+            "DPI stage payload needs 17 argument bytes, only 11 available."
+        )
+    }
+
+    private func assertGolden(
+        _ report: RazerReport,
+        _ expected: String,
+        _ label: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let actual = report.bytes.map { String(format: "%02X", $0) }.joined()
+        XCTAssertEqual(actual, expected, label, file: file, line: line)
+    }
+}

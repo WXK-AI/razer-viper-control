@@ -8,6 +8,9 @@ public enum PersistenceStatus: Equatable, Sendable {
 
 /// Editable hardware fields kept as draft text until every value is valid.
 public struct ProfileDraft: Equatable, Sendable {
+    /// Stored so the argument-less validation properties below stay usable directly
+    /// from SwiftUI bindings.
+    public let limits: ProfileLimits
     public var name: String
     public var stageTexts: [String]
     public var activeStage: Int
@@ -15,7 +18,8 @@ public struct ProfileDraft: Equatable, Sendable {
     public var autoReapplyEnabled: Bool
     public var remapperEnabled: Bool
 
-    public init(profile: MouseProfile) {
+    public init(profile: MouseProfile, limits: ProfileLimits) {
+        self.limits = limits
         name = profile.name
         stageTexts = profile.dpiStages.map(String.init)
         activeStage = profile.activeStage
@@ -29,9 +33,11 @@ public struct ProfileDraft: Equatable, Sendable {
         stageTexts: [String],
         activeStage: Int,
         pollingRateHz: Int,
+        limits: ProfileLimits,
         autoReapplyEnabled: Bool = true,
         remapperEnabled: Bool = false
     ) {
+        self.limits = limits
         self.name = name
         self.stageTexts = stageTexts
         self.activeStage = activeStage
@@ -42,7 +48,7 @@ public struct ProfileDraft: Equatable, Sendable {
 
     public var stageErrors: [String?] {
         stageTexts.map { text in
-            Self.stageError(for: text)
+            Self.stageError(for: text, limits: limits)
         }
     }
 
@@ -57,7 +63,7 @@ public struct ProfileDraft: Equatable, Sendable {
     }
 
     public var pollingError: String? {
-        guard DeviceDescriptor.supportedPollingRates.contains(pollingRateHz) else {
+        guard limits.pollingRates.contains(pollingRateHz) else {
             return "Polling rate must be 125, 500, or 1000 Hz."
         }
         return nil
@@ -73,7 +79,7 @@ public struct ProfileDraft: Equatable, Sendable {
     public func parsedStages() throws -> [Int] {
         var stages: [Int] = []
         for (index, text) in stageTexts.enumerated() {
-            if let error = Self.stageError(for: text) {
+            if let error = Self.stageError(for: text, limits: limits) {
                 throw DraftValidationError.stage(index: index, message: error)
             }
             stages.append(Int(text.trimmingCharacters(in: .whitespacesAndNewlines))!)
@@ -81,16 +87,16 @@ public struct ProfileDraft: Equatable, Sendable {
         guard !stages.isEmpty else {
             throw DraftValidationError.emptyStages
         }
-        guard stages.count <= DeviceDescriptor.maxDPIStages else {
-            throw DraftValidationError.tooManyStages(stages.count)
+        guard stages.count <= limits.maxDPIStages else {
+            throw DraftValidationError.tooManyStages(stages.count, maximum: limits.maxDPIStages)
         }
         return stages
     }
 
     public func validatedHardware() throws -> (stages: [Int], activeStage: Int, pollingRateHz: Int) {
         let stages = try parsedStages()
-        _ = try ProfileValidator.validateStages(stages, activeStage: activeStage)
-        try ProfileValidator.validatePollingRate(pollingRateHz)
+        _ = try limits.validateStages(stages, activeStage: activeStage)
+        try limits.validatePollingRate(pollingRateHz)
         return (stages, activeStage, pollingRateHz)
     }
 
@@ -108,7 +114,7 @@ public struct ProfileDraft: Equatable, Sendable {
         return updated
     }
 
-    public static func stageError(for text: String) -> String? {
+    public static func stageError(for text: String, limits: ProfileLimits) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return "Enter a DPI value."
@@ -116,8 +122,8 @@ public struct ProfileDraft: Equatable, Sendable {
         guard let value = Int(trimmed) else {
             return "DPI must be a whole number."
         }
-        guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(value) else {
-            return "DPI must be between \(DeviceDescriptor.minDPI) and \(DeviceDescriptor.maxDPI)."
+        guard limits.dpiRange.contains(value) else {
+            return "DPI must be between \(limits.dpiRange.lowerBound) and \(limits.dpiRange.upperBound)."
         }
         return nil
     }
@@ -134,7 +140,7 @@ public struct ProfileDraft: Equatable, Sendable {
 public enum DraftValidationError: Error, Equatable, LocalizedError {
     case stage(index: Int, message: String)
     case emptyStages
-    case tooManyStages(Int)
+    case tooManyStages(Int, maximum: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -142,8 +148,8 @@ public enum DraftValidationError: Error, Equatable, LocalizedError {
             return "Stage \(index + 1): \(message)"
         case .emptyStages:
             return "At least one DPI stage is required."
-        case let .tooManyStages(count):
-            return "Too many DPI stages (\(count)). Maximum is \(DeviceDescriptor.maxDPIStages)."
+        case let .tooManyStages(count, maximum):
+            return "Too many DPI stages (\(count)). Maximum is \(maximum)."
         }
     }
 }

@@ -86,6 +86,7 @@ final class MouseProfileMigrationTests: XCTestCase {
         let bundle = ProfileBundle(selectedProfileID: profileID, profiles: [profile])
 
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "migration-test-\(UUID().uuidString)",
             applicationSupportDirectory: tempDirectory
         )
@@ -121,6 +122,7 @@ final class MouseProfileMigrationTests: XCTestCase {
         let legacyJSON = try JSONSerialization.data(withJSONObject: object)
 
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "schema-upgrade-\(UUID().uuidString)",
             applicationSupportDirectory: tempDirectory
         )
@@ -166,6 +168,7 @@ final class MouseProfileMigrationTests: XCTestCase {
         let futureJSON = try JSONEncoder().encode(futureBundle)
 
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "schema-future-\(UUID().uuidString)",
             applicationSupportDirectory: tempDirectory
         )
@@ -211,6 +214,7 @@ final class MouseProfileMigrationTests: XCTestCase {
         let renameToggle = SchemaMigrationRenameToggle()
         renameToggle.fail = true
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "schema-future-preserve-\(UUID().uuidString)",
             applicationSupportDirectory: tempDirectory,
             renameEntry: { directoryFD, from, to in
@@ -252,6 +256,7 @@ final class MouseProfileMigrationTests: XCTestCase {
         )
 
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "schema-zero-\(UUID().uuidString)",
             applicationSupportDirectory: tempDirectory
         )
@@ -288,6 +293,7 @@ final class MouseProfileMigrationTests: XCTestCase {
             pollingRateHz: 1000
         )
         let store = ProfileStore(
+            limits: .viperV3HyperSpeed,
             deviceKey: "schema-zero-save-\(UUID().uuidString)",
             applicationSupportDirectory: tempDirectory
         )

@@ -7,7 +7,8 @@ final class ProfileDraftValidationTests: XCTestCase {
             name: "Test",
             stageTexts: stages,
             activeStage: 1,
-            pollingRateHz: 1000
+            pollingRateHz: 1000,
+            limits: .viperV3HyperSpeed
         )
     }
 
@@ -61,7 +62,7 @@ final class ProfileDraftValidationTests: XCTestCase {
             activeStage: 2,
             pollingRateHz: 500
         )
-        var draft = ProfileDraft(profile: profile)
+        var draft = ProfileDraft(profile: profile, limits: .viperV3HyperSpeed)
         draft.stageTexts = ["1200", "2400"]
         draft.activeStage = 1
         draft.pollingRateHz = 1000

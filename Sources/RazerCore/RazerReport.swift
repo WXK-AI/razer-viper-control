@@ -16,7 +16,13 @@ public enum RazerVariableStorage: UInt8 {
 
 /// Independent encoder/decoder for the 90-byte Razer HID configuration packet.
 public struct RazerReport: Equatable, Sendable {
-    public static let length = DeviceDescriptor.featureReportLength
+    /// The Razer configuration packet is a fixed 90-byte frame for the whole family,
+    /// not a per-device parameter: the frame offsets below (`bytes[8..<88]`, `[88]`,
+    /// `[89]`, and the CRC slice `bytes[2..<88]`) encode it independently, and
+    /// `calculateCRC` returns 0 rather than throwing on a length mismatch, so a
+    /// per-device length would surface as a misleading CRC error. `MouseModel`'s
+    /// `minimumFeatureReportSize` is the separate discovery threshold.
+    public static let length = 90
     public static let argumentLength = 80
 
     public var status: UInt8
@@ -37,7 +43,7 @@ public struct RazerReport: Equatable, Sendable {
 
     public init(
         status: UInt8 = 0,
-        transactionID: UInt8 = DeviceDescriptor.transactionID,
+        transactionID: UInt8,
         remainingPackets: UInt16 = 0,
         protocolType: UInt8 = 0,
         dataSize: UInt8 = 0,
@@ -117,168 +123,6 @@ public struct RazerReport: Equatable, Sendable {
         return arguments + Array(repeating: 0, count: argumentLength - arguments.count)
     }
 
-    public static func makeCommand(
-        commandClass: UInt8,
-        commandID: UInt8,
-        dataSize: UInt8,
-        arguments: [UInt8] = []
-    ) -> RazerReport {
-        var report = RazerReport(
-            transactionID: DeviceDescriptor.transactionID,
-            dataSize: dataSize,
-            commandClass: commandClass,
-            commandID: commandID
-        )
-        for (index, value) in arguments.prefix(argumentLength).enumerated() {
-            report.arguments[index] = value
-        }
-        report.refreshCRC()
-        return report
-    }
-
-    // MARK: - Command builders (OpenRazer protocol reference)
-
-    public static func getBatteryLevel() -> RazerReport {
-        makeCommand(commandClass: 0x07, commandID: 0x80, dataSize: 0x02)
-    }
-
-    public static func getChargingStatus() -> RazerReport {
-        makeCommand(commandClass: 0x07, commandID: 0x84, dataSize: 0x02)
-    }
-
-    public static func getPollingRate() -> RazerReport {
-        makeCommand(commandClass: 0x00, commandID: 0x85, dataSize: 0x01)
-    }
-
-    public static func setPollingRate(hz: Int) throws -> RazerReport {
-        let encoded: UInt8
-        switch hz {
-        case 1000: encoded = 0x01
-        case 500: encoded = 0x02
-        case 125: encoded = 0x08
-        default:
-            throw RazerValidationError.unsupportedPollingRate(hz)
-        }
-        return makeCommand(commandClass: 0x00, commandID: 0x05, dataSize: 0x01, arguments: [encoded])
-    }
-
-    public static func getDPI() -> RazerReport {
-        makeCommand(
-            commandClass: 0x04,
-            commandID: 0x85,
-            dataSize: 0x07,
-            arguments: [RazerVariableStorage.noStore.rawValue]
-        )
-    }
-
-    public static func setDPI(x: Int, y: Int) throws -> RazerReport {
-        let clampedX = try clampDPI(x)
-        let clampedY = try clampDPI(y)
-        let args: [UInt8] = [
-            RazerVariableStorage.varStore.rawValue,
-            UInt8((clampedX >> 8) & 0xFF),
-            UInt8(clampedX & 0xFF),
-            UInt8((clampedY >> 8) & 0xFF),
-            UInt8(clampedY & 0xFF),
-            0x00,
-            0x00
-        ]
-        return makeCommand(commandClass: 0x04, commandID: 0x05, dataSize: 0x07, arguments: args)
-    }
-
-    public static func getDPIStages() -> RazerReport {
-        makeCommand(
-            commandClass: 0x04,
-            commandID: 0x86,
-            dataSize: 0x26,
-            arguments: [RazerVariableStorage.varStore.rawValue]
-        )
-    }
-
-    // MARK: - Scroll wheel commands (OpenRazer 0x02 class)
-
-    public static func getScrollMode() -> RazerReport {
-        makeCommand(
-            commandClass: 0x02,
-            commandID: 0x94,
-            dataSize: 0x02,
-            arguments: [RazerVariableStorage.varStore.rawValue]
-        )
-    }
-
-    public static func setScrollMode(_ mode: ScrollWheelMode) -> RazerReport {
-        makeCommand(
-            commandClass: 0x02,
-            commandID: 0x14,
-            dataSize: 0x02,
-            arguments: [RazerVariableStorage.varStore.rawValue, mode.rawValue]
-        )
-    }
-
-    public static func getScrollAcceleration() -> RazerReport {
-        makeCommand(
-            commandClass: 0x02,
-            commandID: 0x96,
-            dataSize: 0x02,
-            arguments: [RazerVariableStorage.varStore.rawValue]
-        )
-    }
-
-    public static func setScrollAcceleration(_ enabled: Bool) -> RazerReport {
-        makeCommand(
-            commandClass: 0x02,
-            commandID: 0x16,
-            dataSize: 0x02,
-            arguments: [RazerVariableStorage.varStore.rawValue, enabled ? 0x01 : 0x00]
-        )
-    }
-
-    public static func getScrollSmartReel() -> RazerReport {
-        makeCommand(
-            commandClass: 0x02,
-            commandID: 0x97,
-            dataSize: 0x02,
-            arguments: [RazerVariableStorage.varStore.rawValue]
-        )
-    }
-
-    public static func setScrollSmartReel(_ enabled: Bool) -> RazerReport {
-        makeCommand(
-            commandClass: 0x02,
-            commandID: 0x17,
-            dataSize: 0x02,
-            arguments: [RazerVariableStorage.varStore.rawValue, enabled ? 0x01 : 0x00]
-        )
-    }
-
-    public static func setDPIStages(activeStage: Int, stages: [Int]) throws -> RazerReport {
-        let validated = try ProfileValidator.validateStages(stages, activeStage: activeStage)
-        var args = [UInt8](repeating: 0, count: argumentLength)
-        args[0] = RazerVariableStorage.varStore.rawValue
-        args[1] = UInt8(validated.activeStage)
-        args[2] = UInt8(validated.stages.count)
-
-        var offset = 3
-        for (index, dpi) in validated.stages.enumerated() {
-            args[offset] = UInt8(index)
-            offset += 1
-            args[offset] = UInt8((dpi >> 8) & 0xFF)
-            offset += 1
-            args[offset] = UInt8(dpi & 0xFF)
-            offset += 1
-            args[offset] = UInt8((dpi >> 8) & 0xFF)
-            offset += 1
-            args[offset] = UInt8(dpi & 0xFF)
-            offset += 1
-            args[offset] = 0x00
-            offset += 1
-            args[offset] = 0x00
-            offset += 1
-        }
-
-        return makeCommand(commandClass: 0x04, commandID: 0x06, dataSize: 0x26, arguments: args)
-    }
-
     // MARK: - Response parsing
 
     public var responseStatus: RazerReportStatus? {
@@ -319,7 +163,12 @@ public struct RazerReport: Equatable, Sendable {
         arguments[1] != 0
     }
 
-    public func decodeDPIStages() throws -> (activeStage: Int, stages: [(x: Int, y: Int)]) {
+    /// Unlike `decodeDPI`, this rejects out-of-range x/y: a device reporting a DPI
+    /// above the ceiling reads fine through `getDPI` but throws when the same value
+    /// appears in a stage list.
+    public func decodeDPIStages(
+        limits: ProfileLimits
+    ) throws -> (activeStage: Int, stages: [(x: Int, y: Int)]) {
         // Layout: [store][active][count] then count × [index][x_hi][x_lo][y_hi][y_lo][0][0]
         // Compare against declared dataSize — arguments is always normalized to 80 bytes.
         let declaredPayloadLength = Int(dataSize)
@@ -336,8 +185,8 @@ public struct RazerReport: Equatable, Sendable {
         guard count > 0 else {
             throw RazerValidationError.emptyDPIStages
         }
-        guard count <= DeviceDescriptor.maxDPIStages else {
-            throw RazerValidationError.tooManyDPIStages(count)
+        guard count <= limits.maxDPIStages else {
+            throw RazerValidationError.tooManyDPIStages(count, maximum: limits.maxDPIStages)
         }
         guard activeStage >= 1, activeStage <= count else {
             throw RazerValidationError.invalidActiveStage(activeStage, stageCount: count)
@@ -356,24 +205,14 @@ public struct RazerReport: Equatable, Sendable {
         for _ in 0..<count {
             let x = (Int(arguments[offset]) << 8) | Int(arguments[offset + 1])
             let y = (Int(arguments[offset + 2]) << 8) | Int(arguments[offset + 3])
-            guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(x) else {
-                throw RazerValidationError.invalidDPI(x)
-            }
-            guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(y) else {
-                throw RazerValidationError.invalidDPI(y)
-            }
+            try limits.validateDPI(x)
+            try limits.validateDPI(y)
             stages.append((x, y))
             offset += 7
         }
         return (activeStage, stages)
     }
 
-    private static func clampDPI(_ dpi: Int) throws -> Int {
-        guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(dpi) else {
-            throw RazerValidationError.invalidDPI(dpi)
-        }
-        return dpi
-    }
 }
 
 public enum RazerReportError: Error, LocalizedError, Equatable {
@@ -386,19 +225,22 @@ public enum RazerReportError: Error, LocalizedError, Equatable {
         case let .invalidLength(expected, actual):
             return "Razer report must be \(expected) bytes, got \(actual)."
         case let .invalidDataSize(size):
-            return "Razer report data size \(size) exceeds the 80-byte argument field."
+            return "Razer report data size \(size) exceeds the \(RazerReport.argumentLength)-byte argument field."
         case let .truncatedDPIStagesPayload(requiredBytes, available):
             return "DPI stage payload needs \(requiredBytes) argument bytes, only \(available) available."
         }
     }
 }
 
+/// Device-dependent limits travel in the payload so the message is a pure function of
+/// the error. Reading them from a shared constant would render the wrong device's
+/// limits once more than one model is supported.
 public enum RazerValidationError: Error, LocalizedError, Equatable {
     case emptyDPIStages
     case invalidActiveStage(Int, stageCount: Int)
-    case invalidDPI(Int)
-    case unsupportedPollingRate(Int)
-    case tooManyDPIStages(Int)
+    case invalidDPI(Int, allowed: ClosedRange<Int>)
+    case unsupportedPollingRate(Int, supported: [Int])
+    case tooManyDPIStages(Int, maximum: Int)
     case invalidWheelSpeedMultiplier
 
     public var errorDescription: String? {
@@ -407,48 +249,36 @@ public enum RazerValidationError: Error, LocalizedError, Equatable {
             return "At least one DPI stage is required."
         case let .invalidActiveStage(stage, stageCount):
             return "Active DPI stage \(stage) is invalid for \(stageCount) stages."
-        case let .invalidDPI(dpi):
-            return "DPI \(dpi) is outside the supported range \(DeviceDescriptor.minDPI)-\(DeviceDescriptor.maxDPI)."
-        case let .unsupportedPollingRate(rate):
-            return "Polling rate \(rate) Hz is not supported. Use 125, 500, or 1000 Hz."
-        case let .tooManyDPIStages(count):
-            return "Too many DPI stages (\(count)). Maximum is \(DeviceDescriptor.maxDPIStages)."
+        case let .invalidDPI(dpi, allowed):
+            return "DPI \(dpi) is outside the supported range \(allowed.lowerBound)-\(allowed.upperBound)."
+        case let .unsupportedPollingRate(rate, supported):
+            return "Polling rate \(rate) Hz is not supported. Use \(Self.humanList(supported)) Hz."
+        case let .tooManyDPIStages(count, maximum):
+            return "Too many DPI stages (\(count)). Maximum is \(maximum)."
         case .invalidWheelSpeedMultiplier:
             return "Wheel speed multiplier must be a finite value between \(SoftwareWheelSettings.minimumSpeedMultiplier) and \(SoftwareWheelSettings.maximumSpeedMultiplier)."
         }
     }
+
+    /// Renders "125, 500, or 1000". `joined(separator:)` would drop the "or" and
+    /// interpolating the array directly would emit brackets.
+    static func humanList(_ values: [Int]) -> String {
+        switch values.count {
+        case 0:
+            return "a supported rate"
+        case 1:
+            return "\(values[0])"
+        case 2:
+            return "\(values[0]) or \(values[1])"
+        default:
+            let leading = values.dropLast().map(String.init).joined(separator: ", ")
+            return "\(leading), or \(values[values.count - 1])"
+        }
+    }
 }
 
+/// Device-independent validation. Device-dependent bounds live on `ProfileLimits`.
 public enum ProfileValidator {
-    public struct ValidatedStages: Equatable {
-        public let stages: [Int]
-        public let activeStage: Int
-    }
-
-    public static func validateStages(_ stages: [Int], activeStage: Int) throws -> ValidatedStages {
-        guard !stages.isEmpty else {
-            throw RazerValidationError.emptyDPIStages
-        }
-        guard stages.count <= DeviceDescriptor.maxDPIStages else {
-            throw RazerValidationError.tooManyDPIStages(stages.count)
-        }
-        guard activeStage >= 1, activeStage <= stages.count else {
-            throw RazerValidationError.invalidActiveStage(activeStage, stageCount: stages.count)
-        }
-        for dpi in stages {
-            guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(dpi) else {
-                throw RazerValidationError.invalidDPI(dpi)
-            }
-        }
-        return ValidatedStages(stages: stages, activeStage: activeStage)
-    }
-
-    public static func validatePollingRate(_ rate: Int) throws {
-        guard DeviceDescriptor.supportedPollingRates.contains(rate) else {
-            throw RazerValidationError.unsupportedPollingRate(rate)
-        }
-    }
-
     public static func validateWheelSpeedMultiplier(_ multiplier: Double) throws {
         guard multiplier.isFinite else {
             throw RazerValidationError.invalidWheelSpeedMultiplier

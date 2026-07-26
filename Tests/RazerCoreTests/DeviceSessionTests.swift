@@ -2,8 +2,9 @@ import XCTest
 @testable import RazerCore
 
 final class DeviceSessionTests: XCTestCase {
+    private let encoder = RazerCommandEncoder(model: .viperV3HyperSpeed)
     func testInvalidateWaitsForCompleteCommandBoundaryBeforeClosing() throws {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         let transport = BlockingCommandTransport(response: successfulResponse(for: request).bytes)
         let sequence = SequencedDeviceSessionHarness(deviceIDs: [1], transports: [transport])
         let session = sequence.makeSession()
@@ -38,7 +39,7 @@ final class DeviceSessionTests: XCTestCase {
     }
 
     func testRemovalWaitsForCompleteCommandBoundaryBeforeClosingAndNotifying() throws {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         let transport = BlockingCommandTransport(response: successfulResponse(for: request).bytes)
         let sequence = SequencedDeviceSessionHarness(deviceIDs: [1], transports: [transport])
         let session = sequence.makeSession()
@@ -184,9 +185,13 @@ final class DeviceSessionTests: XCTestCase {
         let removalMonitor = FakeDeviceRemovalMonitor()
         let session = DeviceSession(
             discoverDevice: {
-                DeviceSessionDiscoveredDevice(identity: nil, handle: FakeDeviceSessionHandle())
+                DeviceSessionDiscoveredDevice(
+                    identity: nil,
+                    handle: FakeDeviceSessionHandle(),
+                    model: .viperV3HyperSpeed
+                )
             },
-            makeClient: { _ in RazerCommandClient(transport: transport) },
+            makeClient: { _ in RazerCommandClient(transport: transport, model: .viperV3HyperSpeed) },
             removalMonitor: removalMonitor
         )
         var notificationCount = 0
@@ -274,14 +279,15 @@ private final class SequencedDeviceSessionHarness {
                 let deviceID = deviceIDs.removeFirst()
                 return DeviceSessionDiscoveredDevice(
                     identity: DeviceSessionDeviceIdentity(registryEntryID: deviceID),
-                    handle: FakeDeviceSessionHandle()
+                    handle: FakeDeviceSessionHandle(),
+                    model: .viperV3HyperSpeed
                 )
             },
             makeClient: { [self] _ in
                 lock.lock()
                 defer { lock.unlock() }
                 precondition(!transports.isEmpty)
-                return RazerCommandClient(transport: transports.removeFirst())
+                return RazerCommandClient(transport: transports.removeFirst(), model: .viperV3HyperSpeed)
             },
             removalMonitor: removalMonitor
         )
@@ -456,7 +462,8 @@ private final class DeviceSessionHarness {
                     guard index < deviceIDs.count else { return nil }
                     return DeviceSessionDiscoveredDevice(
                         identity: DeviceSessionDeviceIdentity(registryEntryID: deviceIDs[index]),
-                        handle: FakeDeviceSessionHandle()
+                        handle: FakeDeviceSessionHandle(),
+                        model: .viperV3HyperSpeed
                     )
                 }
             },
@@ -465,7 +472,7 @@ private final class DeviceSessionHarness {
                     _clientCreationCount += 1
                     let transport = CountingRazerTransport()
                     _transports.append(transport)
-                    return RazerCommandClient(transport: transport)
+                    return RazerCommandClient(transport: transport, model: .viperV3HyperSpeed)
                 }
             },
             removalMonitor: removalMonitor

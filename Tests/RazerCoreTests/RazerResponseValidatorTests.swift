@@ -2,8 +2,9 @@ import XCTest
 @testable import RazerCore
 
 final class RazerResponseValidatorTests: XCTestCase {
+    private let encoder = RazerCommandEncoder(model: .viperV3HyperSpeed)
     func testAcceptsMatchingSuccessfulResponse() throws {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         var response = request
         response.status = RazerReportStatus.successful.rawValue
         response.arguments[1] = 200
@@ -21,7 +22,7 @@ final class RazerResponseValidatorTests: XCTestCase {
     }
 
     func testRejectsWrongTransactionID() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         var response = request
         response.status = RazerReportStatus.successful.rawValue
         response.transactionID = request.transactionID &+ 1
@@ -39,7 +40,7 @@ final class RazerResponseValidatorTests: XCTestCase {
     }
 
     func testRejectsRemainingPackets() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         var response = request
         response.status = RazerReportStatus.successful.rawValue
         response.remainingPackets = 1
@@ -57,7 +58,7 @@ final class RazerResponseValidatorTests: XCTestCase {
     }
 
     func testRejectsWrongProtocolType() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         var response = request
         response.status = RazerReportStatus.successful.rawValue
         response.protocolType = 0x09
@@ -75,7 +76,7 @@ final class RazerResponseValidatorTests: XCTestCase {
     }
 
     func testRejectsWrongCommandClass() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         var response = request
         response.status = RazerReportStatus.successful.rawValue
         response.commandClass = 0x04
@@ -93,7 +94,7 @@ final class RazerResponseValidatorTests: XCTestCase {
     }
 
     func testRejectsWrongCommandID() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         var response = request
         response.status = RazerReportStatus.successful.rawValue
         response.commandID = 0x84
@@ -111,7 +112,7 @@ final class RazerResponseValidatorTests: XCTestCase {
     }
 
     func testRejectsIncompatibleDataSizeForFixedResponse() {
-        let request = RazerReport.getPollingRate()
+        let request = encoder.getPollingRate()
         var response = request
         response.status = RazerReportStatus.successful.rawValue
         response.dataSize = 0x02
@@ -129,7 +130,7 @@ final class RazerResponseValidatorTests: XCTestCase {
     }
 
     func testAllowingUnsupportedReturnsNotSupported() throws {
-        let request = RazerReport.getScrollMode()
+        let request = encoder.getScrollMode()
         var response = request
         response.status = RazerReportStatus.notSupported.rawValue
         // Error/unsupported replies are not required to echo request dataSize.
@@ -145,7 +146,7 @@ final class RazerResponseValidatorTests: XCTestCase {
     }
 
     func testBusyMapsToDeviceBusy() {
-        let request = RazerReport.getBatteryLevel()
+        let request = encoder.getBatteryLevel()
         var response = request
         response.status = RazerReportStatus.busy.rawValue
         response.refreshCRC()

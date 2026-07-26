@@ -16,6 +16,8 @@ public struct DiscoveredHIDInterface: Identifiable, Sendable, Equatable {
     /// `nil` means the property was absent (distinct from a reported `0`).
     public let locationID: UInt32?
     public let isTargetControlInterface: Bool
+    /// Registry entry this interface resolved to, or `nil` when the product ID is unknown.
+    public let model: MouseModel?
 
     /// Unique within a discovery pass for selection ordering/mapping.
     /// Prefers `IORegistryEntryGetRegistryEntryID` when available; otherwise a process-local fallback.
@@ -67,8 +69,19 @@ public enum HIDDiscoveryError: Error, LocalizedError {
     }
 }
 
+/// Resolved control interface: the device handle plus the registry entry it matched.
+public struct ResolvedControlDevice {
+    public let device: IOHIDDevice
+    public let model: MouseModel
+    public let interface: DiscoveredHIDInterface
+}
+
 public final class HIDDeviceDiscovery {
-    public init() {}
+    private let registry: DeviceRegistry
+
+    public init(registry: DeviceRegistry) {
+        self.registry = registry
+    }
 
     public func listRazerInterfaces() throws -> [DiscoveredHIDInterface] {
         let manager = try makeManager()
@@ -80,11 +93,11 @@ public final class HIDDeviceDiscovery {
 
         return deviceSet
             .compactMap { describe(device: $0) }
-            .filter { $0.vendorID == DeviceDescriptor.vendorID }
+            .filter { registry.contains(vendorID: $0.vendorID) }
             .sorted { $0.summary < $1.summary }
     }
 
-    public func findControlDevice() throws -> IOHIDDevice? {
+    public func findControlDevice() throws -> ResolvedControlDevice? {
         let manager = try makeManager()
         defer { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
 
@@ -97,13 +110,15 @@ public final class HIDDeviceDiscovery {
                 guard let info = describe(device: device), info.isTargetControlInterface else { return nil }
                 return (device, info)
             }
-            .filter { $0.1.productID == DeviceDescriptor.productID }
+            .filter { $0.1.model != nil }
 
         // Index into this candidate array — never remap via display location / non-unique fields.
         guard let index = Self.selectControlInterfaceIndex(from: candidates.map(\.1)) else {
             return nil
         }
-        return candidates[index].0
+        let (device, interface) = candidates[index]
+        guard let model = interface.model else { return nil }
+        return ResolvedControlDevice(device: device, model: model, interface: interface)
     }
 
     /// Deterministic pick among control-interface candidates (by value).
@@ -160,11 +175,18 @@ public final class HIDDeviceDiscovery {
     private func makeManager() throws -> IOHIDManager {
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
 
-        let matching: [String: Any] = [
-            kIOHIDVendorIDKey: DeviceDescriptor.vendorID,
-            kIOHIDProductIDKey: DeviceDescriptor.productID
-        ]
-        IOHIDManagerSetDeviceMatching(manager, matching as CFDictionary)
+        let matching: [[String: Any]] = registry.models.map { model in
+            [
+                kIOHIDVendorIDKey: model.vendorID,
+                kIOHIDProductIDKey: model.productID
+            ]
+        }
+        if matching.count == 1 {
+            // Byte-identical to the pre-registry single-dictionary call.
+            IOHIDManagerSetDeviceMatching(manager, matching[0] as CFDictionary)
+        } else {
+            IOHIDManagerSetDeviceMatchingMultiple(manager, matching as CFArray)
+        }
         let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         guard openResult == kIOReturnSuccess else {
             throw HIDDiscoveryError.managerOpenFailed
@@ -185,9 +207,13 @@ public final class HIDDeviceDiscovery {
         let locationID = property(device, key: kIOHIDLocationIDKey)
         let selectionIdentity = Self.selectionIdentity(for: device)
 
-        let isTarget = usagePage == DeviceDescriptor.primaryUsagePage
-            && usage == DeviceDescriptor.primaryUsage
-            && featureSize >= DeviceDescriptor.featureReportLength
+        let model = registry.model(vendorID: vendorID, productID: productID)
+        // Unrecognized interfaces stay listed for diagnostics; they just are not targets.
+        let isTarget = model.map {
+            usagePage == $0.primaryUsagePage
+                && usage == $0.primaryUsage
+                && featureSize >= UInt32($0.minimumFeatureReportSize)
+        } ?? false
 
         return DiscoveredHIDInterface(
             id: DiscoveredHIDInterface.makeID(
@@ -205,6 +231,7 @@ public final class HIDDeviceDiscovery {
             transport: transport,
             locationID: locationID,
             isTargetControlInterface: isTarget,
+            model: model,
             selectionIdentity: selectionIdentity
         )
     }

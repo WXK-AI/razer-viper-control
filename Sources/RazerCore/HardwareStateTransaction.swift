@@ -1,6 +1,10 @@
 import Foundation
 
 public protocol RazerHardwareMutating: AnyObject {
+    /// Carried on the client so transaction entry points need no second parameter that
+    /// could disagree with the device being written to.
+    var model: MouseModel { get }
+
     func readState() throws -> DeviceState
     func setDPI(x: Int, y: Int) throws
     func setPollingRate(hz: Int) throws
@@ -94,10 +98,10 @@ public enum HardwareStateTransaction {
         temporaryPollingHz: Int,
         failAfter: HardwareTransactionPhase? = nil
     ) throws -> IntegrationResult {
-        try ProfileValidator.validatePollingRate(temporaryPollingHz)
-        guard (DeviceDescriptor.minDPI...DeviceDescriptor.maxDPI).contains(temporaryDPI) else {
-            throw RazerValidationError.invalidDPI(temporaryDPI)
-        }
+        // Both gates run before any write so a rejected value leaves the device untouched.
+        try client.model.limits.validatePollingRate(temporaryPollingHz)
+        try client.model.limits.validateDPI(temporaryDPI)
+        let encoder = RazerCommandEncoder(model: client.model)
 
         let originalState = try client.readState()
         guard let originalPollingRateHz = originalState.pollingRateHz else {
@@ -115,7 +119,7 @@ public enum HardwareStateTransaction {
             try client.setDPI(x: temporaryDPI, y: temporaryDPI)
             try maybeFail(after: .setTemporaryDPI, failAfter)
 
-            let readDPI = try client.send(.getDPI()).decodeDPI()
+            let readDPI = try client.send(encoder.getDPI()).decodeDPI()
             guard readDPI.x == temporaryDPI, readDPI.y == temporaryDPI else {
                 throw HardwareTransactionError.verificationFailed(
                     "temporary DPI expected \(temporaryDPI)x\(temporaryDPI), got \(readDPI.x)x\(readDPI.y)"
@@ -126,7 +130,7 @@ public enum HardwareStateTransaction {
             try client.setPollingRate(hz: temporaryPollingHz)
             try maybeFail(after: .setTemporaryPolling, failAfter)
 
-            let readPolling = try client.send(.getPollingRate()).decodePollingRateHz()
+            let readPolling = try client.send(encoder.getPollingRate()).decodePollingRateHz()
             guard let readPolling, readPolling == temporaryPollingHz else {
                 throw HardwareTransactionError.verificationFailed(
                     "temporary polling expected \(temporaryPollingHz), got \(readPolling.map(String.init) ?? "unknown")"

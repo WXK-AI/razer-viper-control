@@ -2,6 +2,7 @@ import XCTest
 @testable import RazerCore
 
 private final class FakeHardwareClient: RazerHardwareMutating {
+    let model = MouseModel.viperV3HyperSpeed
     var state = DeviceState(dpiX: 800, dpiY: 1600, pollingRateHz: 1000)
     var wheel = HardwareWheelSettings(
         scrollMode: .tactile,
@@ -84,19 +85,19 @@ private final class FakeHardwareClient: RazerHardwareMutating {
         if !ignoreScrollModeWrites {
             wheel.scrollMode = mode
         }
-        return .success(RazerReport.setScrollMode(mode))
+        return .success(RazerCommandEncoder(model: model).setScrollMode(mode))
     }
 
     func setScrollAcceleration(_ enabled: Bool) throws -> CommandSendResult {
         setAccelerationCalls.append(enabled)
         wheel.accelerationEnabled = enabled
-        return .success(RazerReport.setScrollAcceleration(enabled))
+        return .success(RazerCommandEncoder(model: model).setScrollAcceleration(enabled))
     }
 
     func setScrollSmartReel(_ enabled: Bool) throws -> CommandSendResult {
         setSmartReelCalls.append(enabled)
         wheel.smartReelEnabled = enabled
-        return .success(RazerReport.setScrollSmartReel(enabled))
+        return .success(RazerCommandEncoder(model: model).setScrollSmartReel(enabled))
     }
 }
 
