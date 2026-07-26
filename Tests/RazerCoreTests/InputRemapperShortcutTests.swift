@@ -107,7 +107,7 @@ final class InputRemapperShortcutTests: XCTestCase {
         remapper.updateProfile(profile)
         let snapshot = installKeyboardProbe(remapper)
 
-        XCTAssertNil(remapper.processScrollWheelEvent(event))
+        XCTAssertNil(processScroll(remapper, event))
         let posted = snapshot()
         XCTAssertEqual(posted.count, 2)
         XCTAssertTrue(posted[0].keyDown)
@@ -115,4 +115,14 @@ final class InputRemapperShortcutTests: XCTestCase {
         XCTAssertFalse(posted[1].keyDown)
         XCTAssertEqual(posted[1].flags, 0)
     }
+
+    /// Converts the remapper's `Unmanaged` result to a managed reference while `event`
+    /// is still alive. Never hand a raw `Unmanaged` to an XCTest assertion: the
+    /// assertion stringifies its value, and reflecting `Unmanaged` retains the pointer
+    /// it holds — which is dangling the moment the source event is released.
+    private func processScroll(_ remapper: InputRemapper, _ event: CGEvent) -> CGEvent? {
+        let result = remapper.processScrollWheelEvent(event)
+        return withExtendedLifetime(event) { result?.takeUnretainedValue() }
+    }
+
 }

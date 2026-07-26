@@ -112,9 +112,9 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(multiplier: 2.0))
         let event = try requireScrollEvent(axis2Line: 3)
 
-        let result = remapper.processScrollWheelEvent(event)
+        let result = processScroll(remapper, event)
         XCTAssertNotNil(result)
-        let out = try XCTUnwrap(result?.takeUnretainedValue())
+        let out = try XCTUnwrap(result)
         let values = axisValues(out)
         XCTAssertEqual(values.a1Line, 0)
         XCTAssertEqual(values.a2Line, 6)
@@ -125,8 +125,8 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(multiplier: 2.0))
         let event = try requireScrollEvent(axis2Point: 4, axis2Fixed: 1.5)
 
-        let result = remapper.processScrollWheelEvent(event)
-        let out = try XCTUnwrap(result?.takeUnretainedValue())
+        let result = processScroll(remapper, event)
+        let out = try XCTUnwrap(result)
         let values = axisValues(out)
         XCTAssertEqual(values.a1Point, 0)
         XCTAssertEqual(values.a2Point, 8)
@@ -139,8 +139,8 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(multiplier: 2.0))
         let event = try requireScrollEvent(axis1Line: 1, axis2Line: 3, axis1Point: 2, axis2Point: 4)
 
-        let result = remapper.processScrollWheelEvent(event)
-        let out = try XCTUnwrap(result?.takeUnretainedValue())
+        let result = processScroll(remapper, event)
+        let out = try XCTUnwrap(result)
         let values = axisValues(out)
         XCTAssertEqual(values.a1Line, 2)
         XCTAssertEqual(values.a2Line, 6)
@@ -153,8 +153,8 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(multiplier: 2.0, shiftHorizontal: true))
         let event = try requireScrollEvent(axis1Line: 1, axis2Line: 3, shift: true)
 
-        let result = remapper.processScrollWheelEvent(event)
-        let out = try XCTUnwrap(result?.takeUnretainedValue())
+        let result = processScroll(remapper, event)
+        let out = try XCTUnwrap(result)
         let values = axisValues(out)
         XCTAssertEqual(values.a1Line, 0)
         // converted axis1 (1*2=2) + native axis2 (3*2=6) = 8
@@ -166,8 +166,8 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(multiplier: 2.0))
         let event = try requireScrollEvent(axis1Line: 2, axis1Fixed: 1.25)
 
-        let result = remapper.processScrollWheelEvent(event)
-        let out = try XCTUnwrap(result?.takeUnretainedValue())
+        let result = processScroll(remapper, event)
+        let out = try XCTUnwrap(result)
         let values = axisValues(out)
         XCTAssertEqual(values.a1Line, 4)
         XCTAssertEqual(values.a2Line, 0)
@@ -180,14 +180,14 @@ final class InputRemapperScrollTests: XCTestCase {
         remapper.updateProfile(makeProfile(multiplier: 2.0, invert: true))
 
         let axis2Only = try requireScrollEvent(axis2Line: 3, axis2Point: 4, axis2Fixed: 1.5)
-        let axis2Out = try XCTUnwrap(remapper.processScrollWheelEvent(axis2Only)?.takeUnretainedValue())
+        let axis2Out = try XCTUnwrap(processScroll(remapper, axis2Only))
         let axis2Values = axisValues(axis2Out)
         XCTAssertEqual(axis2Values.a2Line, -6)
         XCTAssertEqual(axis2Values.a2Point, -8)
         XCTAssertEqual(axis2Values.a2Fixed, -3.0, accuracy: 0.0001)
 
         let dual = try requireScrollEvent(axis1Line: 1, axis2Line: 2)
-        let dualOut = try XCTUnwrap(remapper.processScrollWheelEvent(dual)?.takeUnretainedValue())
+        let dualOut = try XCTUnwrap(processScroll(remapper, dual))
         let dualValues = axisValues(dualOut)
         XCTAssertEqual(dualValues.a1Line, -2)
         XCTAssertEqual(dualValues.a2Line, -4)
@@ -200,7 +200,7 @@ final class InputRemapperScrollTests: XCTestCase {
 
         for _ in 0..<2 {
             let event = try requireScrollEvent(axis2Line: 1)
-            let out = try XCTUnwrap(remapper.processScrollWheelEvent(event)?.takeUnretainedValue())
+            let out = try XCTUnwrap(processScroll(remapper, event))
             XCTAssertEqual(axisValues(out).a2Line, 0, "Fractional ticks should residual-hold")
         }
 
@@ -209,7 +209,7 @@ final class InputRemapperScrollTests: XCTestCase {
         // After residual reset, another two fractional ticks still do not emit.
         for _ in 0..<2 {
             let event = try requireScrollEvent(axis2Line: 1)
-            let out = try XCTUnwrap(remapper.processScrollWheelEvent(event)?.takeUnretainedValue())
+            let out = try XCTUnwrap(processScroll(remapper, event))
             XCTAssertEqual(
                 axisValues(out).a2Line,
                 0,
@@ -218,7 +218,7 @@ final class InputRemapperScrollTests: XCTestCase {
         }
 
         let third = try requireScrollEvent(axis2Line: 1)
-        let thirdOut = try XCTUnwrap(remapper.processScrollWheelEvent(third)?.takeUnretainedValue())
+        let thirdOut = try XCTUnwrap(processScroll(remapper, third))
         XCTAssertEqual(
             axisValues(thirdOut).a2Line,
             0,
@@ -226,7 +226,7 @@ final class InputRemapperScrollTests: XCTestCase {
         )
 
         let fourth = try requireScrollEvent(axis2Line: 1)
-        let fourthOut = try XCTUnwrap(remapper.processScrollWheelEvent(fourth)?.takeUnretainedValue())
+        let fourthOut = try XCTUnwrap(processScroll(remapper, fourth))
         XCTAssertEqual(
             axisValues(fourthOut).a2Line,
             1,
@@ -251,8 +251,8 @@ final class InputRemapperScrollTests: XCTestCase {
         let upLike = try requireScrollEvent(axis2Line: 3)
         let downLike = try requireScrollEvent(axis2Line: -3)
 
-        XCTAssertNotNil(remapper.processScrollWheelEvent(upLike))
-        XCTAssertNotNil(remapper.processScrollWheelEvent(downLike))
+        XCTAssertNotNil(processScroll(remapper, upLike))
+        XCTAssertNotNil(processScroll(remapper, downLike))
         XCTAssertEqual(nextDPI, 0)
         XCTAssertEqual(previousDPI, 0)
     }
@@ -274,12 +274,12 @@ final class InputRemapperScrollTests: XCTestCase {
         let up = try requireScrollEvent(axis1Line: 1, axis2Line: 9)
         let down = try requireScrollEvent(axis1Line: -1, axis2Line: -9)
 
-        let upOut = try XCTUnwrap(remapper.processScrollWheelEvent(up)?.takeUnretainedValue())
+        let upOut = try XCTUnwrap(processScroll(remapper, up))
         let upValues = axisValues(upOut)
         XCTAssertEqual(upValues.a1Line, 0)
         XCTAssertEqual(upValues.a2Line, 18)
 
-        let downOut = try XCTUnwrap(remapper.processScrollWheelEvent(down)?.takeUnretainedValue())
+        let downOut = try XCTUnwrap(processScroll(remapper, down))
         let downValues = axisValues(downOut)
         XCTAssertEqual(downValues.a1Line, 0)
         XCTAssertEqual(downValues.a2Line, -18)
@@ -307,7 +307,7 @@ final class InputRemapperScrollTests: XCTestCase {
             axis1Fixed: 0.5,
             axis2Fixed: 1.25
         )
-        let out = try XCTUnwrap(remapper.processScrollWheelEvent(event)?.takeUnretainedValue())
+        let out = try XCTUnwrap(processScroll(remapper, event))
         let values = axisValues(out)
         XCTAssertEqual(nextDPI, 1)
         XCTAssertEqual(values.a1Line, 0)
@@ -332,7 +332,7 @@ final class InputRemapperScrollTests: XCTestCase {
         XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         time = 1.0
-        XCTAssertNotNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1, axis2Line: 2)))
+        XCTAssertNotNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1, axis2Line: 2)))
         XCTAssertEqual(nextDPI, 1)
 
         time = 1.010
@@ -344,7 +344,7 @@ final class InputRemapperScrollTests: XCTestCase {
             axis1Fixed: 9,
             axis2Fixed: 1.5
         )
-        let out = try XCTUnwrap(remapper.processScrollWheelEvent(throttled)?.takeUnretainedValue())
+        let out = try XCTUnwrap(processScroll(remapper, throttled))
         let values = axisValues(out)
         XCTAssertEqual(nextDPI, 1, "Throttled tick must not re-fire the axis1 action")
         XCTAssertEqual(values.a1Line, 0)
@@ -366,7 +366,7 @@ final class InputRemapperScrollTests: XCTestCase {
         callbacks.onNextDPIStage = { nextDPI += 1 }
         XCTAssertTrue(remapper.setCallbacks(callbacks))
 
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1)))
         XCTAssertEqual(nextDPI, 1)
     }
 
@@ -386,7 +386,7 @@ final class InputRemapperScrollTests: XCTestCase {
         for index in 0..<10 {
             time = Double(index) * 0.002
             let event = try requireScrollEvent(axis1Line: 1)
-            XCTAssertNil(remapper.processScrollWheelEvent(event))
+            XCTAssertNil(processScroll(remapper, event))
         }
         XCTAssertEqual(nextDPI, 1)
     }
@@ -405,12 +405,12 @@ final class InputRemapperScrollTests: XCTestCase {
         XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         time = 1.0
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1)))
         time = 1.059
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1)))
         XCTAssertEqual(nextDPI, 1)
         time = 1.060
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1)))
         XCTAssertEqual(nextDPI, 2)
     }
 
@@ -431,12 +431,12 @@ final class InputRemapperScrollTests: XCTestCase {
         XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         time = 2.0
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1)))
         time = 2.010
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1)))
         XCTAssertEqual(nextDPI, 1)
         time = 2.011
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: -1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: -1)))
         XCTAssertEqual(previousDPI, 1)
     }
 
@@ -449,7 +449,7 @@ final class InputRemapperScrollTests: XCTestCase {
         for index in 0..<5 {
             time = Double(index) * 0.002
             let event = try requireScrollEvent(axis1Line: 1)
-            let result = try XCTUnwrap(remapper.processScrollWheelEvent(event)?.takeUnretainedValue())
+            let result = try XCTUnwrap(processScroll(remapper, event))
             XCTAssertEqual(result.getIntegerValueField(.scrollWheelEventDeltaAxis1), 2)
         }
     }
@@ -468,13 +468,23 @@ final class InputRemapperScrollTests: XCTestCase {
         XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         time = 5.0
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1)))
         XCTAssertEqual(nextDPI, 1)
 
         remapper.handlePermissionLoss()
 
         time = 5.005
-        XCTAssertNil(remapper.processScrollWheelEvent(try requireScrollEvent(axis1Line: 1)))
+        XCTAssertNil(processScroll(remapper, try requireScrollEvent(axis1Line: 1)))
         XCTAssertEqual(nextDPI, 2, "Permission loss must reset scroll-action throttle")
     }
+
+    /// Converts the remapper's `Unmanaged` result to a managed reference while `event`
+    /// is still alive. Never hand a raw `Unmanaged` to an XCTest assertion: the
+    /// assertion stringifies its value, and reflecting `Unmanaged` retains the pointer
+    /// it holds — which is dangling the moment the source event is released.
+    private func processScroll(_ remapper: InputRemapper, _ event: CGEvent) -> CGEvent? {
+        let result = remapper.processScrollWheelEvent(event)
+        return withExtendedLifetime(event) { result?.takeUnretainedValue() }
+    }
+
 }

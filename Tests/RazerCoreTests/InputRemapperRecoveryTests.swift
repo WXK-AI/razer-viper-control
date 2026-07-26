@@ -201,7 +201,7 @@ final class InputRemapperRecoveryTests: XCTestCase {
         XCTAssertTrue(remapper.setCallbacks(callbacks))
 
         remapper.pause()
-        let result = remapper.processScrollWheelEvent(event)
+        let result = processScroll(remapper, event)
         XCTAssertNotNil(result, "Paused scroll must passthrough, not consume")
         XCTAssertEqual(nextDPI, 0)
     }
@@ -494,4 +494,14 @@ final class InputRemapperRecoveryTests: XCTestCase {
             [.openApp(URL(fileURLWithPath: "/Applications/Test.app").standardizedFileURL)]
         )
     }
+
+    /// Converts the remapper's `Unmanaged` result to a managed reference while `event`
+    /// is still alive. Never hand a raw `Unmanaged` to an XCTest assertion: the
+    /// assertion stringifies its value, and reflecting `Unmanaged` retains the pointer
+    /// it holds — which is dangling the moment the source event is released.
+    private func processScroll(_ remapper: InputRemapper, _ event: CGEvent) -> CGEvent? {
+        let result = remapper.processScrollWheelEvent(event)
+        return withExtendedLifetime(event) { result?.takeUnretainedValue() }
+    }
+
 }
